@@ -1,0 +1,207 @@
+#!/usr/bin/env python3
+"""UserPromptSubmit hook: task-level memory recall.
+
+SessionStart injects a compressed *briefing* (always relevant, bounded). This
+hook is the L2 layer: for each user prompt, pull the Facts most relevant to
+what they're about to work on and inject only those (max 3) as context.
+
+Cross-project: recall spans ALL projects' Facts — the n-gram+IDF scoring is
+prompt-driven, so a prompt in one project naturally pulls in facts from another
+when they are genuinely relevant, while irrelevant ones score ~0 and stay out.
+The SessionStart briefing stays per-project.
+
+Two things that a single unfiltered query got wrong, both silent:
+  * A foreign fact injected bare reads exactly like a local one. "本项目的 X
+    必须配成 Y" from another repo would be applied here without a hint that it
+    came from somewhere else. Facts from other projects are now labelled with
+    their origin; local ones stay bare (absence of a label *is* the signal).
+  * `ORDER BY created_at DESC LIMIT n` over the union means one busy project
+    can push another project's older facts out of the candidate pool entirely,
+    and nothing shows that it happened. The cap is now applied per project,
+    so each project always gets its own newest n into the ranking.
+Cost: one query per project instead of one total (2 projects today, local
+daemon, ~ms each) — well inside the hook's budget.
+
+Matching strategy — character n-gram reverse match (CJK-friendly, zero-dep):
+  * A server-side substring search (`plane.find`) requires the *query* to be a
+    substring of the text, so a whole-sentence Chinese prompt never matches
+    (verified). BM25 is unavailable for Chinese (core only ships an English
+    analyzer).
+  * Instead we load the project's Facts once and score each against the
+    prompt's 2–4 char windows, weighting by inverse document frequency — a
+    rare gram like "环境变量" that appears in one Fact strongly pulls it up,
+    while filler grams ("这个","问题") spread evenly and contribute little.
+
+Design rules (same as session_start.py):
+  * Talk to the shared daemon over /rpc, never open the DB directly.
+  * Any failure → bare output, never block the prompt.
+  * Cheap: one read RPC + local scoring, silent when nothing matches.
+"""
+import json
+import math
+import os
+import re
+import sys
+import urllib.request
+
+# --- Configuration (overridable via .drsg/env) -----------------------------
+API = "http://127.0.0.1:7700/rpc"
+PLANE = "memory"
+MAX = 3
+FACT_CAP = 200  # per project, not total — see the module docstring
+
+
+def rpc(method, params, token):
+    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode()
+    req = urllib.request.Request(
+        API, data=body,
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
+    )
+    with urllib.request.urlopen(req, timeout=3) as r:
+        return json.load(r)["result"]
+
+
+def load_env(proj_dir):
+    p = os.path.join(proj_dir, ".drsg", "env")
+    if os.path.exists(p):
+        for line in open(p, encoding="utf-8"):
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                os.environ.setdefault(k.strip(), v.strip())
+
+
+def hook_out(**extra):
+    out = {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit"}}
+    out["hookSpecificOutput"].update(extra)
+    print(json.dumps(out))
+
+
+def clean(s):
+    # keep CJK + alnum, lower; drop spaces/punctuation so grams cross the
+    # "配置构建" boundary the way a reader would.
+    return re.sub(r"[^\w一-鿿]+", "", (s or "").lower())
+
+
+def grams(s, lo=2, hi=4):
+    out = []
+    for n in range(lo, hi + 1):
+        for i in range(len(s) - n + 1):
+            out.append(s[i:i + n])
+    return out
+
+
+def score_facts(prompt, facts, maxhits=MAX):
+    """Rank facts by n-gram+IDF match against the prompt. Returns the winning
+    fact dicts, best first, capped at maxhits. Pure: no I/O.
+
+    IDF is computed over the whole cross-project corpus on purpose: a gram that
+    is rare *everywhere* is the one worth ranking on."""
+    pgrams = set(grams(clean(prompt)))
+    df = {}
+    for f in facts:
+        for g in set(grams(f["clean"])):
+            df[g] = df.get(g, 0) + 1
+    n = len(facts)
+    scored = []
+    for f in facts:
+        sc = sum(math.log(1.0 + n / df.get(g, n)) for g in pgrams if g in f["clean"])
+        if sc > 0:
+            scored.append((sc, f))
+    # Sort on the score alone — tuples carrying dicts blow up on a tie.
+    scored.sort(key=lambda t: -t[0])
+    return [f for _, f in scored[:maxhits]]
+
+
+def fetch_facts(token):
+    """Every project's Facts, newest-first *per project*, each carrying the
+    project it belongs to.
+
+    One query per project rather than one over the union: the query language
+    requires RETURN to name the pattern's last variable, so a single
+    `(p)<-[:ABOUT]-(f)` cannot hand back both the fact and its project — and
+    the origin is exactly what we need to label with.
+
+    Projects are matched on `p.path`, NOT on `key(p)`. The external-key index
+    is not trustworthy here: digest.run has twice written a second node with an
+    existing project's key (see the `fact-key-collision-incident` Fact), and
+    once that happens `key(p) = "data-safe"` resolves to the shadowing node —
+    which has no ABOUT edges, so every key-filtered query silently returns
+    nothing. Filtering on a property walks the real nodes instead, and the
+    junk duplicates drop out for free: only session_start.py sets `path`."""
+    res = rpc("plane.cypher", {"plane": PLANE, "query": "MATCH (p:Project) RETURN p",
+                               "params": {}}, token)
+    paths = []
+    for n in res.get("nodes", []):
+        path = (n.get("properties") or {}).get("path")
+        if path and path not in paths:
+            paths.append(path)
+
+    facts, seen = [], set()
+    for path in paths:
+        pk = os.path.basename(os.path.normpath(path))
+        res = rpc("plane.cypher", {"plane": PLANE,
+            "query": ("MATCH (p:Project)<-[:ABOUT]-(f:Fact) "
+                      "WHERE p.path = $path "
+                      "RETURN f ORDER BY f.created_at DESC LIMIT %d") % FACT_CAP,
+            "params": {"path": path}}, token)
+        for n in res.get("nodes", []):
+            pr = n.get("properties", {})
+            key = n.get("external_key", "?")
+            # A Fact ABOUT two projects would otherwise be ranked twice.
+            if not pr.get("summary") or key in seen:
+                continue
+            seen.add(key)
+            facts.append({
+                "key": key,
+                "origin": pk,
+                "clean": clean(pr["summary"]),
+                "tag": (pr["summary"].split("→")[-1].split("。")[0].strip() or pr["summary"])[:60],
+            })
+    return facts
+
+
+def main():
+    data = json.load(sys.stdin)
+    prompt = (data.get("prompt") or "").strip()
+    if len(prompt) < 2:
+        hook_out()
+        return
+    proj_dir = os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
+    load_env(proj_dir)
+    # Re-read config after load_env populated os.environ (install.sh's .drsg/env).
+    global API, PLANE
+    API = os.environ.get("DRSG_API", API)
+    PLANE = os.environ.get("DRSG_PLANE", PLANE)
+    token = os.environ.get("DRSG_TOKEN", "")
+    if not token:
+        hook_out()
+        return
+
+    # The project this session is in — same derivation as session_start.py, so
+    # a fact from here stays bare and everything else gets named.
+    home = os.path.basename(os.path.normpath(proj_dir))
+
+    try:
+        facts = fetch_facts(token)
+    except Exception:
+        hook_out()  # daemon down / error → don't touch the prompt
+        return
+    if not facts:
+        hook_out()
+        return
+
+    hits = score_facts(prompt, facts)
+    if not hits:
+        hook_out()
+        return
+
+    lines = []
+    for f in hits:
+        origin = "" if f["origin"] == home else f" [from {f['origin']}]"
+        lines.append(f"- ({f['key']}){origin} {f['tag']}")
+    hook_out(additionalContext="# Relevant memory\n" + "\n".join(lines))
+
+
+if __name__ == "__main__":
+    main()

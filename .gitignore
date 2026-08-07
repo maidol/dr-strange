@@ -13,3 +13,11 @@ logs/
 
 # CodeGraph's local symbol index — a machine-local cache rebuilt from source.
 .codegraph/
+
+# The memory layer's per-project runtime dir (scripts/memory-layer): daemon
+# address, API token, L3 log. Machine-local, and it holds a secret.
+.drsg/
+
+# Python bytecode from the memory layer's hooks and scripts.
+__pycache__/
+*.pyc
