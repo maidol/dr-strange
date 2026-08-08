@@ -6,6 +6,13 @@ judgment but are genuinely useful — files touched (Read/Write/Edit), Bash
 commands run, session duration. Written onto the Session node so a later
 SessionStart briefing shows "what this project was recently working on".
 
+Also counts tool outcomes (`tool_calls` / `tool_errors` / `tool_rejected` /
+`tool_errors_top`). That is telemetry, not briefing material: it is the one
+objective outcome proxy available for judging whether recalled memory actually
+improved the work (docs/memory-layer-observability.md, P3). Raw counts only — the
+denominator and the per-tool split are stored so the analysis can decide later
+what counts as a failure, instead of that judgment being baked in here.
+
 Must stay fast — SessionEnd hooks share a tight budget (settings `timeout`
 raises it, default 1.5s shared). One read + one RPC; the transcript is streamed
 (no full-file load), errors are swallowed. Never blocks session end.
@@ -27,6 +34,10 @@ PLANE = "memory"
 MAX_LINES = 4000
 # Minimum transcript size before we bother spawning L3 distillation.
 L3_MIN_TRANSCRIPT = 40_000
+# `is_error` tool results that are not failures: the user declined the call or
+# interrupted it. The agent proposed something reasonable, so these must not
+# land in tool_errors — they are counted separately, never silently dropped.
+NOT_A_FAILURE = ("the user doesn't want", "tool use was rejected", "interrupted by user")
 
 
 def rpc(method, params, token):
@@ -49,12 +60,23 @@ def load_env(proj_dir):
                 os.environ.setdefault(k.strip(), v.strip())
 
 
+def _result_text(block):
+    """A tool_result's content is either a string or a list of text blocks."""
+    c = block.get("content")
+    if isinstance(c, list):
+        c = " ".join(i.get("text", "") for i in c if isinstance(i, dict))
+    return (c if isinstance(c, str) else "").lower()
+
+
 def mine(transcript_path):
-    """Scan the transcript JSONL for files touched + commands run."""
+    """Scan the transcript JSONL for files touched, commands run, tool outcomes."""
     files = Counter()
     commands = Counter()
+    tools = Counter()          # calls / errors / rejected
+    failed_by = Counter()      # which tool failed, so infra noise stays separable
+    names = {}                 # tool_use_id -> tool name (results carry only the id)
     if not transcript_path or not os.path.exists(transcript_path):
-        return files, commands
+        return files, commands, tools, failed_by
     n = 0
     with open(transcript_path, encoding="utf-8", errors="replace") as f:
         for line in f:
@@ -68,13 +90,16 @@ def mine(transcript_path):
                 d = json.loads(line)
             except Exception:
                 continue
-            if d.get("type") != "assistant":
+            kind = d.get("type")
+            if kind not in ("assistant", "user"):
                 continue
             for t in d.get("message", {}).get("content") or []:
                 if not isinstance(t, dict):
                     continue
                 if t.get("type") == "tool_use":
                     name = t.get("name")
+                    if t.get("id"):
+                        names[t["id"]] = name
                     if name in ("Read", "Write", "Edit"):
                         fp = t.get("input", {}).get("file_path") or t.get("input", {}).get("path")
                         if fp:
@@ -83,7 +108,17 @@ def mine(transcript_path):
                         cmd = (t.get("input", {}).get("command") or "")[:40]
                         if cmd:
                             commands[re.sub(r"\\s+", " ", cmd)] += 1
-    return files, commands
+                elif t.get("type") == "tool_result":
+                    tools["calls"] += 1
+                    if not t.get("is_error"):
+                        continue
+                    text = _result_text(t)
+                    if any(p in text for p in NOT_A_FAILURE):
+                        tools["rejected"] += 1
+                    else:
+                        tools["errors"] += 1
+                        failed_by[names.get(t.get("tool_use_id"), "?")] += 1
+    return files, commands, tools, failed_by
 
 
 def main():
@@ -106,11 +141,22 @@ def main():
 
     # L1 structural mining (best-effort).
     try:
-        files, commands = mine(data.get("transcript_path", ""))
+        files, commands, tools, failed_by = mine(data.get("transcript_path", ""))
         if files:
             props["files_touched"] = ",".join(f"{k}×{v}" for k, v in files.most_common(6))
         if commands:
             props["commands_run"] = ",".join(f"{k}×{v}" for k, v in commands.most_common(4))
+        if tools["calls"]:
+            # Always written when there were any calls, zeros included — an
+            # absent property and a genuine zero must stay distinguishable.
+            # Both numerator and denominator come from the same MAX_LINES
+            # window, so the ratio holds even where the count is truncated.
+            props["tool_calls"] = tools["calls"]
+            props["tool_errors"] = tools["errors"]
+            props["tool_rejected"] = tools["rejected"]
+            if failed_by:
+                props["tool_errors_top"] = ",".join(
+                    f"{k}×{v}" for k, v in failed_by.most_common(4))
     except Exception:
         pass  # mining is best-effort
 
