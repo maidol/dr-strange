@@ -21,3 +21,11 @@ logs/
 # Python bytecode from the memory layer's hooks and scripts.
 __pycache__/
 *.pyc
+
+# --- personal workspace only, not part of any upstream PR --------------------
+# This machine's Claude Code configuration and design scratch space.
+CLAUDE.md
+.claude
+docs/superpowers/
+# Benchmark output: regenerable, and large.
+scripts/memory-layer/benchmark/out/
