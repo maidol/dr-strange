@@ -37,11 +37,13 @@ Design rules (same as session_start.py):
   * Any failure → bare output, never block the prompt.
   * Cheap: one read RPC + local scoring, silent when nothing matches.
 """
+import hashlib
 import json
 import math
 import os
 import re
 import sys
+import time
 import urllib.request
 
 # --- Configuration (overridable via .drsg/env) -----------------------------
@@ -49,6 +51,36 @@ API = "http://127.0.0.1:7700/rpc"
 PLANE = "memory"
 MAX = 3
 FACT_CAP = 200  # per project, not total — see the module docstring
+# Ranked facts recorded per prompt, injected or not. The ones just below the
+# cut are the whole point: tuning MAX or adding a score threshold is guesswork
+# without knowing what was almost injected.
+LOG_RANK = 5
+
+
+def telemetry(proj_dir, record):
+    """Append one JSON line to .drsg/recall.jsonl.
+
+    Best-effort and silent by construction: this is the read path, and a
+    session must never degrade because a log write failed. The recall
+    decision is already made by the time this runs.
+    """
+    try:
+        d = os.path.join(proj_dir, ".drsg")
+        os.makedirs(d, exist_ok=True)
+        record["ts"] = int(time.time())
+        with open(os.path.join(d, "recall.jsonl"), "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
+def prompt_id(prompt):
+    """A stable handle for a prompt that is not the prompt.
+
+    The analyzer needs to find the same turn in the transcript; the log must
+    not become a second copy of everything the user typed, secrets included.
+    A digest satisfies both."""
+    return hashlib.sha1(prompt.encode("utf-8", "replace")).hexdigest()[:16]
 
 
 def rpc(method, params, token):
@@ -91,9 +123,9 @@ def grams(s, lo=2, hi=4):
     return out
 
 
-def score_facts(prompt, facts, maxhits=MAX):
-    """Rank facts by n-gram+IDF match against the prompt. Returns the winning
-    fact dicts, best first, capped at maxhits. Pure: no I/O.
+def rank_facts(prompt, facts):
+    """Rank facts by n-gram+IDF match against the prompt. Returns (score, fact)
+    pairs, best first, positives only. Pure: no I/O.
 
     IDF is computed over the whole cross-project corpus on purpose: a gram that
     is rare *everywhere* is the one worth ranking on."""
@@ -110,7 +142,13 @@ def score_facts(prompt, facts, maxhits=MAX):
             scored.append((sc, f))
     # Sort on the score alone — tuples carrying dicts blow up on a tie.
     scored.sort(key=lambda t: -t[0])
-    return [f for _, f in scored[:maxhits]]
+    return scored
+
+
+def score_facts(prompt, facts, maxhits=MAX):
+    """The facts that win, best first, capped at maxhits. The shape callers
+    outside this hook already read (benchmark/bench_lib.py)."""
+    return [f for _, f in rank_facts(prompt, facts)[:maxhits]]
 
 
 def fetch_facts(token):
@@ -162,6 +200,7 @@ def fetch_facts(token):
 
 
 def main():
+    t0 = time.time()
     data = json.load(sys.stdin)
     prompt = (data.get("prompt") or "").strip()
     if len(prompt) < 2:
@@ -182,17 +221,38 @@ def main():
     # a fact from here stays bare and everything else gets named.
     home = os.path.basename(os.path.normpath(proj_dir))
 
+    # Every outcome is logged, including the ones that inject nothing. A recall
+    # rate needs its denominator, and "the daemon was down for a week" is a
+    # conclusion the analyzer can only reach from records that say so.
+    rec = {"event": "recall", "session": data.get("session_id", ""),
+           "project": home, "prompt": prompt_id(prompt), "prompt_len": len(prompt)}
+
+    def done(status, **extra):
+        rec["status"] = status
+        rec.update(extra)
+        rec["ms"] = int((time.time() - t0) * 1000)
+        telemetry(proj_dir, rec)
+
     try:
         facts = fetch_facts(token)
-    except Exception:
+    except Exception as e:
+        done("error", error=type(e).__name__)
         hook_out()  # daemon down / error → don't touch the prompt
         return
     if not facts:
+        done("no_facts")
         hook_out()
         return
 
-    hits = score_facts(prompt, facts)
+    ranked = rank_facts(prompt, facts)
+    # Scores are rounded, not raw: the analyzer compares them, it does not
+    # reproduce the arithmetic, and full floats trebled the line length.
+    rec["ranked"] = [{"key": f["key"], "origin": f["origin"], "score": round(s, 2)}
+                     for s, f in ranked[:LOG_RANK]]
+    rec["n_candidates"] = len(facts)
+    hits = [f for _, f in ranked[:MAX]]
     if not hits:
+        done("no_match")
         hook_out()
         return
 
@@ -200,7 +260,9 @@ def main():
     for f in hits:
         origin = "" if f["origin"] == home else f" [from {f['origin']}]"
         lines.append(f"- ({f['key']}){origin} {f['tag']}")
-    hook_out(additionalContext="# Relevant memory\n" + "\n".join(lines))
+    block = "# Relevant memory\n" + "\n".join(lines)
+    done("injected", injected=[f["key"] for f in hits], chars=len(block))
+    hook_out(additionalContext=block)
 
 
 if __name__ == "__main__":

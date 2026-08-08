@@ -143,6 +143,34 @@ running under the old environment will keep sending an empty key and
 
 Add `.drsg/` to the target project's `.gitignore`.
 
+## Is it working? (`analyze_recall.py`)
+
+Both read hooks append one JSON line per decision to `<project>/.drsg/recall.jsonl`
+— what was ranked, what was injected, what it cost, and how long it took.
+Writing it can never fail a session; the record is made after the decision.
+
+```bash
+python3 scripts/memory-layer/analyze_recall.py            # every project the daemon knows
+python3 scripts/memory-layer/analyze_recall.py --since 14
+```
+
+It pairs each injection with the reply that followed it in the transcript and
+reports:
+
+- **utilization** — of the facts injected, how many did the reply visibly use;
+- **cross-project** — whether facts borrowed from another project are used at
+  a rate comparable to local ones, which is the only honest way to decide
+  whether sharing pays for its tokens;
+- **dead facts** (injected repeatedly, never used) and **never-injected facts**
+  (whose wording matches no real prompt);
+- **cost** — injected characters, the briefing/protocol split, hook latency.
+
+Utilization is a proxy and the script says so: it over-counts a reply that
+merely acknowledges a memory, and under-counts a memory that worked by
+preventing something — the toolchain fact succeeding looks exactly like a build
+that simply did not fail. Read it as a floor and a trend. Below 30 recorded
+sessions the script refuses to draw a conclusion at all.
+
 ## Notes
 
 - **The LLM key never leaves the server.** `digest.run` is passed the *name* of

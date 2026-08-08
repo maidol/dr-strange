@@ -76,6 +76,20 @@ def hook_out(**extra):
     print(json.dumps(out))
 
 
+def telemetry(proj_dir, record):
+    """Append one JSON line to .drsg/recall.jsonl. Same file and same silence
+    as user_prompt.py's: one log, so a session's startup cost and its
+    per-prompt recalls can be read on one timeline."""
+    try:
+        d = os.path.join(proj_dir, ".drsg")
+        os.makedirs(d, exist_ok=True)
+        record["ts"] = int(time.time())
+        with open(os.path.join(d, "recall.jsonl"), "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
 def project_id(proj_dir, token):
     """The Project node for this working directory, addressed by `path`.
 
@@ -134,30 +148,36 @@ def build_briefing(facts):
 
 def ensure_briefing(proj_dir, pid, token):
     """Rebuild Project.briefing when the Fact count changed; else reuse it.
-    Returns the briefing text. Addressed by node id (see project_id)."""
+    Returns (briefing text, fact count). Addressed by node id (see project_id).
+
+    The count comes back for the telemetry line: a briefing that stops growing
+    is the difference between "nothing worth writing happened" and "the write
+    path broke", and the text alone cannot tell those apart."""
     try:
         proj = rpc("node.get", {"plane": PLANE, "id": pid}, token)
+        stored = (proj or {}).get("properties", {}).get("briefing_count")
         stale = True
         try:
             facts = all_facts(proj_dir, token)
-            if proj and proj.get("properties", {}).get("briefing_count") == len(facts):
+            if stored == len(facts):
                 stale = False
         except Exception:
-            facts = []
+            facts = None  # read failed — not the same as "no facts"
         if stale:
             brief = build_briefing(facts) if facts else ""
             rpc("node.update", {"plane": PLANE, "id": pid, "set": {
-                "briefing": brief, "briefing_count": len(facts),
+                "briefing": brief, "briefing_count": len(facts or []),
                 "briefing_at": int(time.time())}}, token)
         else:
             brief = (proj.get("properties", {}).get("briefing", "") or "")
-        return brief
+        return brief, len(facts) if facts is not None else stored
     except Exception as e:
         print(f"[drsg-memory] ensure_briefing failed: {e}", file=sys.stderr)
-        return ""
+        return "", None
 
 
 def main():
+    ts_start = time.time()
     data = json.load(sys.stdin)
     proj_dir = os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
     load_env(proj_dir)
@@ -208,7 +228,7 @@ def main():
 
     # 2. Inject: the compressed briefing + recent sessions (NOT full Facts).
     parts = []
-    brief = ensure_briefing(proj_dir, pid, token) if pid else ""
+    brief, n_facts = ensure_briefing(proj_dir, pid, token) if pid else ("", None)
     if brief:
         parts.append("Briefing:\n" + brief)
     try:
@@ -217,13 +237,18 @@ def main():
                       "WHERE p.path = $path "
                       "RETURN s ORDER BY s.started_at DESC LIMIT 3"),
             "params": {"path": proj_dir}}, token)
+        # Only sessions that actually say something. Nothing writes
+        # Session.summary today, so listing every recent session spent ~10% of
+        # the startup injection on three lines of bare timestamps — context the
+        # model cannot act on. When a summary does get written the line earns
+        # its place again, and the block comes back on its own.
         sess_lines = []
         for n in res.get("nodes", []):
             pr = n.get("properties", {})
-            line = f"- session {pr.get('started_at')} [{pr.get('source', '?')}]"
-            if pr.get("summary"):
-                line += f": {pr['summary']}"
-            sess_lines.append(line)
+            if not pr.get("summary"):
+                continue
+            sess_lines.append(f"- session {pr.get('started_at')} "
+                              f"[{pr.get('source', '?')}]: {pr['summary']}")
         if sess_lines:
             parts.append("Recent sessions:\n" + "\n".join(sess_lines))
     except Exception as e:
@@ -231,11 +256,18 @@ def main():
 
     # L2: the write-memory protocol — makes the model the value-judge for what
     # deserves persisting, every turn, automatically (no user action needed).
-    parts.append(protocol(slug, PLANE))
-    if parts:
-        hook_out(additionalContext="# dr-strange memory (%s)\n%s" % (slug, "\n\n".join(parts)))
-    else:
-        hook_out()
+    proto = protocol(slug, PLANE)
+    parts.append(proto)
+    ctx = "# dr-strange memory (%s)\n%s" % (slug, "\n\n".join(parts))
+    # Split the cost the way it is spent. The protocol is a fixed instruction,
+    # not memory: counted together with the briefing it hides that most of the
+    # startup budget buys no recall at all.
+    telemetry(proj_dir, {"event": "briefing", "session": sid, "project": slug,
+                         "facts": n_facts,
+                         "brief_chars": len(brief), "proto_chars": len(proto),
+                         "total_chars": len(ctx),
+                         "ms": int((time.time() - ts_start) * 1000)})
+    hook_out(additionalContext=ctx)
 
 
 if __name__ == "__main__":
