@@ -196,6 +196,15 @@ DRSG_L3_REASONING=$L3_REASONING
 EOF
 chmod 600 "$PROJECT_DIR/.drsg/env"
 
+# .drsg/env holds the shared API token, and .drsg/ collects telemetry besides.
+# chmod 600 keeps other users out; it does nothing about `git add .`, so ignore
+# the directory in any repo we install into.
+if [ -d "$PROJECT_DIR/.git" ] && ! git -C "$PROJECT_DIR" check-ignore -q .drsg/env 2>/dev/null; then
+  echo "== adding .drsg/ to $PROJECT_DIR/.gitignore (it holds the API token)"
+  printf '\n# dr-strange memory layer (API token + local telemetry)\n.drsg/\n' \
+    >> "$PROJECT_DIR/.gitignore"
+fi
+
 # ---- 4. merge hooks into settings.local.json --------------------------------
 echo "== registering hooks in $PROJECT_DIR/.claude/settings.local.json"
 SETTINGS="$PROJECT_DIR/.claude/settings.local.json"
