@@ -63,6 +63,59 @@
 这是**下界代理**，脚本里写明了：对"只是复述记忆"会高估，对"靠预防生效"会低估
 （gcc 那条成功时看起来就是构建没失败）。不足 30 个会话时脚本拒绝下结论。
 
+### P3 前置：失败工具调用数埋点（本次）
+
+`session_end.py` 的 `mine()` 现在同时扫 `user` 消息里的 `tool_result`，在 Session 节点上
+落四个属性：`tool_calls` / `tool_errors` / `tool_rejected` / `tool_errors_top`。
+
+- **不落单个数字，落原始分子分母**。判据是"什么算失败"——把它写死在 hook 里，等于事后
+  没法改口径。所以存总调用数（分母，率比计数可比）、按工具拆的失败分布，让分析侧决定。
+- **用户拒绝工具**（`is_error` 但内容是 "The user doesn't want…" / "tool use was
+  rejected" / "interrupted by user"）单独计 `tool_rejected`，不算失败也不静默丢掉。
+- **按工具拆分是必需的，不是锦上添花**。真语料上一个会话的 65 次 `is_error` 里 22 次是
+  模型供应商 "temporarily unavailable"——基础设施抖动，不是工作质量。拆开才分得清；
+  实测另一个会话是 `Bash×23, mcp__drsg__cypher×7, Read×1`，语义完全不同。
+- `tool_use_id → 工具名` 的映射靠同一遍扫描顺带建（`tool_result` 只带 id 不带名字）。
+- **计数受 `MAX_LINES=4000` 截断**，长会话拿到的是窗口样本不是全量；分子分母同窗口，
+  所以率仍然成立，计数不成立。
+- 成本：最大一份 79MB transcript 上 `mine()` 137ms（本来就在读同一批行），SessionEnd
+  1.5s 共享预算内。三处副本 md5 一致（`ca71a936`）。
+
+`analyze_recall.py` **暂不读这些属性**——现在只有基线在积累，没有对照臂可比。
+
+### 证据保鲜：判据不能活得比证据长（本次）
+
+跑数据时发现的阻断项:判"这条记忆用了没有"要读 transcript 里的回复,而 Claude Code
+默认 **30 天**清理 transcript(`cleanupPeriodDays` 没设)。磁盘上最老的一批正好停在
+`07-09`,当天是 `08-08`——不多不少整 30 天,已经在删了。三个月的判据到期时,前两个月的
+注入全变成不可判。两层修:
+
+1. `~/.claude/settings.json` 加 `"cleanupPeriodDays": 180`(纯插入一行)。
+2. **分析器增量化**。每条判定第一次算出来就冻进 `.drsg/recall-verdicts.jsonl`,
+   之后从那里读。只要在保留期内跑过一次,判定就比 transcript 活得久。
+   - 冻的是**匹配字符 mass 而不是 yes/no**——`MIN_MATCH_CHARS` 将来还能在全部历史上
+     重新调。DF 过滤没法这样复用,所以改 gram 逻辑必须 bump `VERDICT_VERSION`:能重算的
+     重算,不能的报 stale,而不是把两套口径静默混在一起。
+   - 文件只追加不重写;`--no-cache` 强制重算且不冻结。
+   - 验证:两次运行 48→0 新算 / 0→48 命中缓存,结果都是 36/48 (75%),文件没翻倍;
+     `--no-cache` 重算得到同一个 36/48;**把 `TRANSCRIPT_ROOT` 指向不存在的目录
+     (模拟 30 天后)仍然输出 36/48** —— 这条才是要证的。
+
+### 扩大样本面（本次）
+
+原来只有 2 个项目装了记忆层,而最近 30 天全局 19 个会话里最活跃的 `wps` 占 10 个、
+`zeus` 占 3 个,都没装。现已装上,4 个项目全部指向同一个守护进程:
+
+```
+data-safe  dr-strange  wps  zeus     # memory plane 里 4 个 Project 节点
+```
+
+五处 hook 副本 md5 一致(`ca71a936`),所以 `tool_*` 埋点同时在四个项目生效。L3 保持关停。
+
+顺带修了 `install.sh` 的一个真空:它写 `.drsg/env`(含 API token)却从不碰
+`.gitignore`。装进这两个仓库前先补上——`chmod 600` 挡得住别的用户,挡不住 `git add .`。
+现在装到任何 git 仓库都会自动忽略 `.drsg/`。
+
 ### 三件立即项
 
 - **L3 关停**。`.drsg/env` 里 `DRSG_L3_CHAT=` 置空，原值注释保留在旁边。数据没删。
@@ -72,18 +125,22 @@
 - **test 记忆**：删 1 条探针；另一条 `fact-data-safe-mutate-with-previous-bug`
   是真见解、kind 标错，改成 `gotcha` 而非删除。
 
-## 待办
+## 待办 — 四个阶段，按触发条件推进（不按日期）
 
-### 建议下一步做：失败工具调用数埋点
+前置修补已完成(保留期 180 天 + 判定冻结 + 4 个项目),**阶段 1 现在开始积累**。
 
-在 `session_end.py` 记每会话的失败工具调用数（`is_error` 的 `tool_result`，
-要滤掉"用户拒绝工具"这类非失败）。
+| 阶段 | 触发条件 | 动作 |
+|---|---|---|
+| **1 基线** | `recall.jsonl` 满 30 会话 | 脚本自己解禁下结论。判 utilization 与 foreign/local 比;同时看 `tool_errors` 的**基线分布**(还没有对照臂,只建立"正常失败率长什么样")。顺带处理从没被召回的 Fact 和 `MAX=3` 无阈值 |
+| **2 开对照臂** | 阶段 1 判据都没触发关停 | 上 P3 的确定性抑制,开始积累 arm 对比 |
+| **3 判决** | 抑制臂满 100 会话 | 对照失败率与 `tool_errors_top` 分布。这才是"跨项目共享记忆有没有提升工作质量"的正面回答 |
+| **4 P2** | 3 个月以上 | 加 signature 层做陷阱复发率 |
 
-理由：这是 P3 唯一客观的结局代理，且**从下个会话就开始积累**——等
-`recall.jsonl` 攒到 30 个会话时它也攒够了。现在不加，将来做对照臂要从零等。
+**阶段 1 不下最终结论**。它只回答"召回策略本身合不合格",不回答"有没有让工作变好"
+——后者必须有对照臂,那是阶段 3。所有调参冲动都压到阶段 1 之后。
 
-可行性已验证：transcript 里 `tool_result.is_error` 结构存在，dr-strange 那个会话
-1085 次工具调用中 65 次失败（6%）。
+唯一的日常义务:**保留期内至少跑一次分析器**,把判定冻下来。180 天的窗口很宽,但
+跑一次的成本是 0,别赌。
 
 ### P2 陷阱复发率 — 降级，暂不做
 
@@ -130,11 +187,21 @@ prompt: "构建时 ring 编译失败,gcc 路径不对"
 ## 恢复讨论时先跑这个
 
 ```bash
-python3 scripts/memory-layer/analyze_recall.py            # 全部项目
+python3 scripts/memory-layer/analyze_recall.py            # 全部项目（顺带冻结新判定）
 python3 scripts/memory-layer/analyze_recall.py --since 14
+python3 scripts/memory-layer/analyze_recall.py --no-cache  # 只在怀疑冻结值时用
 ```
 
-`.drsg/recall.jsonl` 目前是空的（探针数据已清），从下个会话开始积累。
+`verdicts : N computed now, M from frozen` 那一行是健康度:M 涨说明冻结在起作用,
+出现 `stale` 说明 `VERDICT_VERSION` 变过而 transcript 已经没了。
+
+积累进度（2026-08-08 晚，装了记忆层的项目 2 个 → 4 个后）：2 会话 / 19 prompt /
+48 次注入，utilization 75%，foreign/local 0.67 : 0.75。**离 30 会话的门槛还很远，
+脚本也确实拒绝下结论**——这几个数只用来确认管道通了。同一批数据还暴露 34 条 Fact 里
+15 条从未被召回过，多数是措辞对不上真实提问（`exp-cc-env-var-broken` 这种明显有用的
+也在里面），按阶段 1 的安排到样本量够时一并处理。
+
+`tool_*` 属性从下个会话结束时开始落到 Session 节点。
 
 ## 仓库状态
 
