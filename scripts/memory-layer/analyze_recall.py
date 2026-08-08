@@ -16,6 +16,22 @@ Usage:
     python3 analyze_recall.py                 # every project the daemon knows
     python3 analyze_recall.py --project DIR   # just this one, repeatable
     python3 analyze_recall.py --since 14      # last 14 days
+    python3 analyze_recall.py --no-cache      # ignore frozen verdicts, recompute
+
+## Why this is incremental
+
+Deciding whether a fact was used needs the *reply*, and replies live in Claude
+Code transcripts, which are deleted on a retention timer. The pre-registered
+thresholds run over months; the evidence does not survive that long. So every
+verdict this script reaches is frozen into `.drsg/recall-verdicts.jsonl` on
+first computation and read back from there afterwards. Run it at least once
+inside the retention window and the verdict outlives the transcript.
+
+What is frozen is the matched-character **mass**, not the yes/no — so
+`MIN_MATCH_CHARS` can still be re-tuned later over the whole history. The
+document-frequency filter is not re-runnable that way, so a change to the gram
+logic must bump `VERDICT_VERSION`, which recomputes what it still can and
+reports the rest as stale rather than silently mixing two definitions.
 
 ## How "used" is decided, and what it is worth
 
@@ -59,6 +75,13 @@ DF_SHARE = 0.15
 # — English keywords that belong to the fact and to unrelated prose equally,
 # which no threshold on this signal can separate.
 MIN_MATCH_CHARS = 6
+# Frozen verdicts, one per (session, prompt, fact). Written beside recall.jsonl
+# in each project so a verdict outlives the transcript it was read from.
+VERDICTS = "recall-verdicts.jsonl"
+# Bump when clean/grams/informative/DF change — i.e. when the same reply would
+# now score differently. Old entries are then recomputed where the transcript
+# is still there and counted as stale where it is not.
+VERDICT_VERSION = 1
 
 
 # --- shared with the hooks (kept in step deliberately) ----------------------
@@ -201,8 +224,12 @@ def discriminative(facts):
     return {k: {x for x in g if df[x] <= cap} for k, g in per.items()}
 
 
-def used(fact_grams, prompt_grams, reply):
-    """Did the reply carry the fact's own material, rather than the prompt's?
+def match_mass(fact_grams, prompt_grams, reply):
+    """How much of the fact's own material — not the prompt's — the reply carried.
+
+    Returns matched characters over merged spans; the caller compares that to
+    MIN_MATCH_CHARS. Mass rather than a verdict, because mass is what gets
+    frozen: the threshold stays re-tunable over history, the transcript does not.
 
     Evidence is measured in matched characters over merged spans, not in grams.
     Overlapping grams are one piece of evidence, not several: `created` yields
@@ -226,8 +253,38 @@ def used(fact_grams, prompt_grams, reply):
             merged[-1][1] = max(merged[-1][1], hi)
         else:
             merged.append([lo, hi])
-    mass = sum(hi - lo for lo, hi in merged)
-    return mass >= MIN_MATCH_CHARS, {r[lo:hi] for lo, hi in merged}
+    return sum(hi - lo for lo, hi in merged)
+
+
+# --- frozen verdicts -------------------------------------------------------
+
+def load_verdicts(projects):
+    """{(session, prompt, key): record} — every verdict already frozen."""
+    out = {}
+    for p in projects:
+        f = os.path.join(p, ".drsg", VERDICTS)
+        if not os.path.exists(f):
+            continue
+        for line in open(f, encoding="utf-8"):
+            try:
+                v = json.loads(line)
+            except Exception:
+                continue
+            # Later lines win: a recompute after a VERDICT_VERSION bump appends
+            # rather than rewrites, so the file stays append-only.
+            out[(v.get("session"), v.get("prompt"), v.get("key"))] = v
+    return out
+
+
+def save_verdicts(new_by_project):
+    for p, rows in new_by_project.items():
+        if not rows:
+            continue
+        d = os.path.join(p, ".drsg")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, VERDICTS), "a", encoding="utf-8") as f:
+            for r in rows:
+                f.write(json.dumps(r, ensure_ascii=False) + "\n")
 
 
 # --- report ----------------------------------------------------------------
@@ -248,6 +305,8 @@ def main():
     ap.add_argument("--project", action="append", default=[],
                     help="project dir; repeatable. Default: ask the daemon.")
     ap.add_argument("--since", type=int, default=0, help="only the last N days")
+    ap.add_argument("--no-cache", action="store_true",
+                    help="recompute from transcripts and freeze nothing")
     ap.add_argument("--api", default="")
     ap.add_argument("--plane", default="")
     args = ap.parse_args()
@@ -302,14 +361,14 @@ def main():
     use = defaultdict(int)
     by_origin = defaultdict(lambda: [0, 0])  # origin -> [injected, used]
     unmatched = 0
+    fresh, cached, stale = 0, 0, 0
+    frozen = {} if args.no_cache else load_verdicts(projects)
+    new_by_project = defaultdict(list)
     for r in recalls:
         if r.get("status") != "injected":
             continue
         reply = turns.get(r["_proj_dir"], {}).get(r.get("prompt"))
-        if reply is None:
-            unmatched += 1
-            continue
-        blob = "\n".join(reply)
+        blob = "\n".join(reply) if reply is not None else None
         # The prompt's own grams are unavailable (only its digest is logged), so
         # the echo filter uses the injected tags of the *other* facts in the same
         # turn as the nearest stand-in for shared context.
@@ -317,13 +376,37 @@ def main():
             f = facts.get(key)
             if not f:
                 continue
+            have = frozen.get((r.get("session"), r.get("prompt"), key))
+            if have is not None and have.get("ver") == VERDICT_VERSION:
+                mass = have.get("mass", 0)
+                cached += 1
+            elif blob is not None:
+                mass = match_mass(disc.get(key, set()), set(), blob)
+                fresh += 1
+                new_by_project[r["_proj_dir"]].append({
+                    "ts": r.get("ts"), "session": r.get("session"),
+                    "prompt": r.get("prompt"), "key": key, "mass": mass,
+                    "origin": f["origin"], "project": r.get("project"),
+                    "ver": VERDICT_VERSION,
+                })
+            elif have is not None:
+                # Transcript gone and the definition has moved on. Using the old
+                # mass beats dropping the sample, but it must be visible.
+                mass = have.get("mass", 0)
+                stale += 1
+            else:
+                unmatched += 1
+                continue
             inj[key] += 1
-            ok, _ = used(disc.get(key, set()), set(), blob)
+            ok = mass >= MIN_MATCH_CHARS
             if ok:
                 use[key] += 1
             o = f["origin"] if f["origin"] == r.get("project") else f"{f['origin']} (foreign)"
             by_origin[o][0] += 1
             by_origin[o][1] += 1 if ok else 0
+
+    if not args.no_cache:
+        save_verdicts(new_by_project)
 
     total_inj = sum(inj.values())
     total_use = sum(use.values())
@@ -342,8 +425,11 @@ def main():
         st[r.get("status", "?")] += 1
     print("  " + "  ".join(f"{k}={v}" for k, v in sorted(st.items())))
     if unmatched:
-        print(f"  ({unmatched} injections had no reply in the transcripts — "
-              "compacted or pruned; excluded from utilization)")
+        print(f"  ({unmatched} injections had no reply in the transcripts and no "
+              "frozen verdict — compacted or pruned before this ever ran)")
+    print(f"verdicts   : {fresh} computed now, {cached} from frozen"
+          + (f", {stale} stale (v!={VERDICT_VERSION}, transcript gone)" if stale else "")
+          + ("  [--no-cache: nothing frozen]" if args.no_cache else ""))
 
     print()
     print("-- utilization " + "-" * 57)
