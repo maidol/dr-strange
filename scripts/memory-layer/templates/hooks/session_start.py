@@ -37,18 +37,24 @@ BRIEFING_FACT_CAP = 1000
 
 # L2 write-memory protocol: injected with the briefing so the model
 # automatically persists valuable conclusions without any user action.
-def protocol(slug, plane):
+#
+# Every clause here is load-bearing on the READ side, and a Fact that violates
+# one is not rejected — it is silently unreadable. `path` rather than `key`
+# because that is how the readers (all_facts, project_id) address the Project,
+# and a key can end up shadowed while path stays ours.
+def protocol(slug, plane, path):
     return (
         f"[write-memory protocol] Persist this session's durable conclusions, "
         f"gotchas and decisions into the `{plane}` plane yourself (MCP tools "
         f"cypher / write_nodes / write_edges, plane=\"{plane}\"):\n"
         f"- one `Fact` node each, with an idempotent `external_key` (e.g. "
         f"fact-{slug}-<topic>), a `kind` you choose (setup-experience / "
-        "decision / gotcha / session-summary), `summary` as a one-line "
-        "conclusion, `detail` for the rest, `created_at` as the current time;\n"
-        f"- linked to the `Project` (key={slug}) with an `ABOUT` edge;\n"
-        "- before the session ends, one `kind:\"session-summary\"` Fact "
-        "recording what of this session is worth keeping."
+        "decision / gotcha), `summary` as a ONE-LINE conclusion (only its "
+        "first ~18 chars reach the briefing), `detail` for the rest, "
+        "`created_at` as the current time;\n"
+        f"- linked with an `ABOUT` edge to the Project matched by "
+        f"`p.path = \"{path}\"` (by path, not key; a Fact unreachable that "
+        "way is invisible)."
     )
 
 
@@ -272,7 +278,7 @@ def main():
 
     # L2: the write-memory protocol — makes the model the value-judge for what
     # deserves persisting, every turn, automatically (no user action needed).
-    proto = protocol(slug, PLANE)
+    proto = protocol(slug, PLANE, proj_dir)
     parts.append(proto)
     ctx = "# dr-strange memory (%s)\n%s" % (slug, "\n\n".join(parts))
     # Split the cost the way it is spent. The protocol is a fixed instruction,
