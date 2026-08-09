@@ -260,7 +260,7 @@ import json
 p = '.claude/settings.local.json'
 d = json.load(open(p))
 d['hooks'] = {
-  "SessionStart": [{"matcher": "startup|resume",
+  "SessionStart": [{"matcher": "startup|resume|compact",
      "hooks": [{"type": "command",
                 "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/session_start.py",
                 "timeout": 15}]}],

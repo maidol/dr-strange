@@ -16,6 +16,9 @@ Design (see scripts/memory-layer/README.md):
     via the MCP tools / per-prompt recall (user_prompt.py), so the constant
     startup cost stays ~one short paragraph no matter how many Facts exist.
   * The .drsg/env file (gitignored) holds DRSG_TOKEN/DRSG_API/DRSG_PLANE.
+  * Runs on `startup|resume|compact`. A compaction drops the injected briefing
+    and protocol out of context while the session continues, so they have to be
+    re-injected; only the node bookkeeping differs (see `source == "compact"`).
 """
 import json
 import os
@@ -212,19 +215,32 @@ def main():
             pid = created.get("id")
         except Exception as e:
             print(f"[drsg-memory] project create failed: {e}", file=sys.stderr)
-    try:
-        rpc("node.create", {"plane": PLANE, "key": sid, "labels": ["Session"],
-            "properties": {"started_at": ts,
-                           "source": data.get("source", "startup"),
-                           "cwd": data.get("cwd", ""),
-                           "project": slug}}, token)
-        # Link by id (NodeRef is untagged: a number is an id, a string a key).
-        # A dangling key makes edge.create fail outright — the session record
-        # would be lost for exactly as long as the key stayed broken.
-        rpc("edge.create", {"plane": PLANE, "src": sid, "dst": pid,
-                            "type": "BELONGS_TO"}, token)
-    except Exception as e:
-        print(f"[drsg-memory] record failed: {e}", file=sys.stderr)
+    source = data.get("source", "startup")
+    if source == "compact":
+        # A compaction keeps the SAME session_id, so the Session node and its
+        # BELONGS_TO edge already exist — creating again would only collide.
+        # We still run (matcher includes `compact`) because the point of this
+        # hook on a compaction is re-injecting the briefing and the protocol,
+        # which the compaction summary drops. Stamp the event and move on.
+        try:
+            rpc("node.update", {"plane": PLANE, "key": sid,
+                                "set": {"compacted_at": ts}}, token)
+        except Exception as e:
+            print(f"[drsg-memory] compact stamp failed: {e}", file=sys.stderr)
+    else:
+        try:
+            rpc("node.create", {"plane": PLANE, "key": sid, "labels": ["Session"],
+                "properties": {"started_at": ts,
+                               "source": source,
+                               "cwd": data.get("cwd", ""),
+                               "project": slug}}, token)
+            # Link by id (NodeRef is untagged: a number is an id, a string a key).
+            # A dangling key makes edge.create fail outright — the session record
+            # would be lost for exactly as long as the key stayed broken.
+            rpc("edge.create", {"plane": PLANE, "src": sid, "dst": pid,
+                                "type": "BELONGS_TO"}, token)
+        except Exception as e:
+            print(f"[drsg-memory] record failed: {e}", file=sys.stderr)
 
     # 2. Inject: the compressed briefing + recent sessions (NOT full Facts).
     parts = []
@@ -262,8 +278,10 @@ def main():
     # Split the cost the way it is spent. The protocol is a fixed instruction,
     # not memory: counted together with the briefing it hides that most of the
     # startup budget buys no recall at all.
+    # `source` distinguishes the startup injection from a re-injection after a
+    # compaction — without it one session's two briefing lines are unreadable.
     telemetry(proj_dir, {"event": "briefing", "session": sid, "project": slug,
-                         "facts": n_facts,
+                         "source": source, "facts": n_facts,
                          "brief_chars": len(brief), "proto_chars": len(proto),
                          "total_chars": len(ctx),
                          "ms": int((time.time() - ts_start) * 1000)})
