@@ -27,12 +27,18 @@ any Claude Code project                one shared daemon (~/.drsg-memory/)
   several agents — or several editors — can read and write one graph at once.
 - **Separated, not mixed.** Each project is a `Project` node; Facts hang off it
   with `ABOUT` edges. Recall filters on the project's `path`.
-- **Three ways in.** L1: structural facts the hooks mine from the transcript.
-  L2: conclusions the model writes itself, following a protocol injected at
-  session start. L3: LLM distillation of the transcript tail (optional).
+- **Three ways in.** L1: structural facts the hooks mine from the transcript —
+  files touched, commands run, tool outcomes. L2: conclusions the model writes
+  itself, following a protocol injected at session start; this is where the
+  value is, and it is *only* a prompt — nothing enforces or verifies it. L3:
+  LLM distillation of the transcript tail (optional, off by default).
 - **Two ways out.** SessionStart injects a compressed briefing for this
   project; UserPromptSubmit recalls Facts matching what you just typed, across
   *all* projects, labelled with where they came from.
+- **A compaction re-injects.** SessionStart also runs on `compact`, because a
+  compaction drops the briefing and the protocol out of context while the
+  session keeps going. That path stamps the existing Session node instead of
+  creating a second one.
 
 ## Prerequisites
 

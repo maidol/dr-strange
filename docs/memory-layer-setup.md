@@ -10,7 +10,7 @@
    Claude Code 会话 ─┤  settings.local.json ── SessionStart/End    │
         │           │     │                    hooks  ↓  curl      │
         │ MCP tools │     └── session_start.py / session_end.py ──┤
-        │(13 个工具)│                    │                          │
+        │(15 个工具)│                    │                          │
         ▼           │                    ▼                          │
   /mcp (Streamable  │             POST /rpc (JSON-RPC)              │
   HTTP)             │                    │                          │
@@ -19,6 +19,8 @@
                     │        持有 ~/.drsg-memory/memory.drsg 库     │
                     └─────────────────────────────────────────────┘
 ```
+
+> 图里只画了两个 hook,实际是 4 个:`session_start.py`(SessionStart)、`user_prompt.py`(UserPromptSubmit)、`session_end.py`(SessionEnd),外加由 session_end 派生的 `l3_digest.py`(已关停,见 §3.8)。
 
 ### 三条铁律(来自代码)
 
@@ -99,7 +101,7 @@ claude mcp add --scope local drsg --transport http http://127.0.0.1:7700/mcp \
 
 - **⚠️ 写入位置**:`--scope local` 实际写入 `~/.claude.json` 的 `projects["<本项目>"]` 条目(**不是** `.claude/settings.local.json`)。仍是项目级生效,token 在 home 目录、不进 git。
 - 验证:`claude mcp list` → `drsg: http://127.0.0.1:7700/mcp (HTTP) - ✔ Connected`。
-- **改完必须重启 Claude 会话**才能看到 13 个工具。
+- **改完必须重启 Claude 会话**才能看到 15 个工具。
 
 #### 3.5.1 MCP 工具如何起作用
 
@@ -113,7 +115,7 @@ Claude Code 会话(模型)
    │ ① 会话启动时,客户端读 ~/.claude.json 的 project 条目
    ▼
   MCP 客户端 ── Streamable HTTP (POST http://127.0.0.1:7700/mcp) ──► drsg serve
-   │ ② initialize 握手 → tools/list → 拿到 13 个工具名 + 描述
+   │ ② initialize 握手 → tools/list → 拿到 15 个工具名 + 描述
    │ ③ 模型想读写记忆 → tools/call {name:"cypher", args:{...}}
    ▼
   mcp_auth 中间件(auth.rs: Write 级鉴权,Bearer token)
@@ -140,7 +142,7 @@ Claude Code 会话(模型)
 
 两条通道打同一个 `Database`(共享 serve 进程持有),数据互通:session_start 注入的记忆就是模型后来用 MCP 查到的内容。
 
-**13 个工具怎么用**:读 `list_planes`/`describe_plane`(先摸 schema)→ `cypher`(结构化查询)→ `search`/`hybrid`(向量+BM25+图近邻)→ `get_node`/`traverse`;写 `write_nodes`/`write_edges`(幂等)或 `cypher` 的 `MERGE`/`SET`;分析 `algo`(pagerank/components/shortest_path/louvain);AI 增强 `digest`(文档→实体关系,`apply:false` 先审再落)、`ask`(自然语言问图)。
+**15 个工具怎么用**:读 `list_planes`/`describe_plane`(先摸 schema)→ `cypher`(结构化查询)→ `search`/`hybrid`(向量+BM25+图近邻)→ `get_node`/`traverse`;写 `write_nodes`/`write_edges`(幂等)或 `cypher` 的 `MERGE`/`SET`;分析 `algo`(pagerank/components/shortest_path/louvain);AI 增强 `digest`(文档→实体关系,`apply:false` 先审再落)、`ask`(自然语言问图)。
 
 #### 3.5.2 在交互终端使用
 
@@ -185,10 +187,11 @@ Claude Code 会话(模型)
 
 - stdout **必须只输出一个 JSON**(SessionStart exit 0 的 stdout 会注入上下文,坏了会打断会话)。
 - 失败一律软降级:服务没起就只输出空 hook output,不阻塞会话。
-- 数据模型:`Project`(key=目录名,幂等)←`BELONGS_TO`←`Session`(key=session_id);`Project`←`ABOUT`←`Fact`。
-- 注入内容:`# dr-strange 记忆(<slug>)` + 最近会话 + 最近 Fact。
+- 数据模型:`Project`←`BELONGS_TO`←`Session`(key=`session_id`);`Project`←`ABOUT`←`Fact`。Project 建节点时带 key=目录名,但**存在性一律按 `path` 属性判定**——key 曾被蒸馏写出的同名节点遮蔽过,详见 §3.6.3。
+- 触发时机:`startup|resume|compact`。compact 保持同一个 `session_id`,所以那一路**不重建** Session 节点,只补 `compacted_at`;之所以仍要跑,是因为压缩会把注入的简报和协议挤出上下文,必须重注入。
+- 注入内容:`# dr-strange 记忆(<slug>)` = 压缩简报 + 写记忆协议(§3.6.3)。「最近会话」那一段只在 `Session.summary` 有值时出现——**目前没有任何代码写这个属性**,所以实际不出现。
 
-`.claude/hooks/session_end.py` — 盖 `ended_at`。**务必快**:SessionEnd hooks 共享 1.5s 预算(settings 里配 `timeout` 可抬高)。
+`.claude/hooks/session_end.py` — 盖 `ended_at` + 挖结构事实。**务必快**:SessionEnd hooks 共享 1.5s 预算(settings 里配 `timeout` 可抬高)。
 
 ```bash
 chmod +x .claude/hooks/*.py
@@ -200,46 +203,59 @@ chmod +x .claude/hooks/*.py
 
 | 方向 | 内容 | 关键点 |
 |---|---|---|
-| 写 | `Project` 节点(key=目录名) | 幂等,已存在则跳过 |
-| 写 | `Session` 节点(key=`session_id`) | `started_at` / `source` / `cwd` / `project` |
-| 写 | `BELONGS_TO` 边:Session ─► Project | |
-| 查 | 该项目**最近 3 个会话**(按 `started_at` 倒序) | `LIMIT 3`,`WHERE key(p)=$proj` |
+| 写 | `Project` 节点(key=目录名) | 幂等;**已存在与否按 `p.path` 判定**,不看 key |
+| 写 | `Session` 节点(key=`session_id`) | `started_at` / `source` / `cwd` / `project`;compact 时改为只补 `compacted_at` |
+| 写 | `BELONGS_TO` 边:Session ─► Project | 按 **id** 连(NodeRef 无 tag:数字=id,字符串=key) |
+| 查 | 该项目**最近 3 个会话**(按 `started_at` 倒序) | `LIMIT 3`,`WHERE p.path = $path` |
 | 查/建 | 全部 Fact → 聚合 `Project.briefing` | Fact 数变才重建(缓存) |
-| 注入 | 简报 + 最近会话 + **【写记忆协议】** | 让模型自动写有价值记忆 |
+| 注入 | 简报 + **【写记忆协议】** | 让模型自动写有价值记忆,见 §3.6.3 |
 
 查询结果打包成 `additionalContext` 注入对话开头(会话顶部那段 `# dr-strange 记忆(...)`)。失败一律软降级:服务没起就只输出空 hook output,不阻塞会话。
 
-**session_end.py(会话结束时)** —— 写 1 样 + 挖 2 样(L1 结构事实):
+**session_end.py(会话结束时)** —— 写 1 样 + 挖 3 类(L1 结构事实):
 
 | 方向 | 内容 | 关键点 |
 |---|---|---|
 | 写 | 给本次会话 `Session` 补 `ended_at` | `node.update` + `set` |
 | 挖 | `files_touched`(Read/Write/Edit 过的文件×次数) | 读 `transcript_path`,流式扫描 |
 | 挖 | `commands_run`(Bash 命令×次数) | 正则清洗,前几个 |
+| 挖 | `tool_calls` / `tool_errors` / `tool_rejected` / `tool_errors_top` | 遥测,不进简报;见下 |
+
+**为什么工具埋点单列**:它是目前唯一客观的「这次会话干得怎么样」代理指标,用于回答「召回的记忆到底有没有让工作变好」(见 [`memory-layer-observability.md`](memory-layer-observability.md))。三个坑:
+
+- `tool_result` 块在 transcript 里 **type 是 `user` 而不是 `assistant`**(协议把工具结果算作用户那一轮),只扫 assistant 会一条都挖不到。
+- `tool_result` 只带 `tool_use_id`,**不带工具名**,要在同一趟扫描里自建 `id → name` 映射才能归因。
+- `is_error: true` **不等于失败**——用户拒绝或中断工具调用也是这个标记。所以拒绝单独计入 `tool_rejected`,不污染 `tool_errors`。
+
+只存原始计数、不存比率,是为了让「什么算失败」这个定义以后还能改;按工具拆分是因为一次模型服务商故障就能贡献几十个错误,不拆开会把指标沉掉。
 
 **务必快**:SessionEnd hooks 共享 1.5s 预算(settings 配 `timeout` 可抬到上限 60s)。一次读取 + 一次 RPC,`MAX_LINES=4000` 封顶,挖掘 best-effort、失败无害。
 
 **为什么会话可能没有 `ended_at`**:只有真正跑到 session_end 的会话才盖上。若只跑了 start(如 crash、测试),Session 节点存在但 `ended_at` 缺失——这在会话清单里表现为「进行中/未收尾」,不是 bug。
 
-#### 3.6.2 记忆加载层级:简报(L1)+ 按需召回(L2)
+#### 3.6.2 记忆的**读**:常驻简报 + 按需召回
 
-为了让记忆价值体现、又**不占过大上下文**,加载分两层,互不冲突:
+> ⚠️ **别和 L1/L2/L3 混淆**。L1/L2/L3 指的是**写入**的三条通道(§3.6.3、§7 第 10 条);这里讲的是**读出**的两条通道。两套编号各管一个方向,本节不使用 L 编号。
 
-**L1 — SessionStart 注入压缩简报(常驻成本 ~1 段话,恒定)**
+为了让记忆价值体现、又**不占过大上下文**,读出分两条,互不冲突:
+
+**① 常驻简报 — SessionStart 注入(成本 ~1 段话,恒定)**
 - 不再是「逐条注入最近 Fact」,而是把项目全部 Fact 聚合成 `Project.briefing`(按 `kind` 分组,每条压缩成 ≤18 字标签)。
 - 缓存:`Project.briefing_count` 记录已聚合的 Fact 数;SessionStart 发现 Fact 数变化才重建,否则复用——**新 Fact 写得越多,简报保持 ~200 tokens**。
 - 注入内容:简报 + 最近 3 会话。
 
-**L2 — UserPromptSubmit 按当前任务召回(按需,命中才注入,≤3 条)**
+**② 按需召回 — UserPromptSubmit 按当前任务召回(命中才注入,≤3 条)**
 - 新增 `.claude/hooks/user_prompt.py`,在**每次用户输入**时拿 prompt 去召回相关 Fact,只注入最相关的 3 条。
-- **跨项目召回**:recall 查询**不加** `WHERE key(p)=$proj` 过滤,覆盖**所有项目**的 Fact(同一 daemon/同一 plane)。靠 n-gram+IDF 打分天然按 prompt 定向——在 A 项目问的问题若恰与 B 项目的经验相关,会自动带过来;无关项目的 Fact 得分 ~0 不会混入。例:在 data-safe 问「L3 key 鉴权」自动召回 dr-strange 的 `exp-l3-key-server-side`。L1 简报仍按项目隔离(常驻预算)。
+- **跨项目召回**:recall 查询**不加** `WHERE key(p)=$proj` 过滤,覆盖**所有项目**的 Fact(同一 daemon/同一 plane)。靠 n-gram+IDF 打分天然按 prompt 定向——在 A 项目问的问题若恰与 B 项目的经验相关,会自动带过来;无关项目的 Fact 得分 ~0 不会混入。例:在 data-safe 问「L3 key 鉴权」自动召回 dr-strange 的 `exp-l3-key-server-side`。简报仍按项目隔离(常驻预算)。
 - 匹配方式:**字符 n-gram 反向匹配 + IDF 加权**。为什么不是 BM25/`plane.find`:
   - dr-strange 的 BM25 分析器**只支持英文**(`Language::English`,Snowball 分词);中文整句被当一个 token,`plane.hybrid` keyword 通道查「构建」返回 **0 命中**(实测)。
   - `plane.find` 是 substring 扫描,要求 **query 是文档子串**——整句中文 prompt 命中不到。
   - 替代:脚本读一次全部项目 Facts,把 prompt 的 2–4 字片段拿去打分,罕见片段(如「环境变量」)权重大,常见填充词(「这个」「问题」)分散低贡献。**对中文/英文/混合都有效、零依赖**。
 - 无关输入 → 空输出不打扰;服务挂 → 空输出不阻塞。
 
-**上下文预算**:L1 恒定 ~200 tokens;L2 只在命中时注入 ≤3 条(每条 ~60 字)。核心靠「加载准」而非「加载少」——记忆量增长不影响常驻成本,明细永远可用 MCP 工具按需深挖。
+**上下文预算**:简报恒定 ~200 tokens;召回只在命中时注入 ≤3 条(每条 ~60 字)。核心靠「加载准」而非「加载少」——记忆量增长不影响常驻成本,明细永远可用 MCP 工具按需深挖。
+
+> 实测提醒:常驻成本里**写记忆协议(§3.6.3)比简报还贵**——本项目 26 条 Fact 时,简报 536 字符 vs 协议 639 字符。当初把两者分开计量(`recall.jsonl` 的 `brief_chars` / `proto_chars`)就是为了看见这件事。
 
 **settings 注册**(在 3.7 的 `d['hooks']` 里再加):
 
@@ -250,6 +266,71 @@ d['hooks']['UserPromptSubmit'] = [
               "timeout": 10}]}
 ]
 ```
+
+#### 3.6.3 记忆的**写**:三条通道(L1/L2/L3)与写记忆协议
+
+| 通道 | 谁在写 | 什么时候 | 写什么 | 现状 |
+|---|---|---|---|---|
+| **L1** 结构事实 | `session_end.py`(脚本) | 会话结束 | `Session` 节点上的 `files_touched` / `commands_run` / `tool_*` | 常开 |
+| **L2** 语义结论 | **模型自己**(按协议) | 会话进行中,任意时刻 | `Fact` 节点 + `ABOUT` 边 | 常开,**记忆的全部价值在这** |
+| **L3** LLM 蒸馏 | `l3_digest.py` → `digest.run` | 会话结束(detached 后台) | 从 transcript 尾部抽出的实体/关系 | **本项目已关停**,见文末 |
+
+三者的差别是**谁在做价值判断**:L1 不做判断(只统计),L3 事后让一个小模型判断,L2 让当场的模型判断。
+
+##### L2 写记忆协议:它就是一段提示词,没有别的
+
+全部实现是 `session_start.py` 里一个返回字符串的纯函数 `protocol(slug, plane, path)`,拼进 `additionalContext`:
+
+```python
+ctx = "# dr-strange memory (%s)\n%s" % (slug, "\n\n".join(parts))  # parts = [简报, 协议]
+hook_out(additionalContext=ctx)      # stdout 一个 JSON;SessionStart exit 0 时被注入上下文
+```
+
+所以**没有任何魔法**:效果等同于你自己在会话第一条消息里粘了这段话。本项目实际注入的字面文本(639 字符):
+
+```
+[write-memory protocol] Persist this session's durable conclusions, gotchas and
+decisions into the `memory` plane yourself (MCP tools cypher / write_nodes /
+write_edges, plane="memory"):
+- one `Fact` node each, with an idempotent `external_key` (e.g. fact-dr-strange-<topic>),
+  a `kind` you choose (setup-experience / decision / gotcha), `summary` as a ONE-LINE
+  conclusion (only its first ~18 chars reach the briefing), `detail` for the rest,
+  `created_at` as the current time;
+- linked with an `ABOUT` edge to the Project matched by
+  `p.path = "/data/projects/maidol/dr-strange"` (by path, not key; a Fact unreachable
+  that way is invisible).
+```
+
+##### 每条约束都在服务读路径
+
+这段话看着像随手写的 schema 说明,其实每一项都对应读侧一行代码。**写歪了不会报错,只会静默地读不出来**:
+
+| 协议要求 | 读侧靠它的地方 | 写错的后果 |
+|---|---|---|
+| `external_key` 幂等(`fact-<slug>-<topic>`) | `node.create` 强制 key 唯一 | 用裸 `CREATE` 重跑同一结论 → 撞 key 报 `-32000`,整次写入丢失 |
+| `kind` | `build_briefing()` 按 kind 分组,一组一行 | 不填 → 落进 `general` 大杂烩,简报可读性下降 |
+| `summary` 是**一行结论** | `short_tag()` 取 `→` 右侧、第一句、**截断到 18 字符** | 写成一整段 → 简报里只剩开头 18 字,等于噪声 |
+| `created_at` | `all_facts()` 的 `ORDER BY f.created_at DESC` | 不填 → 排序位置不确定 |
+| **`ABOUT` 边指向 Project** | `MATCH (p:Project)<-[:ABOUT]-(f:Fact) WHERE p.path = $path` | **不连边 = 节点存在但永久不可见**,简报和召回都查不到 |
+
+坐标用 `p.path` 而不是 key,是因为读侧就是这么找 Project 的:`digest.write` 不校验 key 唯一性(`node.create` 会拒),蒸馏可以写出同名节点把真节点遮住,而删掉影子也不把 key 还回来。这事真发生过,当时整个简报被打没了。协议一度还写着 `key=<slug>`,和读侧不一致——**模型会把边连到影子上,写进去的 Fact 从此隐形且不报错**。已改成 path。
+
+##### 闭环
+
+```
+模型判断「值得留」 → write_nodes(Fact) + write_edges(ABOUT)
+                       ↓ 落进 memory plane
+下次 SessionStart:  all_facts(按 p.path) → build_briefing() 按 kind 压缩
+                       ↓ 存进 Project.briefing(Fact 数没变就复用,不重算)
+                    注入简报
+每次用户输入:      user_prompt.py n-gram+IDF 打分 → 注入 ≤3 条相关 Fact
+```
+
+##### 它的真实弱点(别指望它是可靠机制)
+
+- **零强制、零校验**。没有任何代码检查「这次会话写了 Fact 没有」。`session_end.py` 只盖 `ended_at` 和遥测,不看记忆。模型不写就是没有,而且不会有任何地方报错。
+- **成本固定,收益不固定**。协议每次会话花 639 字符,不管这次会话有没有值得记的东西。
+- **压缩会吃掉它**。`/compact` 之后注入的协议和简报会掉出上下文——所以 SessionStart 的 matcher 必须包含 `compact`(§3.7),否则长会话越到后面越不写记忆。
 
 ### 3.7 合并 hooks 到 settings
 
@@ -273,6 +354,8 @@ json.dump(d, open(p, 'w'), ensure_ascii=False, indent=2)
 ```
 
 ### 3.8 L3 LLM 蒸馏(走自建 ccr 代理)
+
+> **状态:本项目已于 2026-08-08 关停**(`.drsg/env` 里 `DRSG_L3_CHAT=` 置空,原值注释保留在旁边;数据没删)。原因是**没有任何代码路径能读到它写的东西**——召回只查 `(p:Project)<-[:ABOUT]-(f:Fact)`,而 L3 写的是自由实体,不挂 `ABOUT` 边。当时 plane 里 335 个节点有 286 个来自 L3,一次没被读过,每次会话结束还要烧 ~4 次 LLM 调用 / ~8k tokens。详见 [`memory-layer-observability.md`](memory-layer-observability.md)。本节保留作为可重新启用的完整记录:把注释掉的那行移回去即可。
 
 会话结束时把 transcript 尾部经 `digest.run` + `digest.write` 蒸馏成实体写回 memory plane。**detached 后台进程**运行,不阻塞会话结束。
 
@@ -301,7 +384,7 @@ key **值**只在**一处**:**全局 `~/.drsg-memory/env`**(install.sh 写入;`s
 
 | 标签 | key | 含义 |
 |---|---|---|
-| `Project` | 项目目录名 | 每仓库一个 |
+| `Project` | 项目目录名(**定位一律用 `path` 属性**,见 §3.6.3) | 每仓库一个 |
 | `Session` | `session_id` | 每次 Claude Code 会话 |
 | `Fact` | 自定义 | 跨会话值得保留的结论 |
 
@@ -316,6 +399,8 @@ curl -sf -X POST http://127.0.0.1:7700/rpc -H "Authorization: Bearer $DRSG_TOKEN
 curl -sf -X POST http://127.0.0.1:7700/rpc -H "Authorization: Bearer $DRSG_TOKEN" -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"edge.create","params":{"plane":"memory","src":"<fact-key>","dst":"dr-strange","type":"ABOUT"}}'
 ```
+
+> `dst` 这里给的是 Project 的 **key**(NodeRef 无 tag:字符串按 key 解析,数字按 id)。手敲一次没问题,但**脚本里别这么写**——key 可能被同名节点遮蔽,先 `MATCH (p:Project) WHERE p.path = "<绝对路径>"` 拿到 id 再连边才是可靠做法(§3.6.3)。
 
 ## 5. 端到端验证清单
 
@@ -333,6 +418,11 @@ echo '{"session_id":"t1","source":"startup","cwd":"<pwd>"}' | \
 # 5) SessionEnd
 echo '{"session_id":"t1","reason":"clear"}' | CLAUDE_PROJECT_DIR=<pwd> .claude/hooks/session_end.py
 #    → node.get 该 session 应含 ended_at
+# 6) compact 重注入(拿一个已存在的 session_id 跑)
+echo '{"session_id":"<真实 session_id>","source":"compact","cwd":"<pwd>"}' | \
+  CLAUDE_PROJECT_DIR=<pwd> .claude/hooks/session_start.py
+#    → 仍输出 additionalContext;该 Session 节点多出 compacted_at,且**不会**多出第二个节点
+#    → .drsg/recall.jsonl 末行 "source":"compact"
 ```
 
 ## 6. 排障
@@ -357,9 +447,10 @@ echo '{"session_id":"t1","reason":"clear"}' | CLAUDE_PROJECT_DIR=<pwd> .claude/h
 7. 写 Fact 用 `node.create`/`edge.create`(幂等),别用裸 `CREATE`(key 冲突 -32000)。
 8. SessionEnd hooks 共享 1.5s 预算 → 单次 RPC、2s 超时、失败无害。
 9. BM25 分析器只支持英文,中文记忆召回用**字符 n-gram 反向匹配 + IDF**(见 3.6.2)。
-10. 「写有价值记忆」分三层:L1 结构事实(脚本挖 transcript,无需 key)、L2 语义结论(模型经写记忆协议自动写)、L3 LLM 蒸馏(需 provider key)。
-11. `digest.run` 的 `chat` 原本只认 preset 名,已改支持 base URL(连 ccr);新增 `key_env` 指定环境变量名,key 永不过 params。
-12. DeepSeek-v4-flash 是 reasoning 模型,`reasoning_content` 填满 8192 输出上限 → 报 truncate、耗时 300s+。已在 `complete()` 加 `reasoning_effort:"none"`,digest 从 346s 降到 ~11s。
+10. **写**分三层:L1 结构事实(脚本挖 transcript,无需 key)、L2 语义结论(模型经写记忆协议自动写)、L3 LLM 蒸馏(需 provider key,已关停)。**读**分两条:常驻简报 + 按需召回。L1/L2/L3 只用于写这一侧,读侧不用 L 编号(§3.6.2 / §3.6.3)。
+11. L2 协议里每一条格式约束都对应读侧一行代码,**写歪了不报错、只是读不出来**——尤其是漏了 `ABOUT` 边等于永久隐形(§3.6.3)。
+12. `digest.run` 的 `chat` 原本只认 preset 名,已改支持 base URL(连 ccr);新增 `key_env` 指定环境变量名,key 永不过 params。
+13. DeepSeek-v4-flash 是 reasoning 模型,`reasoning_content` 填满 8192 输出上限 → 报 truncate、耗时 300s+。已在 `complete()` 加 `reasoning_effort:"none"`,digest 从 346s 降到 ~11s。
 
 ## 8. 开源方案对比与裁决(2026-08)
 

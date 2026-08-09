@@ -125,6 +125,42 @@ data-safe  dr-strange  wps  zeus     # memory plane 里 4 个 Project 节点
 - **test 记忆**：删 1 条探针；另一条 `fact-data-safe-mutate-with-previous-bug`
   是真见解、kind 标错，改成 `gotcha` 而非删除。
 
+### 注入链路的两个洞（2026-08-09）
+
+盘点时只量了注入**花多少**，没量它**还在不在**。两个都是静默失效：
+
+- **压缩会把注入吃掉**（`ca61c3a`）。SessionStart 的 matcher 原是 `startup|resume`，
+  不含 `compact`。一次 `/compact` 之后简报和写记忆协议就掉出上下文，会话继续跑但
+  记忆层实际已经停了——越长的会话越受影响，而长会话正是最需要它的。matcher 加上
+  `compact`；那一路不能重建 Session 节点（session_id 不变，`node.create` 会撞 key），
+  改成只补 `compacted_at`。遥测加 `source` 字段，否则同一会话两条 briefing 记录分不清。
+- **协议指的坐标和读侧不是同一个**（`6bc5767`）。协议让模型把 Fact 连到
+  `Project (key=<slug>)`，而 `project_id()` / `all_facts()` 一律按 `p.path` 查——那次
+  key 被同名节点遮蔽的事故之后就改了，协议文本没跟着改。后果不是报错，是**边连到影子
+  节点上、Fact 永久隐形**。协议改成 `p.path = "<绝对路径>"`。顺带删掉每会话一条
+  `session-summary` Fact 的要求：没有任何代码读它（简报里的 Recent sessions 读的是
+  `Session.summary`，另一个属性，也没人写）。
+
+协议因此从 620 → 639 字符（绝对路径比 `key=dr-strange` 长）。上面 1128 字符那次盘点
+是改动前的数，不回填。
+
+`tool_*` 埋点**尚未在真实会话里验证过**——从加上到现在还没有会话结束过。第一个
+带 `tool_calls` 的 Session 节点出现时才算这条通了。
+
+### 文档同步（2026-08-09）
+
+`memory-layer-setup.md` 落后代码好几处，一并修了，并补上最大的一块空白:
+
+- 新增 §3.6.3「记忆的**写**」——三条通道对照 + **写记忆协议详解**:它只是一段提示词、
+  每条格式约束对应读侧哪行代码、写歪了为什么不报错只是读不出来、以及它的弱点
+  (零强制零校验)。此前全仓库关于协议只有表格里的一格。
+- **L1/L2 命名撞车**:§3.6.2 用 L1/L2 指「读」的两层,§7 第 10 条用 L1/L2/L3 指
+  「写」的三层,同一份文档同名不同义。L 编号现在只用于写这一侧,读侧改用 ①/②。
+- 修过期描述:`WHERE key(p)=$proj` → `p.path`、session_end「挖 2 样」→ 挖 3 类、
+  注入内容不再是「最近 Fact」而是简报、Project 存在性按 path 判定、compact 那一路。
+- L3 关停状态补进 §3.8 和 `l3-llm-distillation-setup.md` 抬头(两份文档此前仍把它
+  当活的);`CLAUDE.md` 记忆层小节同步。
+
 ## 待办 — 四个阶段，按触发条件推进（不按日期）
 
 前置修补已完成(保留期 180 天 + 判定冻结 + 4 个项目),**阶段 1 现在开始积累**。
@@ -201,7 +237,8 @@ python3 scripts/memory-layer/analyze_recall.py --no-cache  # 只在怀疑冻结�
 15 条从未被召回过，多数是措辞对不上真实提问（`exp-cc-env-var-broken` 这种明显有用的
 也在里面），按阶段 1 的安排到样本量够时一并处理。
 
-`tool_*` 属性从下个会话结束时开始落到 Session 节点。
+`tool_*` 属性从下个会话结束时开始落到 Session 节点(截至 2026-08-09 仍为 0 个,
+还没有会话结束过)。
 
 ## 仓库状态
 

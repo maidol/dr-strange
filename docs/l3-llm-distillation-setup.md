@@ -2,6 +2,8 @@
 
 > 记录 2026-08-04 在 `/data/projects/maidol/dr-strange` 完成。目标:让 dr-strange 记忆层的 **L3 层**工作——会话结束时,后台把 transcript 经 LLM 蒸馏成实体/关系,自动写入 memory plane。走的是**自建 ccr 代理**(OpenAI 兼容端点)+ DeepSeek 模型,**无需额外申请 key**。
 
+> ⚠️ **L3 已于 2026-08-08 在本项目关停**:它写的实体不挂 `ABOUT` 边,召回查不到,286/335 个节点一次没被读过。本文保留为完整的可复现记录(改回 `.drsg/env` 的 `DRSG_L3_CHAT` 即可重新启用),但**重新启用前应先解决「写进去的东西怎么被读到」**,否则只是重新开始烧 token。见 [`memory-layer-observability.md`](memory-layer-observability.md)。
+
 ## 1. 目标与架构
 
 记忆层三层(见 `memory-layer-setup.md` §3.6.2):
