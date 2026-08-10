@@ -1379,6 +1379,14 @@ pub struct DigestRun {
     model: Option<String>,
     #[serde(default)]
     embed_model: Option<String>,
+    /// Name of the environment variable the server reads the chat key from. A
+    /// preset defaults to its own; a base URL has none, so name it here when
+    /// the endpoint needs a key. The key never travels in params.
+    #[serde(default)]
+    key_env: Option<String>,
+    /// The same, for the embedding provider.
+    #[serde(default)]
+    embed_key_env: Option<String>,
     /// `reasoning_effort` to send on the extraction chat calls (e.g. `"none"`
     /// to disable reasoning on models that would otherwise spend the output
     /// budget on thinking tokens and truncate the extraction JSON). Unset ⇒
@@ -1419,9 +1427,14 @@ pub fn digest_run(ctx: &Ctx<'_>, p: Value) -> Result<Value, RpcError> {
     let embed = !req.no_embed;
     let link = req.link.unwrap_or(true);
 
-    let chat =
-        dr_strange_llm::build_provider(chat_provider, req.model.as_deref(), None, None, false)
-            .map_err(llm_err)?;
+    let chat = dr_strange_llm::build_provider(
+        chat_provider,
+        req.model.as_deref(),
+        None,
+        req.key_env.as_deref(),
+        false,
+    )
+    .map_err(llm_err)?;
     // Opt-in only: unset leaves the request body byte-for-byte what it was, so
     // providers with no such field are unaffected. Embedding calls never carry
     // it — there is nothing to reason about.
@@ -1434,7 +1447,7 @@ pub fn digest_run(ctx: &Ctx<'_>, p: Value) -> Result<Value, RpcError> {
         embed_provider,
         req.embed_model.as_deref(),
         None,
-        None,
+        req.embed_key_env.as_deref(),
         embed,
     )
     .map_err(llm_err)?;
