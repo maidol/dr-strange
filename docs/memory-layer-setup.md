@@ -255,7 +255,7 @@ chmod +x .claude/hooks/*.py
 
 **上下文预算**:简报恒定 ~200 tokens;召回只在命中时注入 ≤3 条(每条 ~60 字)。核心靠「加载准」而非「加载少」——记忆量增长不影响常驻成本,明细永远可用 MCP 工具按需深挖。
 
-> 实测提醒:常驻成本里**写记忆协议(§3.6.3)比简报还贵**——本项目 26 条 Fact 时,简报 536 字符 vs 协议 639 字符。当初把两者分开计量(`recall.jsonl` 的 `brief_chars` / `proto_chars`)就是为了看见这件事。
+> 实测提醒:常驻成本里**写记忆协议(§3.6.3)比简报还贵**——本项目 29 条 Fact 时,简报 596 字符 vs 协议 809 字符。当初把两者分开计量(`recall.jsonl` 的 `brief_chars` / `proto_chars`)就是为了看见这件事。
 
 **settings 注册**(在 3.7 的 `d['hooks']` 里再加):
 
@@ -286,7 +286,7 @@ ctx = "# dr-strange memory (%s)\n%s" % (slug, "\n\n".join(parts))  # parts = [�
 hook_out(additionalContext=ctx)      # stdout 一个 JSON;SessionStart exit 0 时被注入上下文
 ```
 
-所以**没有任何魔法**:效果等同于你自己在会话第一条消息里粘了这段话。本项目实际注入的字面文本(639 字符):
+所以**没有任何魔法**:效果等同于你自己在会话第一条消息里粘了这段话。本项目实际注入的字面文本(809 字符):
 
 ```
 [write-memory protocol] Persist this session's durable conclusions, gotchas and
@@ -295,10 +295,12 @@ write_edges, plane="memory"):
 - one `Fact` node each, with an idempotent `external_key` (e.g. fact-dr-strange-<topic>),
   a `kind` you choose (setup-experience / decision / gotcha), `summary` as a ONE-LINE
   conclusion (only its first ~18 chars reach the briefing), `detail` for the rest,
-  `created_at` as the current time;
+  `created_at` as the current Unix time (integer seconds);
 - linked with an `ABOUT` edge to the Project matched by
   `p.path = "/data/projects/maidol/dr-strange"` (by path, not key; a Fact unreachable
-  that way is invisible).
+  that way is invisible);
+- replacing an older Fact: set `supersedes`=<old key> on the new one and
+  `valid_to`=<Unix time> on the old one; never edit or delete the old Fact.
 ```
 
 ##### 每条约束都在服务读路径
@@ -310,8 +312,11 @@ write_edges, plane="memory"):
 | `external_key` 幂等(`fact-<slug>-<topic>`) | `node.create` 强制 key 唯一 | 用裸 `CREATE` 重跑同一结论 → 撞 key 报 `-32000`,整次写入丢失 |
 | `kind` | `build_briefing()` 按 kind 分组,一组一行 | 不填 → 落进 `general` 大杂烩,简报可读性下降 |
 | `summary` 是**一行结论** | `short_tag()` 取 `→` 右侧、第一句、**截断到 18 字符** | 写成一整段 → 简报里只剩开头 18 字,等于噪声 |
-| `created_at` | `all_facts()` 的 `ORDER BY f.created_at DESC` | 不填 → 排序位置不确定 |
+| `created_at` 是 **epoch 整数** | `all_facts()` 的 `ORDER BY f.created_at DESC` | 不填 → 排序位置不确定;写成 ISO 字符串 → 排序按类型分层(整数一层、字符串另一层),候选池顺序被静默改写 |
 | **`ABOUT` 边指向 Project** | `MATCH (p:Project)<-[:ABOUT]-(f:Fact) WHERE p.path = $path` | **不连边 = 节点存在但永久不可见**,简报和召回都查不到 |
+| `supersedes` / `valid_to` | **暂无读侧**(见下) | 不填 → 新旧两条结论并列在候选池里,读者分不清哪条还成立 |
+
+**`supersedes` / `valid_to` 目前只写不读**(2026-08-10 起)。协议要求模型在结论被取代时,给新 Fact 写 `supersedes=<旧 key>`、给旧 Fact 写 `valid_to=<epoch>`,但召回和简报**还没有过滤它们**。押后的理由不是没做完:读侧改动会重置 `docs/memory-layer-observability.md` 里预登记的阶段 1 基线(触发条件是 `recall.jsonl` 满 30 会话,当前合计约 4 个)。字段现在开始积累,届时读侧一上就有历史数据可用。时间一律 epoch 整数——plane 里现存的 `created_at` 全是整数,而 `Int` 与 `Str` 比较在引擎里**静默求值为假**(`crates/dr-strange-core/src/compute/expr.rs:344-352`),不报错,只是过滤条件恒不命中。
 
 坐标用 `p.path` 而不是 key,是因为读侧就是这么找 Project 的:`digest.write` 不校验 key 唯一性(`node.create` 会拒),蒸馏可以写出同名节点把真节点遮住,而删掉影子也不把 key 还回来。这事真发生过,当时整个简报被打没了。协议一度还写着 `key=<slug>`,和读侧不一致——**模型会把边连到影子上,写进去的 Fact 从此隐形且不报错**。已改成 path。
 
@@ -329,8 +334,52 @@ write_edges, plane="memory"):
 ##### 它的真实弱点(别指望它是可靠机制)
 
 - **零强制、零校验**。没有任何代码检查「这次会话写了 Fact 没有」。`session_end.py` 只盖 `ended_at` 和遥测,不看记忆。模型不写就是没有,而且不会有任何地方报错。
-- **成本固定,收益不固定**。协议每次会话花 639 字符,不管这次会话有没有值得记的东西。
+- **成本固定,收益不固定**。协议每次会话花 809 字符,不管这次会话有没有值得记的东西。
 - **压缩会吃掉它**。`/compact` 之后注入的协议和简报会掉出上下文——所以 SessionStart 的 matcher 必须包含 `compact`(§3.7),否则长会话越到后面越不写记忆。
+
+#### 3.6.4 跨 agent 协调:Event 通道
+
+L1/L2/L3 写的是「学到了什么」,Event 写的是「要另一个 agent 做什么」。两者都住在 memory plane,但**读路径不同,而且是刻意的**:
+
+- Fact 走简报 + 每提示召回——排名制、有损、压到 ~18 字符。适合知识,不适合任务:一条待办如果排名输了,就是永远送不到。
+- Event 走 SessionStart 里一个**独立小块**:有界(≤3 条)、不压缩、关掉即消失。
+
+**数据模型**——收方由 `NOTIFY` 边的目标决定,不做 `to` 属性(图本来就在建模「这是给谁的」,而唯一要问的问题「这个项目还有什么没处理」边能直接回答):
+
+```
+Event {
+  external_key: evt-<收方 slug>-<epoch>-<summary 的 6 位 hash>,
+  kind:         handoff | notice,
+  status:       open | done,
+  summary:      一行「发生了什么」(注入时截 80 字符),
+  ref:          可选,指向 key / 路径 / URL —— 正文不进图,防 token 膨胀,
+  from_project, from_session, created_at(epoch 整数)
+}
+(Event)-[:NOTIFY]->(Project)
+```
+
+**不需要任何新 RPC**:`node.create` / `edge.create` / `plane.cypher` 就够。
+
+**用法**(`scripts/memory-layer/event.py`,配置读 CWD 的 `.drsg/env`,和 hook 同一份):
+
+```bash
+./scripts/memory-layer/event.py post /data/projects/uniin/data-safe "构建脚本改了 CC 路径,回来核一下" --kind handoff
+./scripts/memory-layer/event.py list /data/projects/uniin/data-safe    # 该项目收到的
+./scripts/memory-layer/event.py done evt-data-safe-1786339857-517df9
+```
+
+收方下次会话启动时,注入里会多出一块:
+
+```
+⏳ Open for you (set the Event node's `status` to "done" once handled):
+- [handoff from dr-strange] 构建脚本改了 CC 路径,回来核一下  <evt-data-safe-…>
+```
+
+处理完把该 Event 节点的 `status` 设成 `"done"` 即可(MCP `cypher` 或上面的 `event.py done`)——**关掉后这一块自动消失**,队列为空时零成本。提示语写的是 MCP 而不是脚本路径,因为不是每个安装点都有 `scripts/memory-layer/`,而 MCP 工具是每个会话都有的接口。
+
+读侧实现是 `session_start.py` 的 `open_events()`:查 20 条,在 Python 里按 `status` 过滤取前 3。**不把 `status` 写进 WHERE**,因为「只对模式里第一个变量下一个谓词」是这份代码里所有查询都在用、已知能跑的形状,而这里的量小到不值得去赌引擎行为。遥测多了 `events` / `event_chars` 两个字段,`brief_chars` / `proto_chars` 的语义不动(`analyze_recall.py` 用 `.get(k, 0)` 读,加字段安全)。
+
+> **P0 刻意不做的**:`status` 的 `acked` 中间态、`/ws` 实时推送、以及**把写 Event 的指令塞进 L2 协议**。最后一条尤其克制——协议已经 809 字符、占启动注入一半以上,先用命令行验证真有人用,再考虑让它涨。
 
 ### 3.7 合并 hooks 到 settings
 
@@ -387,6 +436,7 @@ key **值**只在**一处**:**全局 `~/.drsg-memory/env`**(install.sh 写入;`s
 | `Project` | 项目目录名(**定位一律用 `path` 属性**,见 §3.6.3) | 每仓库一个 |
 | `Session` | `session_id` | 每次 Claude Code 会话 |
 | `Fact` | 自定义 | 跨会话值得保留的结论 |
+| `Event` | `evt-<收方 slug>-<epoch>-<hash>` | 跨 agent 待办,`NOTIFY` 到收方 Project(§3.6.4) |
 
 **读**:会话启动自动注入;MCP `cypher` / `search` / `hybrid` / `ask` 查询 `plane:"memory"`。
 
@@ -451,6 +501,9 @@ echo '{"session_id":"<真实 session_id>","source":"compact","cwd":"<pwd>"}' | \
 11. L2 协议里每一条格式约束都对应读侧一行代码,**写歪了不报错、只是读不出来**——尤其是漏了 `ABOUT` 边等于永久隐形(§3.6.3)。
 12. `digest.run` 的 `chat` 原本只认 preset 名,已改支持 base URL(连 ccr);新增 `key_env` 指定环境变量名,key 永不过 params。
 13. DeepSeek-v4-flash 是 reasoning 模型,`reasoning_content` 填满 8192 输出上限 → 报 truncate、耗时 300s+。已在 `complete()` 加 `reasoning_effort:"none"`,digest 从 346s 降到 ~11s。
+14. memory plane 里**时间一律 epoch 整数**。引擎的 `Int` 与 `Str` 比较返回 `None` → 谓词恒假、`ORDER BY` 按类型分层(`compute/expr.rs:344-352`),**不报错**,所以写成 ISO 字符串是一类只能靠读数据发现的静默故障。
+15. 增强读路径前先看 `docs/memory-layer-observability.md` 的阶段闸门。`supersedes` / `valid_to` 现在**只写不读**就是这个原因:读侧一改,预登记的阶段 1 基线样本清零。写侧先上、字段先攒,是绕开这个冲突的办法(§3.6.3)。
+16. **待办不要用 Fact 承载**。Fact 走排名制召回、压到 18 字符,一条待办排名输了就永远送不到。跨 agent 待办走 Event + `NOTIFY` 边 + SessionStart 独立块(§3.6.4)。
 
 ## 8. 开源方案对比与裁决(2026-08)
 
