@@ -446,8 +446,12 @@ impl dr_strange_parser::Embedder for LlmEmbedder {
 /// Build an embedder from a provider preset/URL (`None` if it can't be
 /// configured — e.g. the provider has no embedding model; a text SEARCH then
 /// errors clearly, while MATCH / literal-vector queries still work).
-fn make_embedder(provider: &str) -> Option<LlmEmbedder> {
-    dr_strange_llm::build_provider(provider, None, None, None, true)
+fn make_embedder(
+    provider: &str,
+    key_env: Option<&str>,
+    model: Option<&str>,
+) -> Option<LlmEmbedder> {
+    dr_strange_llm::build_provider(provider, model, None, key_env, true)
         .ok()
         .map(|p| LlmEmbedder(Box::new(p)))
 }
@@ -459,6 +463,15 @@ pub struct CypherReq {
     /// Embedding provider for a text `SEARCH … NEAR "…"` (default `openai`).
     #[serde(default)]
     embed: Option<String>,
+    /// Name of the environment variable the server reads the embedding key
+    /// from. A preset defaults to its own; a base URL has none, so name it
+    /// here when the endpoint needs a key. The key never travels in params.
+    #[serde(default)]
+    embed_key_env: Option<String>,
+    /// Embedding model. A preset supplies its own; a base URL has none, so it
+    /// is required there for a text `SEARCH … NEAR "…"`.
+    #[serde(default)]
+    embed_model: Option<String>,
     /// Values for `$name` placeholders in the query.
     #[serde(default)]
     params: serde_json::Map<String, Value>,
@@ -487,6 +500,8 @@ pub fn plane_cypher(ctx: &Ctx<'_>, p: Value) -> Result<Value, RpcError> {
         &req.plane,
         &req.query,
         req.embed.as_deref().unwrap_or("openai"),
+        req.embed_key_env.as_deref(),
+        req.embed_model.as_deref(),
         &params,
     )
 }
@@ -502,9 +517,11 @@ pub fn cypher_subgraph(
     plane_name: &str,
     query: &str,
     embed_provider: &str,
+    embed_key_env: Option<&str>,
+    embed_model: Option<&str>,
     params: &dr_strange_parser::Params,
 ) -> Result<Value, RpcError> {
-    let embedder = make_embedder(embed_provider);
+    let embedder = make_embedder(embed_provider, embed_key_env, embed_model);
     let stmt = dr_strange_parser::parse_statement_full(
         query,
         embedder
@@ -704,6 +721,11 @@ pub struct Find {
     /// supplies the key. Must match the model the plane was embedded with.
     #[serde(default)]
     provider: Option<String>,
+    /// Name of the environment variable the server reads the provider key
+    /// from. A preset defaults to its own; a base URL has none, so name it
+    /// here when the endpoint needs a key. The key never travels in params.
+    #[serde(default)]
+    key_env: Option<String>,
     #[serde(default)]
     embed_model: Option<String>,
     #[serde(flatten)]
@@ -974,6 +996,11 @@ pub struct Hybrid {
     /// Embedding provider for the vector channel (key from the server env).
     #[serde(default)]
     provider: Option<String>,
+    /// Name of the environment variable the server reads the provider key
+    /// from. A preset defaults to its own; a base URL has none, so name it
+    /// here when the endpoint needs a key. The key never travels in params.
+    #[serde(default)]
+    key_env: Option<String>,
     #[serde(default)]
     embed_model: Option<String>,
 }
@@ -993,9 +1020,14 @@ pub fn plane_hybrid(ctx: &Ctx<'_>, p: Value) -> Result<Value, RpcError> {
     }
     if let Some(prop) = &req.vector_prop {
         let provider = req.provider.as_deref().unwrap_or("openai");
-        let embedder =
-            dr_strange_llm::build_provider(provider, req.embed_model.as_deref(), None, None, true)
-                .map_err(|e| RpcError::server(format!("embedding provider: {e}")))?;
+        let embedder = dr_strange_llm::build_provider(
+            provider,
+            req.embed_model.as_deref(),
+            None,
+            req.key_env.as_deref(),
+            true,
+        )
+        .map_err(|e| RpcError::server(format!("embedding provider: {e}")))?;
         let reply = embedder
             .embed(std::slice::from_ref(&req.q))
             .map_err(|e| RpcError::server(format!("embedding failed: {e}")))?;
@@ -1061,12 +1093,20 @@ pub struct Ask {
     /// Chat provider (preset or base URL); key from the server env.
     #[serde(default)]
     provider: Option<String>,
+    /// Name of the environment variable the server reads the chat key from. A
+    /// preset defaults to its own; a base URL has none, so name it here when
+    /// the endpoint needs a key. The key never travels in params.
+    #[serde(default)]
+    key_env: Option<String>,
     #[serde(default)]
     model: Option<String>,
     /// Embedding provider for the find_edge/find_entity grounding tools; should
     /// match how the plane was embedded. Omit to disable the tools (schema only).
     #[serde(default)]
     embed_provider: Option<String>,
+    /// The same, for the embedding provider.
+    #[serde(default)]
+    embed_key_env: Option<String>,
     #[serde(default)]
     embed_model: Option<String>,
 }
@@ -1080,11 +1120,24 @@ pub fn plane_ask(ctx: &Ctx<'_>, p: Value) -> Result<Value, RpcError> {
     let req: Ask = params(p)?;
     let plane = app(ctx.db.plane(&req.plane))?;
     let provider = req.provider.as_deref().unwrap_or("openai");
-    let chat = dr_strange_llm::build_provider(provider, req.model.as_deref(), None, None, false)
-        .map_err(|e| RpcError::server(format!("chat provider: {e}")))?;
+    let chat = dr_strange_llm::build_provider(
+        provider,
+        req.model.as_deref(),
+        None,
+        req.key_env.as_deref(),
+        false,
+    )
+    .map_err(|e| RpcError::server(format!("chat provider: {e}")))?;
     // Embedding tools are enabled when an embed provider is configured and builds.
     let embedder = req.embed_provider.as_deref().and_then(|ep| {
-        dr_strange_llm::build_provider(ep, req.embed_model.as_deref(), None, None, true).ok()
+        dr_strange_llm::build_provider(
+            ep,
+            req.embed_model.as_deref(),
+            None,
+            req.embed_key_env.as_deref(),
+            true,
+        )
+        .ok()
     });
     let opts = dr_strange_llm::AskOptions {
         max_attempts: req.max_attempts.unwrap_or(20),
@@ -1213,8 +1266,13 @@ fn semantic_find(
     limit: usize,
 ) -> anyhow::Result<Vec<Value>> {
     let provider = req.provider.as_deref().unwrap_or("openai");
-    let embedder =
-        dr_strange_llm::build_provider(provider, req.embed_model.as_deref(), None, None, true)?;
+    let embedder = dr_strange_llm::build_provider(
+        provider,
+        req.embed_model.as_deref(),
+        None,
+        req.key_env.as_deref(),
+        true,
+    )?;
     let reply = embedder.embed(std::slice::from_ref(&req.q))?;
     let query = reply
         .vectors

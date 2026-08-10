@@ -570,7 +570,18 @@ async fn cypher_http(
         let state = state.clone();
         let plane = plane.clone();
         // The SPA doesn't send params; plane.cypher does (methods::plane_cypher).
-        move || methods::cypher_subgraph(&state.ctx(), &plane, &query, &embed, &Default::default())
+        // The SPA uses a preset, which brings its own key env and model.
+        move || {
+            methods::cypher_subgraph(
+                &state.ctx(),
+                &plane,
+                &query,
+                &embed,
+                None,
+                None,
+                &Default::default(),
+            )
+        }
     })
     .await;
 
