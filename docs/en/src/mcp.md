@@ -69,10 +69,103 @@ not two at once. This is enforced, not advisory: the second open fails with a
 clear error rather than corrupting the database.
 
 That matters for agent hosts, because each one spawns its own MCP server
-subprocess. Two editors open on the same project means two `drsg-mcp` processes,
-and the second will refuse to start. Until `drsg-mcp` can attach to a running
-server, point each host at its own database, or drive one `drsg serve` through
-the SDKs or the RPC API for anything that must be shared.
+subprocess. Two editors open on the same project means two `drsg-mcp`
+processes, and the second will refuse to start. For that case — several
+agents that need to share one memory — see the next section.
+
+## Sharing across agents: `/mcp` on `drsg serve`
+
+`drsg-mcp` embeds by design: point a host at a path and it works, with
+nothing to run and nothing to configure. That's the right answer for one
+agent, but it's also *why* two hosts can't share a database directly — each
+one opens the file itself.
+
+`drsg serve` (arch/08) already solves the "one writer, several clients"
+problem for the JSON-RPC API and the dashboard. It exposes the identical
+tool set at `POST /mcp`, over MCP's Streamable HTTP transport, so several
+agent hosts can point at the same server instead of each embedding their own
+copy of the database:
+
+```json
+{
+  "mcpServers": {
+    "dr-strange": {
+      "url": "http://127.0.0.1:7700/mcp",
+      "headers": { "Authorization": "Bearer <DRSG_TOKEN>" }
+    }
+  }
+}
+```
+
+(Check your host's docs for its exact remote-MCP-server config shape — the
+`url`/`headers` fields above are illustrative, not universal.)
+
+`/mcp` is gated exactly like `/rpc`: with `DRSG_TOKEN` unset, only the
+same-origin browser UI is trusted, and **every programmatic client is
+refused, reads included** — a zero-config desktop install shouldn't quietly
+expose an open API on localhost. Set `DRSG_TOKEN` on the server and pass it
+as a bearer token to reach `/mcp` from anywhere else, including another
+agent host.
+
+One limit worth knowing before putting this behind a hostname: the MCP
+transport validates the inbound `Host` header against a loopback-only list
+(`localhost`, `127.0.0.1`, `::1`) to blunt DNS-rebinding attacks on locally
+running servers, and answers **403** to anything else. The check earns its
+keep here — a tokenless server trusts its own same-origin UI, which is what
+rebinding sets out to impersonate — but it does mean `/mcp` answers at
+`http://127.0.0.1:7700/mcp` and not at `https://memory.example.com/mcp`,
+where `/rpc` on the same server would. Agent hosts on the same machine, the
+case ROADMAP §10 is about, are unaffected.
+
+Every session gets its own `DrStrange` instance, but they all share the one
+`Database` the server opened — a write from one session is visible to every
+other, immediately, the same way two browser tabs against `/rpc` already
+are. That's the whole point: `write_gate` inside the core serializes
+concurrent writers so this is safe, not just convenient.
+
+`digest`'s LLM calls still spend the server process's provider keys (never a
+tool parameter, remote or local); `write_nodes`/`write_edges` keep their
+per-call batch atomicity, since the tool code runs in the same process
+against the same `Database` either way — nothing here proxies to `/rpc` or
+reshapes what a tool does. The `[digest]` config section steers the `digest`
+tool exactly as it steers `digest.run` over `/rpc`: lowering `concurrency` to
+stay under a provider's rate limit applies to both surfaces, not one of them.
+(The embedded `drsg-mcp` binary has no config file and keeps the built-in
+defaults.)
+
+### Session lifetime
+
+A host that exits cleanly sends `DELETE /mcp` and its session goes away at
+once. A host that is `SIGKILL`ed — an editor restarting its MCP child, say —
+sends nothing, so the server reclaims that session on a timer instead: **10
+minutes idle**, or **60 seconds** with no `initialize` after the session is
+created. The session's worker task, its `DrStrange`, and its buffered
+messages all go with it.
+
+The idle window is ten minutes rather than five for a specific reason: the
+transport counts a *running* tool as idle, because its keep-alive timer is only
+reset by traffic and a tool call sends nothing between dispatch and its result.
+On an otherwise quiet session, a tool that runs longer than the window is torn
+down mid-flight. Ten minutes clears any realistic `digest`; if you routinely run
+longer ones, keep the session busy or expect to retry.
+
+What survives a reclaim is one map entry per dead session. It is tens of bytes,
+but it is not inert: the next request on that session id is answered **500**
+rather than the **404** the spec calls for, so a client that would have
+re-initialized does not, and that session stays broken until the host restarts.
+Both of these are transport-level and fixed upstream rather than here. Closing
+sessions you script in a loop avoids the whole area.
+
+### Tool concurrency
+
+Tool calls are bounded separately from HTTP requests, at **16 at once** across
+the whole process (or `max_concurrent`, if that is lower). The two ceilings are
+not the same thing: `max_concurrent` counts requests, most of which are cheap,
+while every tool call is a full-graph scan, a bulk write, or an LLM-fanning
+digest. The transport also answers a tool call as soon as it is *queued*, so the
+request ceiling has already released the call before the work begins and cannot
+bound it. Excess calls queue rather than fail — a busy server makes an agent
+wait, it does not turn it away.
 
 ## The tools
 

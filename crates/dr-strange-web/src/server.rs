@@ -13,17 +13,24 @@ use anyhow::Context;
 use axum::Router;
 use axum::body::{Body, Bytes};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{DefaultBodyLimit, Query, State};
+use axum::extract::{DefaultBodyLimit, Query, Request, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
+use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{get, post};
 use dr_strange_core::{ChangeSet, Database, PlaneId};
+use dr_strange_mcp::DrStrange;
+use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
+use rmcp::transport::streamable_http_server::tower::{
+    StreamableHttpServerConfig, StreamableHttpService,
+};
 use serde_json::json;
 use tokio::sync::{broadcast, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 use tower::ServiceBuilder;
 use tower::limit::GlobalConcurrencyLimitLayer;
 use tower_http::catch_panic::CatchPanicLayer;
+use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::set_header::SetResponseHeaderLayer;
 
 use crate::ServeOptions;
@@ -123,6 +130,108 @@ fn resolve_credentials(
     })
 }
 
+/// Gates `/mcp` the same way `cypher_http` gates `/cypher`: **write** level,
+/// since several tools mutate (`write_nodes`, `digest` with `apply`, …) and
+/// the v1 single-token model doesn't distinguish finer than that (ROADMAP
+/// §10 "Authentication" — a per-tool split is future work). Runs as an axum
+/// middleware, not a handler check, because the `/mcp` route is a raw tower
+/// service ([`StreamableHttpService`]) with no handler body of its own to put
+/// the check in.
+async fn mcp_auth(State(state): State<Arc<AppState>>, request: Request, next: Next) -> Response {
+    let creds = match resolve_credentials(&state, request.headers(), None) {
+        Ok(c) => c,
+        Err(resp) => return *resp,
+    };
+    if !state.authorizer.allows(Access::Write, &creds) {
+        return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
+    }
+    next.run(request).await
+}
+
+/// How long an MCP session may sit idle before the server tears it down. A
+/// host that is SIGKILLed (an editor restarting its MCP child is routine)
+/// never sends `DELETE /mcp`, so without this its session worker, its
+/// [`DrStrange`], and its buffered SSE messages would live as long as the
+/// process — and this endpoint exists precisely to be a long-running shared
+/// server. Pinned rather than inherited from `SessionConfig::default()` so
+/// the deployment shape stops depending on an upstream default.
+///
+/// Ten minutes rather than five, because rmcp 2.2.0's worker counts a *running*
+/// tool as idle: the keep-alive timer is only reset by an event, and a tool
+/// call emits none between dispatch and its result, so a long `digest` on an
+/// otherwise quiet session is torn down mid-flight. Ten minutes buys room for a
+/// slow digest without abandoning the reaping that stops a SIGKILLed host
+/// leaking its session. The real fix belongs upstream — the timer should not
+/// count in-flight work — and this constant drops back when that lands.
+///
+/// Reaping has a second upstream wart we accept for now: the worker exits but
+/// its map entry stays, so the next request sees `has_session` true, misses
+/// the spec's 404, and gets a 500 from `create_stream` instead — a client that
+/// would have re-initialized on 404 does not. A longer window makes it rarer.
+const MCP_SESSION_IDLE: Duration = Duration::from_secs(600);
+/// How long a session may exist before its `initialize` must arrive. Bounds
+/// the same leak for a connection that opens and then goes silent.
+const MCP_SESSION_INIT: Duration = Duration::from_secs(60);
+
+/// How long shutdown waits for in-flight connections before giving up. Both
+/// listeners use it, so Ctrl-C behaves the same with and without TLS.
+const DRAIN_GRACE: Duration = Duration::from_secs(10);
+
+/// How many MCP tool bodies may run at once, given the HTTP request ceiling.
+///
+/// Not `max_concurrent` itself: that counts requests, most of which are cheap,
+/// and defaults to 1024 — while every MCP tool is a `spawn_blocking` unit of
+/// real work. Clamped rather than fixed so an operator who deliberately runs a
+/// small server still gets a proportionally small tool ceiling.
+fn mcp_tool_concurrency(max_concurrent: usize) -> usize {
+    max_concurrent.clamp(1, dr_strange_mcp::DEFAULT_TOOL_CONCURRENCY)
+}
+
+/// The MCP endpoint (ROADMAP §10): the same [`DrStrange`] tool set
+/// `drsg-mcp` serves over stdio, mounted here over Streamable HTTP so several
+/// agent hosts can share this process's `Database` instead of each opening
+/// the file directly. One [`DrStrange`] instance per MCP session — cheap,
+/// since all real state lives in the shared `Arc<Database>` each clone
+/// points at; `write_gate` inside it, not anything here, is what serializes
+/// concurrent writers.
+///
+/// The digest tuning resolved from `[digest]` is handed to every session, so
+/// the `digest` tool and `POST /rpc digest.run` obey the same `concurrency`
+/// and `chunk_chars` — an operator lowering `concurrency` to stay under a
+/// provider's rate limit should not find one of the two surfaces ignoring it.
+fn mcp_router(state: Arc<AppState>, max_concurrent: usize) -> Router<Arc<AppState>> {
+    let db = state.db.clone();
+    let digest = dr_strange_mcp::DigestTuning {
+        chunk_chars: state.digest.chunk_chars,
+        concurrency: state.digest.concurrency,
+    };
+    // One gate for the whole process, cloned into every session. Per-session
+    // would bound nothing: MCP puts no limit on how many sessions a client
+    // opens, so N sessions would multiply the ceiling by N.
+    let tools = Arc::new(tokio::sync::Semaphore::new(mcp_tool_concurrency(
+        max_concurrent,
+    )));
+    let mut sessions = LocalSessionManager::default();
+    sessions.session_config.keep_alive = Some(MCP_SESSION_IDLE);
+    sessions.session_config.init_timeout = Some(MCP_SESSION_INIT);
+    let service = StreamableHttpService::new(
+        move || Ok(DrStrange::with_digest(db.clone(), digest).with_tool_gate(tools.clone())),
+        Arc::new(sessions),
+        StreamableHttpServerConfig::default(),
+    );
+    Router::new()
+        .route_service("/mcp", service)
+        // `DefaultBodyLimit` cannot cover this route: axum implements it as a
+        // request extension that only extractors calling `with_limited_body`
+        // consult, and `route_service` hands the raw `Request<Body>` to
+        // `StreamableHttpService`, which buffers it itself. Limiting the body
+        // rather than the extractor is what actually bounds it — otherwise an
+        // authenticated caller can POST gigabytes here that `/rpc` would have
+        // refused at 64 MiB, and OOM the process holding the database.
+        .route_layer(RequestBodyLimitLayer::new(MAX_BODY))
+        .route_layer(middleware::from_fn_with_state(state, mcp_auth))
+}
+
 fn router(state: Arc<AppState>, max_concurrent: usize) -> Router {
     // Outermost → innermost: catch panics so a bug becomes a 500 (not a dropped
     // connection), then cap total requests in flight, then stamp defensive
@@ -146,6 +255,7 @@ fn router(state: Arc<AppState>, max_concurrent: usize) -> Router {
         ))
         .layer(DefaultBodyLimit::max(MAX_BODY));
     Router::new()
+        .merge(mcp_router(state.clone(), max_concurrent))
         .route("/rpc", post(rpc_http))
         .route("/ws", get(ws_upgrade))
         .route("/digest/extract", post(extract_http))
@@ -574,9 +684,33 @@ pub async fn run(db: Database, db_path: Option<PathBuf>, opts: ServeOptions) -> 
         Some(tls) => serve_tls(app, std_listener, tls).await,
         None => {
             let listener = tokio::net::TcpListener::from_std(std_listener)?;
-            axum::serve(listener, app)
-                .with_graceful_shutdown(shutdown_signal())
-                .await?;
+            // Bound the drain, as the TLS path already does. `axum::serve`
+            // waits for in-flight connections forever, and `/mcp` holds a
+            // standalone SSE stream for the life of an agent session with a
+            // 15s keep-alive, so it is never idle and its body never ends: an
+            // attached editor would leave Ctrl-C hanging indefinitely. Worse
+            // since 1.4.2, because the database lock is held for the process's
+            // lifetime, so no replacement can start until this one dies.
+            let (fired_tx, fired_rx) = tokio::sync::oneshot::channel();
+            let serve = std::future::IntoFuture::into_future(
+                axum::serve(listener, app).with_graceful_shutdown(async move {
+                    shutdown_signal().await;
+                    let _ = fired_tx.send(());
+                }),
+            );
+            tokio::pin!(serve);
+            tokio::select! {
+                res = &mut serve => res?,
+                _ = async move {
+                    let _ = fired_rx.await;
+                    tokio::time::sleep(DRAIN_GRACE).await;
+                } => {
+                    tracing::warn!(
+                        grace = ?DRAIN_GRACE,
+                        "connections still open after the drain deadline; exiting anyway"
+                    );
+                }
+            }
             Ok(())
         }
     }
@@ -610,7 +744,7 @@ async fn serve_tls(
         let handle = handle.clone();
         async move {
             shutdown_signal().await;
-            handle.graceful_shutdown(Some(Duration::from_secs(10)));
+            handle.graceful_shutdown(Some(DRAIN_GRACE));
         }
     });
     axum_server::from_tcp_rustls(listener, config)?
