@@ -138,6 +138,42 @@ def all_facts(proj_dir, token):
     return res.get("nodes", [])
 
 
+def open_events(proj_dir, token, limit=3):
+    """Coordination events addressed to this project and still open.
+
+    A hard-bounded block, unlike the briefing: an Event is a to-do, and a
+    to-do compressed to 18 chars or losing a ranking contest is worse than
+    absent. Costs nothing when there are none — the caller only appends the
+    block if this returns something, same rule as Recent sessions.
+
+    `status` is filtered here rather than in the WHERE clause: the volume is a
+    handful of nodes, and one predicate on the pattern's first variable is the
+    shape every other query in this file uses."""
+    try:
+        res = rpc("plane.cypher", {"plane": PLANE,
+            "query": ("MATCH (p:Project)<-[:NOTIFY]-(e:Event) "
+                      "WHERE p.path = $path "
+                      "RETURN e ORDER BY e.created_at DESC LIMIT 20"),
+            "params": {"path": proj_dir}}, token)
+    except Exception as e:
+        print(f"[drsg-memory] open events: {e}", file=sys.stderr)
+        return []
+    out = []
+    for n in res.get("nodes", []):
+        pr = n.get("properties", {})
+        if pr.get("status") != "open":
+            continue
+        line = "- [%s from %s] %s" % (pr.get("kind", "notice"),
+                                      pr.get("from_project", "?"),
+                                      (pr.get("summary") or "")[:80])
+        if pr.get("ref"):
+            line += f"  (ref: {pr['ref']})"
+        out.append(f"{line}  <{n.get('external_key', '?')}>")
+        if len(out) >= limit:
+            break
+    return out
+
+
 def short_tag(s, n=18):
     """One compressed label per Fact summary: prefer the conclusion side of
     an arrow, cut to n chars. Zero-dependency rule compression."""
@@ -286,6 +322,17 @@ def main():
     except Exception as e:
         print(f"[drsg-memory] recall sessions: {e}", file=sys.stderr)
 
+    # Coordination events left for this project by another agent. Bounded and
+    # self-clearing: once the Event is closed the block is gone. Closing is
+    # described in-line because not every install has the helper script — the
+    # MCP tools are the one interface every session has.
+    events = open_events(proj_dir, token)
+    ev_block = ""
+    if events:
+        ev_block = ("⏳ Open for you (set the Event node's `status` to \"done\" "
+                    "once handled):\n" + "\n".join(events))
+        parts.append(ev_block)
+
     # L2: the write-memory protocol — makes the model the value-judge for what
     # deserves persisting, every turn, automatically (no user action needed).
     proto = protocol(slug, PLANE, proj_dir)
@@ -299,6 +346,7 @@ def main():
     telemetry(proj_dir, {"event": "briefing", "session": sid, "project": slug,
                          "source": source, "facts": n_facts,
                          "brief_chars": len(brief), "proto_chars": len(proto),
+                         "events": len(events), "event_chars": len(ev_block),
                          "total_chars": len(ctx),
                          "ms": int((time.time() - ts_start) * 1000)})
     hook_out(additionalContext=ctx)
