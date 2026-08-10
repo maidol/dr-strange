@@ -42,6 +42,13 @@ BRIEFING_FACT_CAP = 1000
 # one is not rejected — it is silently unreadable. `path` rather than `key`
 # because that is how the readers (all_facts, project_id) address the Project,
 # and a key can end up shadowed while path stays ours.
+#
+# `supersedes` / `valid_to` are written but NOT yet read: the recall and
+# briefing filters that consume them are held until the pre-registered baseline
+# in docs/memory-layer-observability.md reaches its phase-1 trigger (30 sessions
+# in recall.jsonl), because changing the read path now resets that sample. Times
+# are integer Unix seconds — every created_at in the plane already is, and an
+# Int/Str comparison silently evaluates to false instead of erroring.
 def protocol(slug, plane, path):
     return (
         f"[write-memory protocol] Persist this session's durable conclusions, "
@@ -51,10 +58,13 @@ def protocol(slug, plane, path):
         f"fact-{slug}-<topic>), a `kind` you choose (setup-experience / "
         "decision / gotcha), `summary` as a ONE-LINE conclusion (only its "
         "first ~18 chars reach the briefing), `detail` for the rest, "
-        "`created_at` as the current time;\n"
+        "`created_at` as the current Unix time (integer seconds);\n"
         f"- linked with an `ABOUT` edge to the Project matched by "
         f"`p.path = \"{path}\"` (by path, not key; a Fact unreachable that "
-        "way is invisible)."
+        "way is invisible);\n"
+        "- replacing an older Fact: set `supersedes`=<old key> on the new one "
+        "and `valid_to`=<Unix time> on the old one; never edit or delete the "
+        "old Fact."
     )
 
 
