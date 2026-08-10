@@ -1,8 +1,11 @@
 # 记忆层可观测性 — 现状与待办
 
-> 2026-08-08 存档。讨论发生在 data-safe 的会话里，工作对象是本仓库；
-> 下次在 dr-strange 目录开会话接着谈。
-> 相关提交：`68e3a7b feat(memory-layer): instrument the read path`
+> 2026-08-08 起档，末次更新 2026-08-10。工作对象是本仓库的记忆层。
+> 相关提交：`68e3a7b`（读路径埋点）、`ca61c3a`/`6bc5767`（注入链路两个洞）、
+> `c3f2166`/`50b093f`（首批增强，写侧先行）。
+>
+> **当前状态：阶段 1 积累中，`sessions : 4 / 30`。在闸门到达之前不要改读路径**
+> ——召回过滤、排序、注入内容一律不动，理由见「待办」一节。
 
 ## 起因
 
@@ -36,6 +39,25 @@
   其中 171/286 来自同一个被反复恢复的会话，同一段 transcript 重复蒸馏 5 次。
 - 会话启动注入 1128 字符 = 简报 395 + Recent sessions 109 + **写记忆协议 620**。
   一半以上花在一段固定指令上。
+
+### 复盘（2026-08-10，两天后）
+
+**358 节点 / 251 边**。上表按同一口径重算：
+
+| 层 | 08-08 | 08-10 | 变化说明 |
+|---|---|---|---|
+| L2 `Fact` | 35 | **52** | 两天 +17，全部经写记忆协议由模型自己写 |
+| `Session` | 12 | 14 | |
+| `Project` | 2 | **5** | 装机点从 2 → 5（+ wps / zeus / my-agent-workspace） |
+| `Event` | — | **2** | 新通道，见「首批增强落地」 |
+| L3 蒸馏实体 | 286 | 285 | 关停后不再增长（差的 1 个是清测试数据时顺带删的） |
+
+L3 的 285 个残留仍占**总节点的 80%**，143 种标签也全部来自它们。数据没删是刻意的
+（关停的依据是读取率为 0，不是数据有害），但每次盘点都要记得把它们从分母里剔掉，
+否则"记忆层有 358 个节点"是个假象——真正有读路径的是 73 个。
+
+写侧两天涨 17 条 Fact，说明**协议这条通道是活的**——这是关停 L3 时最大的不确定性
+（"没了 L3 还有没有东西在写"），现在有答案了。
 
 ## 已完成
 
@@ -161,6 +183,42 @@ data-safe  dr-strange  wps  zeus     # memory plane 里 4 个 Project 节点
 - L3 关停状态补进 §3.8 和 `l3-llm-distillation-setup.md` 抬头(两份文档此前仍把它
   当活的);`CLAUDE.md` 记忆层小节同步。
 
+### 首批增强落地：按「碰不碰读路径」切两半（2026-08-10）
+
+外部提了一份 4 点增强方案（时间有效事实窗 / agent 协调通道 / L3 实体消歧 /
+verbatim 原文回查）。**其中 3 点都改读路径**，而下面那份预登记计划正在积累阶段 1
+基线——现在改召回过滤或注入内容，样本清零重来。
+
+处理办法不是全押后，是**按污染与否切开**：
+
+| 现在做（不碰读路径） | 押到阶段 1 之后 |
+|---|---|
+| Fact 的 `supersedes` / `valid_to`：只改写记忆协议的措辞，字段先攒 | 召回/简报按 `valid_to` 过滤、失效标记 |
+| Event 协调通道：**独立注入块**，不参与 Fact 排序，遥测口径不变 | Event 的 `acked` 流转、`/ws` 实时推送 |
+| — | verbatim Chunk（`session_end.py` 侧写入也一并押后，因为它没有读路径，会重演 L3 的死节点模式） |
+| — | L3 实体消歧（前提已失效：L3 已关停，先回答"谁读它"再谈"怎么救"） |
+
+落地的两条（`c3f2166` / `50b093f`）+ 文档（`f7ac1f8`）。核实过的三件事：
+
+- **写侧先行是可行的**，因为读侧代码一行没动——验证方式是 `git diff` 里
+  `all_facts` / `build_briefing` / `short_tag` / `ensure_briefing` / `project_id`
+  被触碰行数为 **0**，而不是靠"我觉得没影响"。
+- **Event 不需要新 RPC**。方案原本要在 `rpc.rs` 加 `event.append`；实际
+  `node.create` / `edge.create` / `plane.cypher` 就够，收方由 `NOTIFY` 边的目标
+  决定而不是属性。唯一一个"跨语言栈"的增强点其实是纯 hook 的。
+- **时间必须是 epoch 整数**。plane 里现存 `created_at` 全是整数，而引擎的
+  `Int` 与 `Str` 比较返回 `None`（`compute/expr.rs:344-352`）→ 谓词恒假、
+  `ORDER BY` 按类型分层，**不报错**。协议顺带把 `created_at` 从"current time"
+  钉成"current Unix time (integer seconds)"。
+
+遥测新增 `events` / `event_chars` 两个字段，`brief_chars` / `proto_chars` 语义不动
+（`analyze_recall.py` 用 `.get(k, 0)` 读，加字段安全，已跑通验证）。协议长度
+**639 → 809 字符**，涨 27%——固定成本，记在这里备查。
+
+跨项目通道已在真实会话里闭环：dr-strange 侧 post，收方 my-agent-workspace 的
+SessionStart 遥测记到 `events=1, event_chars=189`，`done` 之后收方
+`open_events()` 返回 0。
+
 ## 待办 — 四个阶段，按触发条件推进（不按日期）
 
 前置修补已完成(保留期 180 天 + 判定冻结 + 4 个项目),**阶段 1 现在开始积累**。
@@ -237,12 +295,71 @@ python3 scripts/memory-layer/analyze_recall.py --no-cache  # 只在怀疑冻结�
 15 条从未被召回过，多数是措辞对不上真实提问（`exp-cc-env-var-broken` 这种明显有用的
 也在里面），按阶段 1 的安排到样本量够时一并处理。
 
-`tool_*` 属性从下个会话结束时开始落到 Session 节点(截至 2026-08-09 仍为 0 个,
-还没有会话结束过)。
+**2026-08-10 进度：`sessions : 4` / 30**，判定已冻结 278 行
+（dr-strange 112 + my-agent-workspace 99 + data-safe 67）。42 条 Fact 里 4 条从未
+被召回、1 条注入 ≥5 次从未被用（`fact-bench-memory-layer-v1`），仍按阶段 1 的安排
+不动。
 
-## 仓库状态
+**闸门为什么走得慢，查清楚了**：装机点 5 个，但 **wps 和 zeus 一次会话都没开过**。
+两者的 Project 节点只有 `path`、没有 `briefing` 属性（说明是 `install.sh` 建的而不是
+会话建的），`.drsg/` 下只有 `env` 没有 `recall.jsonl`。排除了坏掉的可能：hooks 在
+`settings.local.json` 里注册正常，token 打 `db.stats` 通。而本文档 08-09 记的是
+"最近 30 天全局 19 个会话里 wps 占 10 个、zeus 占 3 个"——**样本增速的杠杆全在这两个
+项目身上**，不在 dr-strange。
 
-- 本文档与 `68e3a7b` 都在 `claude/project-code-analysis-wt83lo`（个人工作分支）。
-- `stash@{0}` 存着 `feat/mcp-over-http` 上未提交的 ROADMAP §10 shipped 状态改动，
-  切回那个分支后 `git stash pop`。
-- 五个抽取出来的 PR 分支已推未开，等 review。
+### 这份文档自己的盲点：静默早退不留痕
+
+上面那个排查暴露了埋点的一个洞。`session_start.py` 有两条早退路径：
+
+```python
+if not token:            hook_out(); return      # 没写遥测
+try: rpc("db.stats", ...)
+except: hook_out(); return                       # 守护进程连不上，也没写遥测
+```
+
+两条都**先于 `telemetry()`**。后果是"token 配错了""守护进程挂了""这个项目根本
+没人用"三种情况在磁盘上长得一模一样：`recall.jsonl` 不存在。
+
+这正是本文档反复在防的那类错误——当初把 `brief_chars` / `proto_chars` 拆开、
+`tool_*` 存原始计数，都是为了让"没发生"和"坏了"分得开，而入口本身漏了同一件事。
+
+**没有立刻改**，理由和 `MAX=3` 那条一样：改埋点会改变正在积累的样本口径。记在这里，
+和阶段 1 的调参一起处理。届时的改法很小——早退前写一行
+`{"event":"briefing","status":"no_token"|"daemon_down"}`，`analyze_recall.py`
+已经在按 `event` 字段过滤，多一种 status 不影响现有统计。
+
+### `tool_*` 埋点已验证（2026-08-10）
+
+08-09 那条"尚未在真实会话里验证过"可以关掉了。14 个 Session 里 **4 个带
+`tool_calls`**（其余是埋点上线前的），实测基线分布：
+
+| session | calls | errors | rejected | 失败率 | `tool_errors_top` |
+|---|---|---|---|---|---|
+| 0b4c8f38 | 400 | 56 | 0 | **14.0%** | `Bash×32, mcp__drsg__cypher×19, Edit×2` |
+| 4631e7b0 | 87 | 5 | 0 | 5.7% | `Bash×4, Agent×1` |
+| 68bcb51c | 540 | 14 | 0 | 2.6% | `Bash×13, Agent×1` |
+| 133a8256 | 597 | 31 | 4 | 5.2% | `Bash×23, mcp__drsg__cypher×7, Read×1` |
+
+**这就是阶段 1 要的"正常失败率长什么样"**：2.6%–14%，跨度 5 倍。分子分母和按工具
+拆分都拿到了，说明当初"不落单个数字、落原始计数"的决定是对的——如果当时只存一个
+失败率，14% 那个会话就没法判断是工作质量差还是 `Bash` 在刷错误。
+
+三点提醒：
+
+- **`tool_rejected` 首次非零**（133a8256 的 4 次），证明"用户拒绝"确实和失败分得开。
+- **跨度 5 倍意味着单会话对比没有意义**。阶段 3 的对照必须按臂聚合，不能拿两个会话
+  比。
+- 计数受 `MAX_LINES=4000` 截断，率成立、计数不成立——上表的 calls 是窗口内的。
+
+## 仓库状态（2026-08-10 核过）
+
+- 本文档、`68e3a7b` 与首批增强（`c3f2166` / `50b093f` / `f7ac1f8`）都在
+  `claude/project-code-analysis-wt83lo`（个人工作分支）。按铁律**不提 PR**。
+- hook 有 **6 份副本**（模板 1 + 安装点 5），每次改动必须同步全部并核 md5
+  收敛成一行。当前 `3c5e03d1…`（`session_start.py`）。
+- `stash@{0}` 仍存着 `feat/mcp-over-http` 上未提交的 ROADMAP §10 shipped 状态改动。
+  **该分支已被上游合并**（PR #3，2026-08-08），所以这个 stash 多半已经是重复品，
+  下次处理时先和上游的 ROADMAP 比对再决定 pop 还是 drop。
+- 抽取的 PR 分支：`feat/mcp-over-http` 已合并（领先 upstream/master 0）；
+  `fix/order-by-total-order` 已确认被上游自行修复并删除；余下四个各领先 1 个 commit，
+  已推未开。本地 `master` 落后 upstream/master 11 个（上游已发 v1.6.0）。
