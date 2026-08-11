@@ -269,6 +269,31 @@ def heal_text(token):
     return fixed
 
 
+def orphan_facts(token):
+    """Facts with no ABOUT edge to a Project — permanently invisible to recall.
+
+    Reported, never repaired. Attaching one means deciding which Project it is
+    about, and that is a judgement, not a repair: auto-grafting the 286 L3
+    nodes onto whichever Project sorted first would have been worse than
+    leaving them unreachable, because then they would have been *injected*.
+
+    The reachability test is the recall query's own shape, deliberately. It
+    means "reachable by the code that actually reads memory" — an ABOUT edge
+    pointing at something that is not a Project does not count, and must not,
+    because recall would not follow it either.
+
+    Returns the orphan keys, newest-looking first is not worth the sort — the
+    count is the signal and the keys are for the human who investigates.
+    """
+    def keys(query):
+        res = rpc("plane.cypher", {"plane": PLANE, "query": query, "params": {}}, token)
+        return {n.get("external_key") for n in res.get("nodes", []) if n.get("external_key")}
+
+    everything = keys("MATCH (f:Fact) RETURN f")
+    reachable = keys("MATCH (p:Project)<-[:ABOUT]-(f:Fact) RETURN f")
+    return sorted(everything - reachable)
+
+
 def main():
     ts_start = time.time()
     data = json.load(sys.stdin)
@@ -341,6 +366,21 @@ def main():
         healed = None
         print(f"[drsg-memory] heal_text failed: {e}", file=sys.stderr)
 
+    # An orphan Fact is written, costs storage, and can never be read. Nothing
+    # errors when one is created, so the only way it surfaces is a check like
+    # this one. Counted every session; the keys go to stderr (visible when a
+    # human looks) rather than into the injected context, which is for memory,
+    # not for maintenance chores.
+    try:
+        orphans = orphan_facts(token)
+        if orphans:
+            print(f"[drsg-memory] {len(orphans)} Fact(s) with no ABOUT edge to a "
+                  f"Project — unreachable by recall: {', '.join(orphans[:5])}"
+                  + (" …" if len(orphans) > 5 else ""), file=sys.stderr)
+    except Exception as e:
+        orphans = None
+        print(f"[drsg-memory] orphan_facts failed: {e}", file=sys.stderr)
+
     # 2. Inject: the compressed briefing + recent sessions (NOT full Facts).
     parts = []
     brief, n_facts = ensure_briefing(proj_dir, pid, token) if pid else ("", None)
@@ -399,6 +439,10 @@ def main():
                          # repair. A number that stays >0 every session means
                          # something is rewriting summaries behind us.
                          "text_healed": healed,
+                         # None = the check itself failed, 0 = none orphaned.
+                         # A number that grows means something is writing Facts
+                         # without the ABOUT edge again.
+                         "orphan_facts": None if orphans is None else len(orphans),
                          "ms": int((time.time() - ts_start) * 1000)})
     hook_out(additionalContext=ctx)
 
