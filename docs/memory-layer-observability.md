@@ -16,8 +16,18 @@
 
 ## 现在最需要知道的一条
 
-**阶段 1 积累中（`sessions : 4 / 30`）。在闸门到达之前不要改读路径**——召回过滤、
-排序、注入内容一律不动。任何改动都会把正在积累的基线样本清零。
+**阶段 1 积累中。在闸门到达之前不要改读路径**——召回过滤、排序、注入内容一律不动。
+任何改动都会把正在积累的基线样本清零。
+
+**进度 6 / 30（2026-08-11 实跑）。** 注意闸门是**跨全部 5 个装机点**数的：单看本仓库
+的 `.drsg/recall.jsonl` 会误以为只有 1 个会话（长会话跨 compact 时 `session_id` 不变），
+那不是闸门的输入。同理 `recall-verdicts.jsonl` 里没有 `verdict` 字段是设计如此——
+冻结的是 `mass`。两个误读的经过记在 workspace 那份计划的「待办」一节。
+
+不改注入、但仍在产生证据的做法已经上线：`user_prompt.py` 的 `shadow_bm25()` 每个
+prompt 用中文 BM25 排一次并记进 `recall.jsonl`，注入不变。派生字段 `Fact.text` 由
+`session_start.py` 的 `heal_text()` 自愈，独立修复工具是
+[`scripts/memory-layer/backfill_text.py`](../scripts/memory-layer/backfill_text.py)。
 
 进度自己查：
 
