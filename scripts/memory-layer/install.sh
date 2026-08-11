@@ -23,6 +23,13 @@
 #   --l3-reasoning <e>  reasoning_effort to send, e.g. "none" to stop a
 #                       reasoning model truncating the JSON (default: unset)
 #   --restart-daemon    stop any existing global daemon first (new token/addr)
+#   --check             install nothing; report which installs' hooks have
+#                       drifted from templates/hooks/. With no project-dir,
+#                       checks every project the memory plane knows about.
+#                       Exits 1 if anything drifted, so CI can call it.
+#                       Note the argument order — project-dir comes FIRST:
+#                         ./install.sh --check              # every install
+#                         ./install.sh /path/to/proj --check  # just that one
 #   -h, --help
 #
 # What it does:
@@ -41,9 +48,13 @@ TEMPLATES="$SCRIPT_DIR/templates"
 SERVE="$SCRIPT_DIR/serve.sh"
 
 # First arg is the target project dir unless it's an option.
+# `--check` needs to tell "this project" from "no project named" — with no
+# argument it checks every install, not the cwd — so record which happened.
+PROJECT_DIR_GIVEN=0
 if [ "$#" -gt 0 ] && [[ "$1" != -* ]]; then
   mkdir -p "$1"
   PROJECT_DIR="$(cd "$1" && pwd)"; shift
+  PROJECT_DIR_GIVEN=1
 else
   PROJECT_DIR="$(pwd)"
 fi
@@ -61,6 +72,7 @@ L3_KEY_ENV=""
 L3_MODEL=""
 L3_REASONING=""
 RESTART_DAEMON=0
+CHECK_ONLY=0
 
 # Anchored on the last option rather than a line number: the header grows, and
 # a stale number truncates the help text silently instead of failing.
@@ -77,10 +89,120 @@ while [ "$#" -gt 0 ]; do
     --l3-model) L3_MODEL="$2"; shift 2 ;;
     --l3-reasoning) L3_REASONING="$2"; shift 2 ;;
     --restart-daemon) RESTART_DAEMON=1; shift ;;
+    --check) CHECK_ONLY=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown option: $1" >&2; usage; exit 1 ;;
   esac
 done
+
+# ---- 0. --check: report hook drift, install nothing -------------------------
+# templates/hooks/ is canonical; every <proj>/.claude/hooks/ is a deployment,
+# and `.claude/` is gitignored in the projects, so nothing about a deployment
+# is under version control. Drift runs both ways: an install left behind by a
+# template change, and — the case that produced this flag — a hook edited in
+# place on the deployments while the template it came from sat untouched.
+if [ "$CHECK_ONLY" = "1" ]; then
+  HTTP_BASE="$(echo "$ADDR" | sed 's|^https\?://||')"
+  if python3 - "$TEMPLATES/hooks" \
+      "${DRSG_MEM_DIR:-$HOME/.drsg-memory}/env" \
+      "http://$HTTP_BASE/rpc" "$PLANE" \
+      "$([ "$PROJECT_DIR_GIVEN" = "1" ] && echo "$PROJECT_DIR")" <<'PYEOF'
+import hashlib, json, os, sys, urllib.request
+
+tmpl_dir, daemon_env, api, plane, explicit = sys.argv[1:6]
+
+
+def digest(path):
+    with open(path, "rb") as fh:
+        return hashlib.md5(fh.read()).hexdigest()[:8]
+
+
+templates = {n: digest(os.path.join(tmpl_dir, n))
+             for n in sorted(os.listdir(tmpl_dir)) if n.endswith(".py")}
+if not templates:
+    sys.exit(f"no hook templates under {tmpl_dir}")
+
+
+def known_projects():
+    """Every project the memory plane knows about.
+
+    The same list the hooks recall against, deliberately: a project installed
+    but never recorded is invisible here for exactly the reason it is
+    invisible to recall, and saying so is more useful than inventing a second
+    registry that can disagree with the first.
+    """
+    token = ""
+    if os.path.exists(daemon_env):
+        for line in open(daemon_env, encoding="utf-8"):
+            if line.startswith("DRSG_TOKEN="):
+                token = line.split("=", 1)[1].strip().strip('"').strip("'")
+    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "plane.cypher",
+                       "params": {"plane": plane,
+                                  "query": "MATCH (p:Project) RETURN p"}}).encode()
+    req = urllib.request.Request(
+        api, data=body,
+        headers={"Content-Type": "application/json",
+                 "Authorization": f"Bearer {token}"})
+    with urllib.request.urlopen(req, timeout=5) as r:
+        out = json.load(r)
+    if "error" in out:
+        sys.exit(f"cannot list projects: {out['error']}")
+    seen = []
+    for n in out["result"].get("nodes", []):
+        p = (n.get("properties") or {}).get("path")
+        p = p.get("$value") if isinstance(p, dict) else p
+        if p and p not in seen:
+            seen.append(p)
+    return seen
+
+
+if explicit:
+    dirs = [explicit]
+else:
+    try:
+        dirs = known_projects()
+    except Exception as e:
+        sys.exit(f"cannot reach the daemon to list projects ({type(e).__name__}); "
+                 "pass a project-dir to check just one")
+
+drifted = []
+for d in dirs:
+    hooks = os.path.join(d, ".claude", "hooks")
+    if not os.path.isdir(hooks):
+        print(f"  --    {d}  (no hooks installed)")
+        continue
+    bad = []
+    for name, want in templates.items():
+        f = os.path.join(hooks, name)
+        if not os.path.exists(f):
+            bad.append(f"{name}: missing")
+            continue
+        got = digest(f)
+        if got == want:
+            continue
+        # Which side is ahead decides the fix, and mtime is the only evidence
+        # available — so report it rather than guessing a direction.
+        newer = "deployment is newer" if (
+            os.path.getmtime(f) > os.path.getmtime(os.path.join(tmpl_dir, name))
+        ) else "template is newer"
+        bad.append(f"{name}: {got} != {want}  ({newer})")
+    if bad:
+        drifted.append(d)
+        print(f"  DRIFT {d}")
+        for b in bad:
+            print(f"          {b}")
+    else:
+        print(f"  ok    {d}")
+
+if drifted:
+    print()
+    print(f"{len(drifted)} install(s) drifted. Template is newer → re-run install.sh")
+    print("on that project. Deployment is newer → copy it back into")
+    print(f"{tmpl_dir}/ and commit, or the next install silently reverts it.")
+sys.exit(1 if drifted else 0)
+PYEOF
+  then exit 0; else exit 1; fi
+fi
 
 # ---- 0. resolve + persist the L3 LLM key --------------------------------------
 # L3 sends `key_env` (a NAME) to the daemon, and the daemon reads the key VALUE

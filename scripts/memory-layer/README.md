@@ -113,6 +113,7 @@ tell you whether you have any.
 | `--l3-model <m>` | the provider's own | model id, exactly as the endpoint lists it |
 | `--l3-reasoning <e>` | unset | `reasoning_effort`; `none` stops a reasoning model truncating the JSON |
 | `--restart-daemon` | off | stop an existing daemon first (new token or address) |
+| `--check` | off | install nothing; report hook drift and exit 1 if any (below) |
 
 ## Running the daemon
 
@@ -148,6 +149,40 @@ running under the old environment will keep sending an empty key and
    a successful install of something that will silently do nothing.
 
 Add `.drsg/` to the target project's `.gitignore`.
+
+## Are the installs still in sync? (`--check`)
+
+`templates/hooks/` is canonical and version-controlled; every
+`<project>/.claude/hooks/` is a copy, and `.claude/` is gitignored in the
+projects — so nothing about a deployed hook is tracked anywhere. With several
+installs sharing one daemon, they drift silently.
+
+```bash
+./install.sh --check                    # every project the plane knows about
+./install.sh /path/to/project --check   # just that one  (dir comes FIRST)
+```
+
+```
+  ok    /data/projects/zeus
+  DRIFT /data/projects/other
+          user_prompt.py: 58c508dc != 311c8e74  (deployment is newer)
+```
+
+Exit 1 on any drift, so it works as a CI or pre-commit gate.
+
+Drift runs **both** ways, and the fix differs, so the report says which side
+is ahead by mtime rather than guessing:
+
+- **template is newer** — an install got left behind. Re-run `install.sh` on
+  that project.
+- **deployment is newer** — someone edited a hook in place. Copy it back into
+  `templates/hooks/` and commit, **or the next install silently reverts it**.
+  This is not hypothetical: it is how this flag came to exist.
+
+With no project-dir the list comes from the memory plane's `Project` nodes —
+the same list recall itself walks. A project installed but never recorded is
+invisible here for exactly the reason it is invisible to recall, which is more
+useful than a second registry that can disagree with the first.
 
 ## Is it working? (`analyze_recall.py`)
 
