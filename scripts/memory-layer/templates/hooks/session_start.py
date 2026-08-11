@@ -56,7 +56,7 @@ def protocol(slug, plane, path):
         f"cypher / write_nodes / write_edges, plane=\"{plane}\"):\n"
         f"- one `Fact` node each, with an idempotent `external_key` (e.g. "
         f"fact-{slug}-<topic>), a `kind` you choose (setup-experience / "
-        "decision / gotcha), `summary` as a ONE-LINE conclusion (only its "
+        "decision / gotcha / workflow), `summary` as a ONE-LINE conclusion (only its "
         "first ~18 chars reach the briefing), `detail` for the rest, "
         "`created_at` as the current Unix time (integer seconds);\n"
         f"- linked with an `ABOUT` edge to the Project matched by "
