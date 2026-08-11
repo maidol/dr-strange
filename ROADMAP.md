@@ -556,7 +556,16 @@ dashboard affordance, not a requirement of the feature.
 
 ---
 
-## 10. MCP over the network — one database, many agents
+## 10. MCP over the network — one database, many agents  *(shipped)*
+
+**Status.** ✅ Shipped (2026-08-04). `drsg serve` hosts the tool set at
+`POST /mcp` over MCP's Streamable HTTP transport. The 15 tools moved into a
+`dr-strange-mcp` library target, so the stdio binary and the served endpoint
+drive one implementation against one `Database` — `traverse`, `digest` and the
+per-call batch atomicity of `write_nodes`/`write_edges` mean over HTTP exactly
+what they meant embedded, which is what the rejected proxy could not promise.
+Proven by an end-to-end test driving two independent client sessions against a
+live server, not by asserting the request JSON is shaped right.
 
 **Goal.** Let several agent hosts share one memory. Today each host spawns its
 own `drsg-mcp`, which embeds the core and opens the database directly, so two
@@ -597,21 +606,40 @@ a transport-independent handler, so the stdio binary and the served endpoint
 drive the same code. `drsg-mcp` keeps its embedded stdio mode — it is the right
 answer for a single agent and needs no infrastructure.
 
-**Forks to settle.**
-- *Authentication.* `auth.rs`'s `Access::{Read, Write, Admin}` is the natural
-  base for per-agent scoping, but the v1 model is one shared token that
-  authorizes everything. Scoped keys, or one token and per-agent planes?
-- *The token posture is a trap for newcomers.* With no `DRSG_TOKEN` set only the
-  same-origin browser UI is trusted, and every programmatic client is denied
-  **even for reads** — deliberate, so a zero-config desktop install does not
-  quietly expose an open API on localhost. Any remote mode must state this where
-  someone configuring it will read it.
-- *Isolation.* Do agents share a plane, or does each get its own beside a shared
-  one? Sharing is the point, but two agents writing the same entity concurrently
-  is a merge problem this project already has opinions about (§8).
-- *Transport.* Streamable HTTP versus SSE, and what each costs in host support.
-- *Whether the embedded binary gains a client mode at all* once the served
-  endpoint exists — a host can point straight at the URL.
+**The forks, as they settled.**
+- *Authentication.* One shared token, gated at `Access::Write` — several tools
+  mutate (`write_nodes`, `digest` with `apply`, …) and the v1 model doesn't
+  distinguish finer, so `/mcp` is gated exactly like `/cypher` already is.
+  `auth.rs`'s `Access::{Read, Write, Admin}` remains the natural base for
+  per-agent scoping, but that wants scoped keys before it means anything, and
+  those are not in this change.
+- *The token posture is a trap for newcomers.* Unchanged, and now stated where
+  someone configuring a remote host will read it (`docs/{en,zh}/src/mcp.md`):
+  with no `DRSG_TOKEN` set only the same-origin browser UI is trusted, and
+  `/mcp` refuses every programmatic client **even for reads** — deliberate, so
+  a zero-config desktop install does not quietly expose an open API on
+  localhost.
+- *Isolation.* **Agents share planes; which plane is the caller's choice, and
+  the server partitions nothing per session.** Every tool already takes a
+  `plane`, so two hosts naming the same one share a memory and two hosts naming
+  different ones don't — the isolation knob exists, at the level the data model
+  already has, and a per-session plane would only take that choice away from
+  the agent that should be making it. Concurrent writers are ordered by
+  `write_gate`, so this is safe in the sense a transport owes: no interleaved
+  or lost writes. Whether two agents writing the same entity *converge* is
+  entity resolution (§8), which is a property of the extraction path and stays
+  there — the transport must not grow a second, weaker answer to it.
+- *Transport.* Streamable HTTP, not SSE. One caveat, documented and pinned by a
+  test rather than papered over: rmcp's implementation validates the inbound
+  `Host` against a loopback-only list to blunt DNS rebinding, so `/mcp` answers
+  403 on a hostname where `/rpc` on the same server answers normally. The guard
+  earns its keep — a tokenless server trusts its own same-origin UI, which is
+  what rebinding sets out to impersonate — and the same-machine hosts this
+  section is about are unaffected. Making it configurable is a `ServeOptions`
+  decision, left open.
+- *Whether the embedded binary gains a client mode at all.* No. `drsg-mcp`
+  stays embedded and stdio-only; a host that wants the shared server points its
+  own MCP client straight at the URL.
 
 **Credit.** Raised by @maidol in issue #1, alongside the multi-process bug fixed
 in v1.4.2.
