@@ -25,12 +25,16 @@ daemon, ~ms each) — well inside the hook's budget.
 Matching strategy — character n-gram reverse match (CJK-friendly, zero-dep):
   * A server-side substring search (`plane.find`) requires the *query* to be a
     substring of the text, so a whole-sentence Chinese prompt never matches
-    (verified). BM25 is unavailable for Chinese (core only ships an English
-    analyzer).
+    (verified).
   * Instead we load the project's Facts once and score each against the
     prompt's 2–4 char windows, weighting by inverse document frequency — a
     rare gram like "环境变量" that appears in one Fact strongly pulls it up,
     while filler grams ("这个","问题") spread evenly and contribute little.
+  * The core shipped a Chinese (jieba) BM25 analyzer in 2f175ee, after this
+    hook was written, so the premise above ("BM25 can't do Chinese") no longer
+    holds. Replacing the ranker is a read-path change and the observability
+    plan freezes those until its phase-1 gate, so BM25 runs here in *shadow*:
+    scored and logged every prompt, never injected. See `shadow_bm25`.
 
 Design rules (same as session_start.py):
   * Talk to the shared daemon over /rpc, never open the DB directly.
@@ -145,6 +149,40 @@ def rank_facts(prompt, facts):
     return scored
 
 
+def shadow_bm25(prompt, facts, token):
+    """The BM25-over-`Fact.text` ranking for this prompt — logged, never used.
+
+    Waiting for the phase-1 gate with the read path frozen produces no evidence
+    about what would replace it. Running the candidate ranker beside the live
+    one costs one RPC (~2ms measured) and means the A/B is already collected
+    when the gate opens rather than starting from zero then.
+
+    `Fact.text` is a derived summary+detail property maintained by
+    scripts/memory-layer/backfill_text.py — `Fact.summary`'s own index is
+    pinned to the English analyzer and cannot be changed in place.
+
+    The prompt travels as an RPC *parameter*, never interpolated into a query
+    string: prompts carry quotes and backslashes, and `SEARCH ... MATCHING
+    "<user text>"` would be a parse error at best.
+    """
+    origins = {f["key"]: f["origin"] for f in facts}
+    res = rpc("plane.hybrid", {
+        "plane": PLANE, "q": prompt, "label": "Fact", "keyword_prop": "text",
+        "k": LOG_RANK, "w_keyword": 1.0, "w_vector": 0.0, "w_graph": 0.0,
+    }, token)
+    out = []
+    for h in res.get("results", []):
+        key = h.get("external_key", "?")
+        out.append({
+            "key": key,
+            # A Fact with no ABOUT edge can place here but never in production:
+            # this scans the label, recall walks the edges. "?" marks that gap.
+            "origin": origins.get(key, "?"),
+            "score": round((h.get("channels") or {}).get("keyword") or 0.0, 2),
+        })
+    return out
+
+
 def score_facts(prompt, facts, maxhits=MAX):
     """The facts that win, best first, capped at maxhits. The shape callers
     outside this hook already read (benchmark/bench_lib.py)."""
@@ -250,6 +288,12 @@ def main():
     rec["ranked"] = [{"key": f["key"], "origin": f["origin"], "score": round(s, 2)}
                      for s, f in ranked[:LOG_RANK]]
     rec["n_candidates"] = len(facts)
+    # Shadow only. Nothing below reads it, and its failure must never cost the
+    # user a prompt — so it is swallowed whole and recorded as a bare name.
+    try:
+        rec["shadow_bm25"] = shadow_bm25(prompt, facts, token)
+    except Exception as e:
+        rec["shadow_bm25_error"] = type(e).__name__
     hits = [f for _, f in ranked[:MAX]]
     if not hits:
         done("no_match")

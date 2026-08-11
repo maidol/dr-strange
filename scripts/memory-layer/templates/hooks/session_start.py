@@ -231,6 +231,44 @@ def ensure_briefing(proj_dir, pid, token):
         return "", None
 
 
+def heal_text(token):
+    """Keep the derived `Fact.text` (summary + detail) current, plane-wide.
+
+    `text` exists because `Fact.summary`'s BM25 index is pinned to the English
+    analyzer: `ensure_keyword_index` refuses to change an index's language and
+    the API has no drop. A Chinese (jieba) index needs a property of its own,
+    and `detail` alone is not it — measured, summary carries most of the
+    signal. So `text` is derived and indexed instead.
+
+    It is maintained here, by code, and deliberately absent from the protocol
+    above. A field the protocol asks the model to write is a field that gets
+    silently omitted — that is where the six empty Fact shells came from. This
+    self-heals every session start instead, so an omission cannot degrade
+    anything.
+
+    Duplicated on purpose in scripts/memory-layer/backfill_text.py, which is
+    the standalone repair tool; the hooks are byte-identical copies across
+    projects and cannot import from any one repo. Keep `derive` in sync — it is
+    two lines.
+
+    Plane-wide, not per-project: every install shares one plane, so whichever
+    session starts first heals it for all of them. Returns the repair count.
+    """
+    res = rpc("plane.cypher", {"plane": PLANE, "query": "MATCH (f:Fact) RETURN f",
+                               "params": {}}, token)
+    fixed = 0
+    for n in res.get("nodes", []):
+        props = n.get("properties") or {}
+        s = (props.get("summary") or "").strip()
+        d = (props.get("detail") or "").strip()
+        want = (s + "\n" + d).strip() if d else s
+        if not want or props.get("text") == want:
+            continue
+        rpc("node.update", {"plane": PLANE, "id": n["id"], "set": {"text": want}}, token)
+        fixed += 1
+    return fixed
+
+
 def main():
     ts_start = time.time()
     data = json.load(sys.stdin)
@@ -294,6 +332,15 @@ def main():
         except Exception as e:
             print(f"[drsg-memory] record failed: {e}", file=sys.stderr)
 
+    # Derived-field upkeep, before the briefing reads anything. Best-effort:
+    # a stale `text` only costs the shadow ranker some accuracy, and nothing
+    # here is worth failing a session start over.
+    try:
+        healed = heal_text(token)
+    except Exception as e:
+        healed = None
+        print(f"[drsg-memory] heal_text failed: {e}", file=sys.stderr)
+
     # 2. Inject: the compressed briefing + recent sessions (NOT full Facts).
     parts = []
     brief, n_facts = ensure_briefing(proj_dir, pid, token) if pid else ("", None)
@@ -348,6 +395,10 @@ def main():
                          "brief_chars": len(brief), "proto_chars": len(proto),
                          "events": len(events), "event_chars": len(ev_block),
                          "total_chars": len(ctx),
+                         # None = the repair pass itself failed, 0 = nothing to
+                         # repair. A number that stays >0 every session means
+                         # something is rewriting summaries behind us.
+                         "text_healed": healed,
                          "ms": int((time.time() - ts_start) * 1000)})
     hook_out(additionalContext=ctx)
 
