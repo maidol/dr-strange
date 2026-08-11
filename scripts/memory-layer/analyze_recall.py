@@ -52,6 +52,7 @@ aggregate; it is not a quality score, and P2 (trap recurrence) is the metric
 that answers "did it prevent the accident".
 """
 import argparse
+import bisect
 import hashlib
 import json
 import os
@@ -75,6 +76,9 @@ DF_SHARE = 0.15
 # — English keywords that belong to the fact and to unrelated prose equally,
 # which no threshold on this signal can separate.
 MIN_MATCH_CHARS = 6
+# Recorded prompts a Fact must have been eligible for before "it never matched
+# anything" is a statement about its wording rather than about its age.
+MIN_ELIGIBLE = 20
 # Frozen verdicts, one per (session, prompt, fact). Written beside recall.jsonl
 # in each project so a verdict outlives the transcript it was read from.
 VERDICTS = "recall-verdicts.jsonl"
@@ -149,8 +153,14 @@ def fetch_facts(api, plane, token):
             summary = prop(pr.get("summary")) or ""
             if not summary:
                 continue
+            created = prop(pr.get("created_at"))
             facts.setdefault(n.get("external_key", "?"), {
-                "summary": summary, "kind": prop(pr.get("kind")) or "?", "origin": origin})
+                "summary": summary, "kind": prop(pr.get("kind")) or "?",
+                "origin": origin,
+                # Only ever an int in practice, but a Fact written with an ISO
+                # string would otherwise crash the comparison below rather than
+                # just being unsortable. See the epoch-int Fact.
+                "created_at": created if isinstance(created, int) else None})
     return facts
 
 
@@ -459,7 +469,31 @@ def main():
         print(f"  {key[:44]:<44} {f.get('kind','?')[:18]:<18} {inj[key]:>4} {use[key]:>4}")
 
     dead = [k for k in inj if inj[k] >= 5 and use[k] == 0]
-    dumb = [k for k in facts if k not in inj]
+    # "Never injected" only means something once the Fact has had real chances
+    # to be injected. A Fact is only eligible for prompts recorded after it was
+    # written, so the honest denominator is that count — not the whole window.
+    # Without this split the report tells the author of a Fact written an hour
+    # ago to "rewrite the summary", on the strength of zero observations.
+    prompt_ts = sorted(r["ts"] for r in recalls)
+    unproven, dumb = [], []
+    for k in facts:
+        if k in inj:
+            continue
+        born = facts[k].get("created_at")
+        eligible = (len(prompt_ts) - bisect.bisect_left(prompt_ts, born)
+                    if born is not None else len(prompt_ts))
+        (unproven if eligible < MIN_ELIGIBLE else dumb).append((k, eligible))
+
+    def show(rows, limit=20, chances=False):
+        for k, e in sorted(rows):
+            if limit <= 0:
+                break
+            limit -= 1
+            tail = f"  ({e} chances)" if chances else ""
+            print(f"    {k}  [{facts[k]['origin']}] {facts[k]['summary'][:52]}{tail}")
+        if len(rows) > 20:
+            print(f"    ... and {len(rows) - 20} more")
+
     if dead:
         print(f"\n  dead ({len(dead)}) — injected >=5x, never used → demote or delete:")
         for k in dead:
@@ -467,10 +501,11 @@ def main():
     if dumb:
         print(f"\n  never injected ({len(dumb)}/{len(facts)}) — wording matches no real "
               "prompt; rewrite the summary or delete:")
-        for k in sorted(dumb)[:20]:
-            print(f"    {k}  [{facts[k]['origin']}] {facts[k]['summary'][:52]}")
-        if len(dumb) > 20:
-            print(f"    ... and {len(dumb) - 20} more")
+        show(dumb)
+    if unproven:
+        print(f"\n  too new to judge ({len(unproven)}/{len(facts)}) — fewer than "
+              f"{MIN_ELIGIBLE} recorded prompts since it was written:")
+        show(unproven, chances=True)
 
     print()
     print("-- cost " + "-" * 64)
