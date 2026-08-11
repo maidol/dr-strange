@@ -393,6 +393,22 @@
           }
         },
         {
+          "name": "embed_key_env",
+          "summary": "Name of the environment variable the server reads the embedding key from. A preset provider defaults to its own; a base URL has none, so name it here when the endpoint needs a key. The key itself never travels in params.",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "embed_model",
+          "summary": "Embedding model for a text `SEARCH \u2026 NEAR \"\u2026\"`. A preset supplies its own; a base URL has none, so it is required there.",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
           "name": "params",
           "required": false,
           "schema": {
@@ -446,6 +462,14 @@
         },
         {
           "name": "provider",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "key_env",
+          "summary": "Name of the environment variable the server reads the embedding key from. A preset provider defaults to its own; a base URL has none, so name it here when the endpoint needs a key. The key itself never travels in params.",
           "required": false,
           "schema": {
             "type": "string"
@@ -720,6 +744,14 @@
           }
         },
         {
+          "name": "key_env",
+          "summary": "Name of the environment variable the server reads the embedding key from. A preset provider defaults to its own; a base URL has none, so name it here when the endpoint needs a key. The key itself never travels in params.",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
           "name": "embed_model",
           "required": false,
           "schema": {
@@ -786,6 +818,14 @@
           }
         },
         {
+          "name": "key_env",
+          "summary": "Name of the environment variable the server reads the chat key from. A preset provider defaults to its own; a base URL has none, so name it here when the endpoint needs a key. The key itself never travels in params.",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
           "name": "model",
           "required": false,
           "schema": {
@@ -794,6 +834,14 @@
         },
         {
           "name": "embed_provider",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "embed_key_env",
+          "summary": "Name of the environment variable the server reads the embedding key from. A preset provider defaults to its own; a base URL has none, so name it here when the endpoint needs a key. The key itself never travels in params.",
           "required": false,
           "schema": {
             "type": "string"
@@ -1081,6 +1129,30 @@
         },
         {
           "name": "embed_model",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "key_env",
+          "summary": "Name of the environment variable the server reads the chat key from. A preset provider defaults to its own; a base URL has none, so name it here when the endpoint needs a key. The key itself never travels in params.",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "embed_key_env",
+          "summary": "Name of the environment variable the server reads the embedding key from. A preset provider defaults to its own; a base URL has none, so name it here when the endpoint needs a key. The key itself never travels in params.",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "reasoning_effort",
+          "summary": "`reasoning_effort` to send on the extraction chat calls (e.g. `none`, to stop a reasoning model spending its output budget on thinking tokens and truncating the extraction JSON). Unset \u21d2 not sent, so the provider's own default applies.",
           "required": false,
           "schema": {
             "type": "string"

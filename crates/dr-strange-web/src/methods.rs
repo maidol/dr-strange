@@ -53,6 +53,7 @@ fn app<T>(r: dr_strange_core::Result<T>) -> Result<T, RpcError> {
 /// a past commit `as_of` (sequence) or `as_of_ms` (unix-epoch milliseconds). At
 /// most one; `#[serde(flatten)]` this into a request struct.
 #[derive(Deserialize, Default)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct AsOfParams {
     #[serde(default)]
     as_of: Option<u64>,
@@ -298,6 +299,7 @@ pub fn plane_list(ctx: &Ctx<'_>) -> Result<Value, RpcError> {
 }
 
 #[derive(Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct PlaneOnly {
     plane: String,
 }
@@ -311,6 +313,7 @@ pub fn plane_catalog(ctx: &Ctx<'_>, p: Value) -> Result<Value, RpcError> {
 }
 
 #[derive(Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct GetNode {
     plane: String,
     #[serde(default)]
@@ -332,6 +335,7 @@ pub fn node_get(ctx: &Ctx<'_>, p: Value) -> Result<Value, RpcError> {
 }
 
 #[derive(Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct Neighbors {
     plane: String,
     id: u64,
@@ -376,6 +380,7 @@ pub fn plane_neighbors(ctx: &Ctx<'_>, p: Value) -> Result<Value, RpcError> {
 }
 
 #[derive(Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct Search {
     plane: String,
     property: String,
@@ -406,6 +411,7 @@ pub fn plane_search(ctx: &Ctx<'_>, p: Value) -> Result<Value, RpcError> {
 }
 
 #[derive(Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct RunPlan {
     plane: String,
     plan: Value,
@@ -457,6 +463,7 @@ fn make_embedder(
 }
 
 #[derive(Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct CypherReq {
     plane: String,
     query: String,
@@ -597,6 +604,7 @@ const FIND_SCAN_CAP: usize = 20_000;
 const FIND_LIMIT: usize = 50;
 
 #[derive(Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct Seed {
     plane: String,
     #[serde(default)]
@@ -709,6 +717,7 @@ pub fn graph_seed(ctx: &Ctx<'_>, p: Value) -> Result<Value, RpcError> {
 }
 
 #[derive(Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct Find {
     plane: String,
     q: String,
@@ -845,6 +854,7 @@ pub fn plane_find(ctx: &Ctx<'_>, p: Value) -> Result<Value, RpcError> {
 const ALGO_LIMIT: usize = 100;
 
 #[derive(Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct Algo {
     plane: String,
     /// Which algorithm: `pagerank` | `components` | `shortest_path` | `louvain`.
@@ -961,6 +971,7 @@ pub fn plane_algo(ctx: &Ctx<'_>, p: Value) -> Result<Value, RpcError> {
 }
 
 #[derive(Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct Hybrid {
     plane: String,
     /// The query text: embedded for the vector channel, tokenized for keyword.
@@ -1077,6 +1088,7 @@ pub fn plane_hybrid(ctx: &Ctx<'_>, p: Value) -> Result<Value, RpcError> {
 }
 
 #[derive(Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct Ask {
     plane: String,
     /// The natural-language question.
@@ -1171,6 +1183,7 @@ pub fn plane_ask(ctx: &Ctx<'_>, p: Value) -> Result<Value, RpcError> {
 }
 
 #[derive(Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct PlaneIndexes {
     plane: String,
 }
@@ -1184,6 +1197,7 @@ fn metric_name(m: Metric) -> &'static str {
 }
 
 #[derive(Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct EnsureIndex {
     plane: String,
     label: String,
@@ -1359,6 +1373,7 @@ fn snippet(s: &str) -> String {
 }
 
 #[derive(Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct Expand {
     plane: String,
     id: u64,
@@ -1423,6 +1438,7 @@ fn llm_err(e: anyhow::Error) -> RpcError {
 }
 
 #[derive(Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct DigestRun {
     /// Target plane — only read here, to retrieve existing entities as reuse
     /// candidates for linking (the write happens in `digest.write`).
@@ -1562,6 +1578,7 @@ pub fn digest_run(ctx: &Ctx<'_>, p: Value) -> Result<Value, RpcError> {
 }
 
 #[derive(Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct DigestWrite {
     plane: String,
     nodes: Vec<WriteNode>,
@@ -1570,6 +1587,7 @@ pub struct DigestWrite {
 }
 
 #[derive(Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 struct WriteNode {
     key: String,
     #[serde(default)]
@@ -1579,6 +1597,7 @@ struct WriteNode {
 }
 
 #[derive(Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 struct WriteEdge {
     src: String,
     #[serde(rename = "type")]
@@ -1698,6 +1717,7 @@ pub fn digest_write(ctx: &Ctx<'_>, p: Value) -> Result<Value, RpcError> {
 /// A node reference in a request body: either a numeric `id` or an external
 /// `key`. Used for edge endpoints, which take one field each.
 #[derive(Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(untagged)]
 enum NodeRef {
     Id(u64),
@@ -1734,6 +1754,7 @@ fn resolve_node(
 }
 
 #[derive(Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct CreateNode {
     plane: String,
     #[serde(default)]
@@ -1766,6 +1787,7 @@ pub fn node_create(ctx: &Ctx<'_>, p: Value) -> Result<Value, RpcError> {
 }
 
 #[derive(Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct UpdateNode {
     plane: String,
     #[serde(default)]
@@ -1833,6 +1855,7 @@ pub fn export_plane(ctx: &Ctx<'_>, plane_name: &str) -> Result<String, RpcError>
 }
 
 #[derive(Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct DeleteNode {
     plane: String,
     #[serde(default)]
@@ -1863,6 +1886,7 @@ pub fn node_delete(ctx: &Ctx<'_>, p: Value) -> Result<Value, RpcError> {
 }
 
 #[derive(Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct CreateEdge {
     plane: String,
     src: NodeRef,
@@ -1893,6 +1917,7 @@ pub fn edge_create(ctx: &Ctx<'_>, p: Value) -> Result<Value, RpcError> {
 }
 
 #[derive(Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct UpdateEdge {
     plane: String,
     edge: u64,
@@ -1931,6 +1956,7 @@ pub fn edge_update(ctx: &Ctx<'_>, p: Value) -> Result<Value, RpcError> {
 }
 
 #[derive(Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct DeleteEdge {
     plane: String,
     edge: u64,
@@ -1955,6 +1981,7 @@ pub fn edge_delete(ctx: &Ctx<'_>, p: Value) -> Result<Value, RpcError> {
 // ---- plane administration (arch/09 §3) ------------------------------------
 
 #[derive(Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct CreatePlane {
     name: String,
     #[serde(default)]
@@ -1970,6 +1997,7 @@ pub fn plane_create(ctx: &Ctx<'_>, p: Value) -> Result<Value, RpcError> {
 }
 
 #[derive(Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct RenamePlane {
     plane: String,
     to: String,
@@ -1985,6 +2013,7 @@ pub fn plane_rename(ctx: &Ctx<'_>, p: Value) -> Result<Value, RpcError> {
 }
 
 #[derive(Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct SetPlaneProps {
     plane: String,
     #[serde(default)]
@@ -2007,6 +2036,7 @@ pub fn plane_set_props(ctx: &Ctx<'_>, p: Value) -> Result<Value, RpcError> {
 }
 
 #[derive(Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct DeletePlane {
     plane: String,
 }
@@ -2117,5 +2147,164 @@ mod change_feed_tests {
         let c = &v["params"]["changes"][0];
         assert_eq!(c["op"], "deleted");
         assert!(c.get("record").is_none(), "a delete carries no record");
+    }
+}
+
+/// The half of the schema contract nothing else watches.
+///
+/// `rpc.rs`'s `openrpc_schema_matches_the_declared_surface` pins the *method
+/// names*, and every SDK's drift test pins its generated client to
+/// `openrpc.json` — so a schema change propagates. Nothing pinned the step
+/// before that: a request struct could gain a field and the schema never hear
+/// of it. It happened — `key_env`, `embed_key_env` and `reasoning_effort`
+/// reached the wire while `openrpc.json`, `rpc.discover` and all six SDKs still
+/// described the older surface, with a green CI.
+#[cfg(test)]
+mod openrpc_param_drift {
+    use super::*;
+    use schemars::{JsonSchema, schema_for};
+    use std::collections::BTreeSet;
+
+    /// Every wire field name a request type accepts.
+    ///
+    /// Read off the generated schema rather than the struct because of
+    /// `#[serde(flatten)]`: the AS OF address lives in a borrowed
+    /// [`AsOfParams`], and schemars puts a flattened type behind `allOf`/`$ref`
+    /// instead of inlining it. Reading `properties` alone would miss `as_of` /
+    /// `as_of_ms` and fail the methods that are in fact correct.
+    fn wire_fields<T: JsonSchema>() -> BTreeSet<String> {
+        let root = serde_json::to_value(schema_for!(T)).expect("a schema is JSON");
+        let mut out = BTreeSet::new();
+        collect(&root, &root, &mut out, 0);
+        out
+    }
+
+    /// Field names at `node`, following the composition keywords that carry a
+    /// flattened struct. Deliberately does *not* descend into a property's own
+    /// schema — a field's inner shape is not part of this method's param list.
+    fn collect(root: &Value, node: &Value, out: &mut BTreeSet<String>, depth: usize) {
+        // `$defs` may reference itself; the request types are shallow, so any
+        // real nesting is long done by here.
+        if depth > 8 {
+            return;
+        }
+        if let Some(props) = node.get("properties").and_then(|p| p.as_object()) {
+            out.extend(props.keys().cloned());
+        }
+        if let Some(name) = node
+            .get("$ref")
+            .and_then(|r| r.as_str())
+            .and_then(|r| r.strip_prefix("#/$defs/"))
+            && let Some(def) = root.get("$defs").and_then(|d| d.get(name))
+        {
+            collect(root, def, out, depth + 1);
+        }
+        for keyword in ["allOf", "anyOf", "oneOf"] {
+            if let Some(members) = node.get(keyword).and_then(|v| v.as_array()) {
+                for member in members {
+                    collect(root, member, out, depth + 1);
+                }
+            }
+        }
+    }
+
+    /// Every method, paired with the fields of the type it deserializes —
+    /// `None` for the ones that take no params. Exhaustiveness is asserted
+    /// against the schema below, so a new method cannot be added without
+    /// naming the type that answers for it.
+    fn declared() -> Vec<(&'static str, Option<BTreeSet<String>>)> {
+        vec![
+            ("rpc.discover", None),
+            ("db.stats", None),
+            ("db.catalog", None),
+            ("plane.list", None),
+            ("plane.catalog", Some(wire_fields::<PlaneOnly>())),
+            ("node.get", Some(wire_fields::<GetNode>())),
+            ("plane.history", None),
+            ("plane.neighbors", Some(wire_fields::<Neighbors>())),
+            ("plane.search", Some(wire_fields::<Search>())),
+            ("plane.query", Some(wire_fields::<RunPlan>())),
+            ("plane.cypher", Some(wire_fields::<CypherReq>())),
+            ("plane.find", Some(wire_fields::<Find>())),
+            ("plane.algo", Some(wire_fields::<Algo>())),
+            ("plane.hybrid", Some(wire_fields::<Hybrid>())),
+            ("plane.ask", Some(wire_fields::<Ask>())),
+            ("plane.indexes", Some(wire_fields::<PlaneIndexes>())),
+            ("index.ensure", Some(wire_fields::<EnsureIndex>())),
+            ("graph.seed", Some(wire_fields::<Seed>())),
+            ("graph.expand", Some(wire_fields::<Expand>())),
+            ("digest.run", Some(wire_fields::<DigestRun>())),
+            ("digest.write", Some(wire_fields::<DigestWrite>())),
+            ("node.create", Some(wire_fields::<CreateNode>())),
+            ("node.update", Some(wire_fields::<UpdateNode>())),
+            ("node.delete", Some(wire_fields::<DeleteNode>())),
+            ("edge.create", Some(wire_fields::<CreateEdge>())),
+            ("edge.update", Some(wire_fields::<UpdateEdge>())),
+            ("edge.delete", Some(wire_fields::<DeleteEdge>())),
+            ("plane.create", Some(wire_fields::<CreatePlane>())),
+            ("plane.rename", Some(wire_fields::<RenamePlane>())),
+            ("plane.set_props", Some(wire_fields::<SetPlaneProps>())),
+            ("plane.delete", Some(wire_fields::<DeletePlane>())),
+        ]
+    }
+
+    #[test]
+    fn openrpc_params_match_the_request_structs() {
+        let doc: Value = serde_json::from_str(include_str!("../openrpc.json"))
+            .expect("openrpc.json must be valid JSON");
+        let table = declared();
+
+        let in_doc: BTreeSet<&str> = doc["methods"]
+            .as_array()
+            .expect("openrpc `methods` array")
+            .iter()
+            .map(|m| m["name"].as_str().expect("method name"))
+            .collect();
+        let in_table: BTreeSet<&str> = table.iter().map(|(name, _)| *name).collect();
+        assert_eq!(
+            in_doc, in_table,
+            "every method needs a row here naming the type that reads its params"
+        );
+
+        let by_name: std::collections::BTreeMap<&str, &Value> = doc["methods"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| (m["name"].as_str().unwrap(), m))
+            .collect();
+
+        // Reported all at once, not one assert per method: whoever is fixing
+        // this wants the whole list, not the alphabetically first line of it.
+        let mut drifted = Vec::new();
+        for (name, fields) in &table {
+            let documented: BTreeSet<String> = by_name[name]
+                .get("params")
+                .and_then(|p| p.as_array())
+                .map(|ps| {
+                    ps.iter()
+                        .map(|p| p["name"].as_str().expect("param name").to_string())
+                        .collect()
+                })
+                .unwrap_or_default();
+            let accepted = fields.clone().unwrap_or_default();
+            // Both directions: a documented param the server would ignore, or —
+            // the drift that actually shipped — a param the server reads and the
+            // schema never mentions, so no SDK can send it.
+            let undocumented: Vec<&String> = accepted.difference(&documented).collect();
+            let unread: Vec<&String> = documented.difference(&accepted).collect();
+            if !undocumented.is_empty() {
+                drifted.push(format!(
+                    "{name}: read but not in the schema: {undocumented:?}"
+                ));
+            }
+            if !unread.is_empty() {
+                drifted.push(format!("{name}: in the schema but not read: {unread:?}"));
+            }
+        }
+        assert!(
+            drifted.is_empty(),
+            "openrpc.json and the request structs disagree:\n  {}",
+            drifted.join("\n  ")
+        );
     }
 }

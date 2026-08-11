@@ -43,19 +43,19 @@ or an external key.
 
 - **`plane.neighbors`** · read — 1-hop expansion as `{node, edge}` id pairs. Params: `plane` string!, `id` integer!, `direction` string, `type` string, `as_of` integer, `as_of_ms` integer.
 - **`plane.query`** · read — run a serialized logical plan. Params: `plane` string!, `plan` object!, `as_of` integer, `as_of_ms` integer.
-- **`plane.cypher`** · write — run an openCypher-subset statement (write-gated). Params: `plane` string!, `query` string!, `embed` string, `params` object.
-- **`plane.find`** · read — text or semantic search over a plane. Params: `plane` string!, `q` string!, `limit` integer, `semantic` boolean, `provider` string, `embed_model` string, `as_of` integer, `as_of_ms` integer.
+- **`plane.cypher`** · write — run an openCypher-subset statement (write-gated). Params: `plane` string!, `query` string!, `embed` string, `embed_key_env` string, `embed_model` string, `params` object.
+- **`plane.find`** · read — text or semantic search over a plane. Params: `plane` string!, `q` string!, `limit` integer, `semantic` boolean, `provider` string, `key_env` string, `embed_model` string, `as_of` integer, `as_of_ms` integer.
 - **`plane.search`** · read — vector top-*k* over a property. Params: `plane` string!, `property` string!, `query` array!, `label` string, `k` integer, `metric` string.
-- **`plane.hybrid`** · read — fused vector + keyword + graph-proximity search. Params: `plane` string!, `q` string!, `label` string, `vector_prop` string, `keyword_prop` string, `metric` string, `graph_hops` integer, `graph_decay` number, `w_vector` number, `w_keyword` number, `w_graph` number, `k` integer, `candidates` integer, `provider` string, `embed_model` string.
+- **`plane.hybrid`** · read — fused vector + keyword + graph-proximity search. Params: `plane` string!, `q` string!, `label` string, `vector_prop` string, `keyword_prop` string, `metric` string, `graph_hops` integer, `graph_decay` number, `w_vector` number, `w_keyword` number, `w_graph` number, `k` integer, `candidates` integer, `provider` string, `key_env` string, `embed_model` string.
 - **`plane.algo`** · read — a graph algorithm over a plane or label subset. Params: `plane` string!, `algo` string!, `label` string, `limit` integer, `damping` number, `max_iters` integer, `tolerance` number, `src` integer, `dst` integer, `dir` string, `weight` string, `max_levels` integer, `min_gain` number.
-- **`plane.ask`** · read — natural-language query → plan → run. Params: `plane` string!, `question` string!, `dry_run` boolean, `max_attempts` integer, `limit` integer, `provider` string, `model` string, `embed_provider` string, `embed_model` string.
+- **`plane.ask`** · read — natural-language query → plan → run. Params: `plane` string!, `question` string!, `dry_run` boolean, `max_attempts` integer, `limit` integer, `provider` string, `key_env` string, `model` string, `embed_provider` string, `embed_key_env` string, `embed_model` string.
 - **`graph.seed`** · read — an initial canvas of nodes plus induced edges. Params: `plane` string!, `label` string, `limit` integer, `order` string (`scan` \| `degree` \| `pagerank`, default `scan`), `as_of` integer, `as_of_ms` integer. A ranked `order` returns the highest-scoring nodes rather than the first the scan reaches, and includes their `scores` — prefer `degree` for a skeleton, since PageRank pools rank in sinks.
 - **`graph.expand`** · read — hub-safe 1-hop neighbourhood around a node. Params: `plane` string!, `id` integer!, `direction` string, `type` string, `limit` integer, `as_of` integer, `as_of_ms` integer.
 
 ## Indexes and ingestion
 
 - **`index.ensure`** · admin — declare a vector or keyword index on `(label, property)`. Params: `plane` string!, `label` string!, `property` string!, `kind` string, `metric` string, `language` string.
-- **`digest.run`** · write — extract a node/edge proposal from text via the LLM (dry run). Params: `plane` string!, `text` string!, `chat` string, `embed` string, `model` string, `embed_model` string, `source` string, `no_embed` boolean, `link` boolean, `concurrency` integer, `chunk_chars` integer, `mode` string (`coarse` \| `fine` \| `super`, default `fine` — see [Chapter 3](./ai-native.md#extraction-precision); `super` costs ~15× the input tokens).
+- **`digest.run`** · write — extract a node/edge proposal from text via the LLM (dry run). Params: `plane` string!, `text` string!, `chat` string, `embed` string, `model` string, `embed_model` string, `key_env` string, `embed_key_env` string, `reasoning_effort` string, `source` string, `no_embed` boolean, `link` boolean, `concurrency` integer, `chunk_chars` integer, `mode` string (`coarse` \| `fine` \| `super`, default `fine` — see [Chapter 3](./ai-native.md#extraction-precision); `super` costs ~15× the input tokens).
 - **`digest.write`** · write — write a previously-computed proposal (no LLM call). Params: `plane` string!, `nodes` array!, `edges` array.
 
 ## WebSocket subscription

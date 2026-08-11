@@ -121,10 +121,12 @@ type PlaneQueryParams struct {
 }
 
 type PlaneCypherParams struct {
-	Plane  string         `json:"plane"`
-	Query  string         `json:"query"`
-	Embed  *string        `json:"embed,omitempty"`
-	Params map[string]any `json:"params,omitempty"`
+	Plane       string         `json:"plane"`
+	Query       string         `json:"query"`
+	Embed       *string        `json:"embed,omitempty"`
+	EmbedKeyEnv *string        `json:"embed_key_env,omitempty"`
+	EmbedModel  *string        `json:"embed_model,omitempty"`
+	Params      map[string]any `json:"params,omitempty"`
 }
 
 type PlaneFindParams struct {
@@ -133,6 +135,7 @@ type PlaneFindParams struct {
 	Limit      *int64  `json:"limit,omitempty"`
 	Semantic   *bool   `json:"semantic,omitempty"`
 	Provider   *string `json:"provider,omitempty"`
+	KeyEnv     *string `json:"key_env,omitempty"`
 	EmbedModel *string `json:"embed_model,omitempty"`
 	AsOf       *int64  `json:"as_of,omitempty"`
 	AsOfMs     *int64  `json:"as_of_ms,omitempty"`
@@ -169,6 +172,7 @@ type PlaneHybridParams struct {
 	K           *int64   `json:"k,omitempty"`
 	Candidates  *int64   `json:"candidates,omitempty"`
 	Provider    *string  `json:"provider,omitempty"`
+	KeyEnv      *string  `json:"key_env,omitempty"`
 	EmbedModel  *string  `json:"embed_model,omitempty"`
 }
 
@@ -179,8 +183,10 @@ type PlaneAskParams struct {
 	MaxAttempts   *int64  `json:"max_attempts,omitempty"`
 	Limit         *int64  `json:"limit,omitempty"`
 	Provider      *string `json:"provider,omitempty"`
+	KeyEnv        *string `json:"key_env,omitempty"`
 	Model         *string `json:"model,omitempty"`
 	EmbedProvider *string `json:"embed_provider,omitempty"`
+	EmbedKeyEnv   *string `json:"embed_key_env,omitempty"`
 	EmbedModel    *string `json:"embed_model,omitempty"`
 }
 
@@ -217,18 +223,21 @@ type GraphExpandParams struct {
 }
 
 type DigestRunParams struct {
-	Plane       string  `json:"plane"`
-	Text        string  `json:"text"`
-	Chat        *string `json:"chat,omitempty"`
-	Embed       *string `json:"embed,omitempty"`
-	Model       *string `json:"model,omitempty"`
-	EmbedModel  *string `json:"embed_model,omitempty"`
-	Source      *string `json:"source,omitempty"`
-	NoEmbed     *bool   `json:"no_embed,omitempty"`
-	Link        *bool   `json:"link,omitempty"`
-	Concurrency *int64  `json:"concurrency,omitempty"`
-	ChunkChars  *int64  `json:"chunk_chars,omitempty"`
-	Mode        *string `json:"mode,omitempty"`
+	Plane           string  `json:"plane"`
+	Text            string  `json:"text"`
+	Chat            *string `json:"chat,omitempty"`
+	Embed           *string `json:"embed,omitempty"`
+	Model           *string `json:"model,omitempty"`
+	EmbedModel      *string `json:"embed_model,omitempty"`
+	KeyEnv          *string `json:"key_env,omitempty"`
+	EmbedKeyEnv     *string `json:"embed_key_env,omitempty"`
+	ReasoningEffort *string `json:"reasoning_effort,omitempty"`
+	Source          *string `json:"source,omitempty"`
+	NoEmbed         *bool   `json:"no_embed,omitempty"`
+	Link            *bool   `json:"link,omitempty"`
+	Concurrency     *int64  `json:"concurrency,omitempty"`
+	ChunkChars      *int64  `json:"chunk_chars,omitempty"`
+	Mode            *string `json:"mode,omitempty"`
 }
 
 type DigestWriteResult struct {

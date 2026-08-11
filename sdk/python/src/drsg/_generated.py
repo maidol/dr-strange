@@ -112,7 +112,7 @@ class Drsg(_Client):
             _p["as_of_ms"] = as_of_ms
         return self._call("plane.query", _p)
 
-    def plane_cypher(self, plane, query, embed=None, params=None) -> Any:
+    def plane_cypher(self, plane, query, embed=None, embed_key_env=None, embed_model=None, params=None) -> Any:
         """Run a statement in the query language (openCypher subset). A read returns {nodes, edges, count}; a write (CREATE/MERGE/SET/REMOVE/DELETE) returns {write: true, ...change-counts}. Write-gated.
 
         Access: write."""
@@ -121,11 +121,15 @@ class Drsg(_Client):
         _p["query"] = query
         if embed is not None:
             _p["embed"] = embed
+        if embed_key_env is not None:
+            _p["embed_key_env"] = embed_key_env
+        if embed_model is not None:
+            _p["embed_model"] = embed_model
         if params is not None:
             _p["params"] = params
         return self._call("plane.cypher", _p)
 
-    def plane_find(self, plane, q, limit=None, semantic=None, provider=None, embed_model=None, as_of=None, as_of_ms=None) -> Any:
+    def plane_find(self, plane, q, limit=None, semantic=None, provider=None, key_env=None, embed_model=None, as_of=None, as_of_ms=None) -> Any:
         """Text (or semantic) search over the plane's nodes and edges.
 
         Access: read."""
@@ -138,6 +142,8 @@ class Drsg(_Client):
             _p["semantic"] = semantic
         if provider is not None:
             _p["provider"] = provider
+        if key_env is not None:
+            _p["key_env"] = key_env
         if embed_model is not None:
             _p["embed_model"] = embed_model
         if as_of is not None:
@@ -177,7 +183,7 @@ class Drsg(_Client):
             _p["min_gain"] = min_gain
         return self._call("plane.algo", _p)
 
-    def plane_hybrid(self, plane, q, label=None, vector_prop=None, keyword_prop=None, metric=None, graph_hops=None, graph_decay=None, w_vector=None, w_keyword=None, w_graph=None, k=None, candidates=None, provider=None, embed_model=None) -> Any:
+    def plane_hybrid(self, plane, q, label=None, vector_prop=None, keyword_prop=None, metric=None, graph_hops=None, graph_decay=None, w_vector=None, w_keyword=None, w_graph=None, k=None, candidates=None, provider=None, key_env=None, embed_model=None) -> Any:
         """Hybrid retrieval: fuse vector similarity, BM25 keyword, and graph-proximity channels into one ranking. Enable a channel by naming its property (vector_prop/keyword_prop) or setting graph_hops; the vector channel embeds q server-side.
 
         Access: read."""
@@ -208,11 +214,13 @@ class Drsg(_Client):
             _p["candidates"] = candidates
         if provider is not None:
             _p["provider"] = provider
+        if key_env is not None:
+            _p["key_env"] = key_env
         if embed_model is not None:
             _p["embed_model"] = embed_model
         return self._call("plane.hybrid", _p)
 
-    def plane_ask(self, plane, question, dry_run=None, max_attempts=None, limit=None, provider=None, model=None, embed_provider=None, embed_model=None) -> Any:
+    def plane_ask(self, plane, question, dry_run=None, max_attempts=None, limit=None, provider=None, key_env=None, model=None, embed_provider=None, embed_key_env=None, embed_model=None) -> Any:
         """Natural-language query: an LLM turns the question into a read-only LogicalPlan, runs it (unless dry_run), and returns the generated plan plus result node records. With embed_provider, the model can call find_edge/find_entity embedding tools to ground the plan. Keys from the server env.
 
         Access: read."""
@@ -227,10 +235,14 @@ class Drsg(_Client):
             _p["limit"] = limit
         if provider is not None:
             _p["provider"] = provider
+        if key_env is not None:
+            _p["key_env"] = key_env
         if model is not None:
             _p["model"] = model
         if embed_provider is not None:
             _p["embed_provider"] = embed_provider
+        if embed_key_env is not None:
+            _p["embed_key_env"] = embed_key_env
         if embed_model is not None:
             _p["embed_model"] = embed_model
         return self._call("plane.ask", _p)
@@ -296,7 +308,7 @@ class Drsg(_Client):
             _p["as_of_ms"] = as_of_ms
         return self._call("graph.expand", _p)
 
-    def digest_run(self, plane, text, chat=None, embed=None, model=None, embed_model=None, source=None, no_embed=None, link=None, concurrency=None, chunk_chars=None, mode=None) -> Any:
+    def digest_run(self, plane, text, chat=None, embed=None, model=None, embed_model=None, key_env=None, embed_key_env=None, reasoning_effort=None, source=None, no_embed=None, link=None, concurrency=None, chunk_chars=None, mode=None) -> Any:
         """Extract a node/edge proposal from text via the LLM (dry-run; spends provider credits). `mode` sets how much clean-up follows the extraction: `coarse` reconciles the label and edge-type vocabularies, `fine` (the default) also merges entities that name the same thing, `super` also re-reads every entity against all the passages mentioning it — most accurate, and ~15x the input token usage.
 
         Access: write."""
@@ -311,6 +323,12 @@ class Drsg(_Client):
             _p["model"] = model
         if embed_model is not None:
             _p["embed_model"] = embed_model
+        if key_env is not None:
+            _p["key_env"] = key_env
+        if embed_key_env is not None:
+            _p["embed_key_env"] = embed_key_env
+        if reasoning_effort is not None:
+            _p["reasoning_effort"] = reasoning_effort
         if source is not None:
             _p["source"] = source
         if no_embed is not None:

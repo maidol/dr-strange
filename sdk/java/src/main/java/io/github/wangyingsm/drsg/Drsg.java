@@ -198,18 +198,28 @@ public class Drsg extends Client {
             String plane,
             String query,
             String embed,
+            String embedKeyEnv,
+            String embedModel,
             Map<String, Object> params) {
 
         public static PlaneCypherParams of(String plane, String query) {
-            return new PlaneCypherParams(plane, query, null, null);
+            return new PlaneCypherParams(plane, query, null, null, null, null);
         }
 
         public PlaneCypherParams withEmbed(String embed) {
-            return new PlaneCypherParams(plane, query, embed, params);
+            return new PlaneCypherParams(plane, query, embed, embedKeyEnv, embedModel, params);
+        }
+
+        public PlaneCypherParams withEmbedKeyEnv(String embedKeyEnv) {
+            return new PlaneCypherParams(plane, query, embed, embedKeyEnv, embedModel, params);
+        }
+
+        public PlaneCypherParams withEmbedModel(String embedModel) {
+            return new PlaneCypherParams(plane, query, embed, embedKeyEnv, embedModel, params);
         }
 
         public PlaneCypherParams withParams(Map<String, Object> params) {
-            return new PlaneCypherParams(plane, query, embed, params);
+            return new PlaneCypherParams(plane, query, embed, embedKeyEnv, embedModel, params);
         }
     }
 
@@ -219,36 +229,41 @@ public class Drsg extends Client {
             Long limit,
             Boolean semantic,
             String provider,
+            String keyEnv,
             String embedModel,
             Long asOf,
             Long asOfMs) {
 
         public static PlaneFindParams of(String plane, String q) {
-            return new PlaneFindParams(plane, q, null, null, null, null, null, null);
+            return new PlaneFindParams(plane, q, null, null, null, null, null, null, null);
         }
 
         public PlaneFindParams withLimit(Long limit) {
-            return new PlaneFindParams(plane, q, limit, semantic, provider, embedModel, asOf, asOfMs);
+            return new PlaneFindParams(plane, q, limit, semantic, provider, keyEnv, embedModel, asOf, asOfMs);
         }
 
         public PlaneFindParams withSemantic(Boolean semantic) {
-            return new PlaneFindParams(plane, q, limit, semantic, provider, embedModel, asOf, asOfMs);
+            return new PlaneFindParams(plane, q, limit, semantic, provider, keyEnv, embedModel, asOf, asOfMs);
         }
 
         public PlaneFindParams withProvider(String provider) {
-            return new PlaneFindParams(plane, q, limit, semantic, provider, embedModel, asOf, asOfMs);
+            return new PlaneFindParams(plane, q, limit, semantic, provider, keyEnv, embedModel, asOf, asOfMs);
+        }
+
+        public PlaneFindParams withKeyEnv(String keyEnv) {
+            return new PlaneFindParams(plane, q, limit, semantic, provider, keyEnv, embedModel, asOf, asOfMs);
         }
 
         public PlaneFindParams withEmbedModel(String embedModel) {
-            return new PlaneFindParams(plane, q, limit, semantic, provider, embedModel, asOf, asOfMs);
+            return new PlaneFindParams(plane, q, limit, semantic, provider, keyEnv, embedModel, asOf, asOfMs);
         }
 
         public PlaneFindParams withAsOf(Long asOf) {
-            return new PlaneFindParams(plane, q, limit, semantic, provider, embedModel, asOf, asOfMs);
+            return new PlaneFindParams(plane, q, limit, semantic, provider, keyEnv, embedModel, asOf, asOfMs);
         }
 
         public PlaneFindParams withAsOfMs(Long asOfMs) {
-            return new PlaneFindParams(plane, q, limit, semantic, provider, embedModel, asOf, asOfMs);
+            return new PlaneFindParams(plane, q, limit, semantic, provider, keyEnv, embedModel, asOf, asOfMs);
         }
     }
 
@@ -331,62 +346,67 @@ public class Drsg extends Client {
             Long k,
             Long candidates,
             String provider,
+            String keyEnv,
             String embedModel) {
 
         public static PlaneHybridParams of(String plane, String q) {
-            return new PlaneHybridParams(plane, q, null, null, null, null, null, null, null, null, null, null, null, null, null);
+            return new PlaneHybridParams(plane, q, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
         }
 
         public PlaneHybridParams withLabel(String label) {
-            return new PlaneHybridParams(plane, q, label, vectorProp, keywordProp, metric, graphHops, graphDecay, wVector, wKeyword, wGraph, k, candidates, provider, embedModel);
+            return new PlaneHybridParams(plane, q, label, vectorProp, keywordProp, metric, graphHops, graphDecay, wVector, wKeyword, wGraph, k, candidates, provider, keyEnv, embedModel);
         }
 
         public PlaneHybridParams withVectorProp(String vectorProp) {
-            return new PlaneHybridParams(plane, q, label, vectorProp, keywordProp, metric, graphHops, graphDecay, wVector, wKeyword, wGraph, k, candidates, provider, embedModel);
+            return new PlaneHybridParams(plane, q, label, vectorProp, keywordProp, metric, graphHops, graphDecay, wVector, wKeyword, wGraph, k, candidates, provider, keyEnv, embedModel);
         }
 
         public PlaneHybridParams withKeywordProp(String keywordProp) {
-            return new PlaneHybridParams(plane, q, label, vectorProp, keywordProp, metric, graphHops, graphDecay, wVector, wKeyword, wGraph, k, candidates, provider, embedModel);
+            return new PlaneHybridParams(plane, q, label, vectorProp, keywordProp, metric, graphHops, graphDecay, wVector, wKeyword, wGraph, k, candidates, provider, keyEnv, embedModel);
         }
 
         public PlaneHybridParams withMetric(String metric) {
-            return new PlaneHybridParams(plane, q, label, vectorProp, keywordProp, metric, graphHops, graphDecay, wVector, wKeyword, wGraph, k, candidates, provider, embedModel);
+            return new PlaneHybridParams(plane, q, label, vectorProp, keywordProp, metric, graphHops, graphDecay, wVector, wKeyword, wGraph, k, candidates, provider, keyEnv, embedModel);
         }
 
         public PlaneHybridParams withGraphHops(Long graphHops) {
-            return new PlaneHybridParams(plane, q, label, vectorProp, keywordProp, metric, graphHops, graphDecay, wVector, wKeyword, wGraph, k, candidates, provider, embedModel);
+            return new PlaneHybridParams(plane, q, label, vectorProp, keywordProp, metric, graphHops, graphDecay, wVector, wKeyword, wGraph, k, candidates, provider, keyEnv, embedModel);
         }
 
         public PlaneHybridParams withGraphDecay(Double graphDecay) {
-            return new PlaneHybridParams(plane, q, label, vectorProp, keywordProp, metric, graphHops, graphDecay, wVector, wKeyword, wGraph, k, candidates, provider, embedModel);
+            return new PlaneHybridParams(plane, q, label, vectorProp, keywordProp, metric, graphHops, graphDecay, wVector, wKeyword, wGraph, k, candidates, provider, keyEnv, embedModel);
         }
 
         public PlaneHybridParams withWVector(Double wVector) {
-            return new PlaneHybridParams(plane, q, label, vectorProp, keywordProp, metric, graphHops, graphDecay, wVector, wKeyword, wGraph, k, candidates, provider, embedModel);
+            return new PlaneHybridParams(plane, q, label, vectorProp, keywordProp, metric, graphHops, graphDecay, wVector, wKeyword, wGraph, k, candidates, provider, keyEnv, embedModel);
         }
 
         public PlaneHybridParams withWKeyword(Double wKeyword) {
-            return new PlaneHybridParams(plane, q, label, vectorProp, keywordProp, metric, graphHops, graphDecay, wVector, wKeyword, wGraph, k, candidates, provider, embedModel);
+            return new PlaneHybridParams(plane, q, label, vectorProp, keywordProp, metric, graphHops, graphDecay, wVector, wKeyword, wGraph, k, candidates, provider, keyEnv, embedModel);
         }
 
         public PlaneHybridParams withWGraph(Double wGraph) {
-            return new PlaneHybridParams(plane, q, label, vectorProp, keywordProp, metric, graphHops, graphDecay, wVector, wKeyword, wGraph, k, candidates, provider, embedModel);
+            return new PlaneHybridParams(plane, q, label, vectorProp, keywordProp, metric, graphHops, graphDecay, wVector, wKeyword, wGraph, k, candidates, provider, keyEnv, embedModel);
         }
 
         public PlaneHybridParams withK(Long k) {
-            return new PlaneHybridParams(plane, q, label, vectorProp, keywordProp, metric, graphHops, graphDecay, wVector, wKeyword, wGraph, k, candidates, provider, embedModel);
+            return new PlaneHybridParams(plane, q, label, vectorProp, keywordProp, metric, graphHops, graphDecay, wVector, wKeyword, wGraph, k, candidates, provider, keyEnv, embedModel);
         }
 
         public PlaneHybridParams withCandidates(Long candidates) {
-            return new PlaneHybridParams(plane, q, label, vectorProp, keywordProp, metric, graphHops, graphDecay, wVector, wKeyword, wGraph, k, candidates, provider, embedModel);
+            return new PlaneHybridParams(plane, q, label, vectorProp, keywordProp, metric, graphHops, graphDecay, wVector, wKeyword, wGraph, k, candidates, provider, keyEnv, embedModel);
         }
 
         public PlaneHybridParams withProvider(String provider) {
-            return new PlaneHybridParams(plane, q, label, vectorProp, keywordProp, metric, graphHops, graphDecay, wVector, wKeyword, wGraph, k, candidates, provider, embedModel);
+            return new PlaneHybridParams(plane, q, label, vectorProp, keywordProp, metric, graphHops, graphDecay, wVector, wKeyword, wGraph, k, candidates, provider, keyEnv, embedModel);
+        }
+
+        public PlaneHybridParams withKeyEnv(String keyEnv) {
+            return new PlaneHybridParams(plane, q, label, vectorProp, keywordProp, metric, graphHops, graphDecay, wVector, wKeyword, wGraph, k, candidates, provider, keyEnv, embedModel);
         }
 
         public PlaneHybridParams withEmbedModel(String embedModel) {
-            return new PlaneHybridParams(plane, q, label, vectorProp, keywordProp, metric, graphHops, graphDecay, wVector, wKeyword, wGraph, k, candidates, provider, embedModel);
+            return new PlaneHybridParams(plane, q, label, vectorProp, keywordProp, metric, graphHops, graphDecay, wVector, wKeyword, wGraph, k, candidates, provider, keyEnv, embedModel);
         }
     }
 
@@ -397,40 +417,50 @@ public class Drsg extends Client {
             Long maxAttempts,
             Long limit,
             String provider,
+            String keyEnv,
             String model,
             String embedProvider,
+            String embedKeyEnv,
             String embedModel) {
 
         public static PlaneAskParams of(String plane, String question) {
-            return new PlaneAskParams(plane, question, null, null, null, null, null, null, null);
+            return new PlaneAskParams(plane, question, null, null, null, null, null, null, null, null, null);
         }
 
         public PlaneAskParams withDryRun(Boolean dryRun) {
-            return new PlaneAskParams(plane, question, dryRun, maxAttempts, limit, provider, model, embedProvider, embedModel);
+            return new PlaneAskParams(plane, question, dryRun, maxAttempts, limit, provider, keyEnv, model, embedProvider, embedKeyEnv, embedModel);
         }
 
         public PlaneAskParams withMaxAttempts(Long maxAttempts) {
-            return new PlaneAskParams(plane, question, dryRun, maxAttempts, limit, provider, model, embedProvider, embedModel);
+            return new PlaneAskParams(plane, question, dryRun, maxAttempts, limit, provider, keyEnv, model, embedProvider, embedKeyEnv, embedModel);
         }
 
         public PlaneAskParams withLimit(Long limit) {
-            return new PlaneAskParams(plane, question, dryRun, maxAttempts, limit, provider, model, embedProvider, embedModel);
+            return new PlaneAskParams(plane, question, dryRun, maxAttempts, limit, provider, keyEnv, model, embedProvider, embedKeyEnv, embedModel);
         }
 
         public PlaneAskParams withProvider(String provider) {
-            return new PlaneAskParams(plane, question, dryRun, maxAttempts, limit, provider, model, embedProvider, embedModel);
+            return new PlaneAskParams(plane, question, dryRun, maxAttempts, limit, provider, keyEnv, model, embedProvider, embedKeyEnv, embedModel);
+        }
+
+        public PlaneAskParams withKeyEnv(String keyEnv) {
+            return new PlaneAskParams(plane, question, dryRun, maxAttempts, limit, provider, keyEnv, model, embedProvider, embedKeyEnv, embedModel);
         }
 
         public PlaneAskParams withModel(String model) {
-            return new PlaneAskParams(plane, question, dryRun, maxAttempts, limit, provider, model, embedProvider, embedModel);
+            return new PlaneAskParams(plane, question, dryRun, maxAttempts, limit, provider, keyEnv, model, embedProvider, embedKeyEnv, embedModel);
         }
 
         public PlaneAskParams withEmbedProvider(String embedProvider) {
-            return new PlaneAskParams(plane, question, dryRun, maxAttempts, limit, provider, model, embedProvider, embedModel);
+            return new PlaneAskParams(plane, question, dryRun, maxAttempts, limit, provider, keyEnv, model, embedProvider, embedKeyEnv, embedModel);
+        }
+
+        public PlaneAskParams withEmbedKeyEnv(String embedKeyEnv) {
+            return new PlaneAskParams(plane, question, dryRun, maxAttempts, limit, provider, keyEnv, model, embedProvider, embedKeyEnv, embedModel);
         }
 
         public PlaneAskParams withEmbedModel(String embedModel) {
-            return new PlaneAskParams(plane, question, dryRun, maxAttempts, limit, provider, model, embedProvider, embedModel);
+            return new PlaneAskParams(plane, question, dryRun, maxAttempts, limit, provider, keyEnv, model, embedProvider, embedKeyEnv, embedModel);
         }
     }
 
@@ -541,6 +571,9 @@ public class Drsg extends Client {
             String embed,
             String model,
             String embedModel,
+            String keyEnv,
+            String embedKeyEnv,
+            String reasoningEffort,
             String source,
             Boolean noEmbed,
             Boolean link,
@@ -549,47 +582,59 @@ public class Drsg extends Client {
             String mode) {
 
         public static DigestRunParams of(String plane, String text) {
-            return new DigestRunParams(plane, text, null, null, null, null, null, null, null, null, null, null);
+            return new DigestRunParams(plane, text, null, null, null, null, null, null, null, null, null, null, null, null, null);
         }
 
         public DigestRunParams withChat(String chat) {
-            return new DigestRunParams(plane, text, chat, embed, model, embedModel, source, noEmbed, link, concurrency, chunkChars, mode);
+            return new DigestRunParams(plane, text, chat, embed, model, embedModel, keyEnv, embedKeyEnv, reasoningEffort, source, noEmbed, link, concurrency, chunkChars, mode);
         }
 
         public DigestRunParams withEmbed(String embed) {
-            return new DigestRunParams(plane, text, chat, embed, model, embedModel, source, noEmbed, link, concurrency, chunkChars, mode);
+            return new DigestRunParams(plane, text, chat, embed, model, embedModel, keyEnv, embedKeyEnv, reasoningEffort, source, noEmbed, link, concurrency, chunkChars, mode);
         }
 
         public DigestRunParams withModel(String model) {
-            return new DigestRunParams(plane, text, chat, embed, model, embedModel, source, noEmbed, link, concurrency, chunkChars, mode);
+            return new DigestRunParams(plane, text, chat, embed, model, embedModel, keyEnv, embedKeyEnv, reasoningEffort, source, noEmbed, link, concurrency, chunkChars, mode);
         }
 
         public DigestRunParams withEmbedModel(String embedModel) {
-            return new DigestRunParams(plane, text, chat, embed, model, embedModel, source, noEmbed, link, concurrency, chunkChars, mode);
+            return new DigestRunParams(plane, text, chat, embed, model, embedModel, keyEnv, embedKeyEnv, reasoningEffort, source, noEmbed, link, concurrency, chunkChars, mode);
+        }
+
+        public DigestRunParams withKeyEnv(String keyEnv) {
+            return new DigestRunParams(plane, text, chat, embed, model, embedModel, keyEnv, embedKeyEnv, reasoningEffort, source, noEmbed, link, concurrency, chunkChars, mode);
+        }
+
+        public DigestRunParams withEmbedKeyEnv(String embedKeyEnv) {
+            return new DigestRunParams(plane, text, chat, embed, model, embedModel, keyEnv, embedKeyEnv, reasoningEffort, source, noEmbed, link, concurrency, chunkChars, mode);
+        }
+
+        public DigestRunParams withReasoningEffort(String reasoningEffort) {
+            return new DigestRunParams(plane, text, chat, embed, model, embedModel, keyEnv, embedKeyEnv, reasoningEffort, source, noEmbed, link, concurrency, chunkChars, mode);
         }
 
         public DigestRunParams withSource(String source) {
-            return new DigestRunParams(plane, text, chat, embed, model, embedModel, source, noEmbed, link, concurrency, chunkChars, mode);
+            return new DigestRunParams(plane, text, chat, embed, model, embedModel, keyEnv, embedKeyEnv, reasoningEffort, source, noEmbed, link, concurrency, chunkChars, mode);
         }
 
         public DigestRunParams withNoEmbed(Boolean noEmbed) {
-            return new DigestRunParams(plane, text, chat, embed, model, embedModel, source, noEmbed, link, concurrency, chunkChars, mode);
+            return new DigestRunParams(plane, text, chat, embed, model, embedModel, keyEnv, embedKeyEnv, reasoningEffort, source, noEmbed, link, concurrency, chunkChars, mode);
         }
 
         public DigestRunParams withLink(Boolean link) {
-            return new DigestRunParams(plane, text, chat, embed, model, embedModel, source, noEmbed, link, concurrency, chunkChars, mode);
+            return new DigestRunParams(plane, text, chat, embed, model, embedModel, keyEnv, embedKeyEnv, reasoningEffort, source, noEmbed, link, concurrency, chunkChars, mode);
         }
 
         public DigestRunParams withConcurrency(Long concurrency) {
-            return new DigestRunParams(plane, text, chat, embed, model, embedModel, source, noEmbed, link, concurrency, chunkChars, mode);
+            return new DigestRunParams(plane, text, chat, embed, model, embedModel, keyEnv, embedKeyEnv, reasoningEffort, source, noEmbed, link, concurrency, chunkChars, mode);
         }
 
         public DigestRunParams withChunkChars(Long chunkChars) {
-            return new DigestRunParams(plane, text, chat, embed, model, embedModel, source, noEmbed, link, concurrency, chunkChars, mode);
+            return new DigestRunParams(plane, text, chat, embed, model, embedModel, keyEnv, embedKeyEnv, reasoningEffort, source, noEmbed, link, concurrency, chunkChars, mode);
         }
 
         public DigestRunParams withMode(String mode) {
-            return new DigestRunParams(plane, text, chat, embed, model, embedModel, source, noEmbed, link, concurrency, chunkChars, mode);
+            return new DigestRunParams(plane, text, chat, embed, model, embedModel, keyEnv, embedKeyEnv, reasoningEffort, source, noEmbed, link, concurrency, chunkChars, mode);
         }
     }
 

@@ -80,6 +80,10 @@ ureq = { version = "2", default-features = false, features = ["tls"] }
 
 [dev-dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
+# Reflects the request structs' wire field names so rpc.rs can assert
+# openrpc.json declares every one of them. Test-only: the request types derive
+# JsonSchema under `cfg(test)`, so the shipped binary carries none of this.
+schemars = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time"] }
 # A real MCP client, to drive /mcp end-to-end in tests/mcp.rs the way an
 # agent host actually would, not just over raw HTTP.

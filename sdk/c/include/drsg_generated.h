@@ -59,6 +59,8 @@ struct json_object *drsg_plane_query(drsg_client *c, const char *plane, struct j
 
 typedef struct {
     const char *embed;
+    const char *embed_key_env;
+    const char *embed_model;
     struct json_object *params;
 } drsg_plane_cypher_opts;
 
@@ -69,6 +71,7 @@ typedef struct {
     const int64_t *limit;
     const int *semantic;
     const char *provider;
+    const char *key_env;
     const char *embed_model;
     const int64_t *as_of;
     const int64_t *as_of_ms;
@@ -107,6 +110,7 @@ typedef struct {
     const int64_t *k;
     const int64_t *candidates;
     const char *provider;
+    const char *key_env;
     const char *embed_model;
 } drsg_plane_hybrid_opts;
 
@@ -118,8 +122,10 @@ typedef struct {
     const int64_t *max_attempts;
     const int64_t *limit;
     const char *provider;
+    const char *key_env;
     const char *model;
     const char *embed_provider;
+    const char *embed_key_env;
     const char *embed_model;
 } drsg_plane_ask_opts;
 
@@ -165,6 +171,9 @@ typedef struct {
     const char *embed;
     const char *model;
     const char *embed_model;
+    const char *key_env;
+    const char *embed_key_env;
+    const char *reasoning_effort;
     const char *source;
     const int *no_embed;
     const int *link;

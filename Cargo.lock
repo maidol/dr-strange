@@ -884,6 +884,7 @@ dependencies = [
  "rmcp",
  "rust-embed",
  "rustls",
+ "schemars",
  "scraper",
  "serde",
  "serde_json",

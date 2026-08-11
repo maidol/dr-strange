@@ -126,6 +126,8 @@ struct json_object *drsg_plane_cypher(drsg_client *c, const char *plane, const c
     json_object_object_add(p, "query", json_object_new_string(query));
     if (opts) {
         if (opts->embed) json_object_object_add(p, "embed", json_object_new_string(opts->embed));
+        if (opts->embed_key_env) json_object_object_add(p, "embed_key_env", json_object_new_string(opts->embed_key_env));
+        if (opts->embed_model) json_object_object_add(p, "embed_model", json_object_new_string(opts->embed_model));
         if (opts->params) json_object_object_add(p, "params", json_object_get(opts->params));
     }
     struct json_object *result = NULL;
@@ -143,6 +145,7 @@ struct json_object *drsg_plane_find(drsg_client *c, const char *plane, const cha
         if (opts->limit) json_object_object_add(p, "limit", json_object_new_int64(*opts->limit));
         if (opts->semantic) json_object_object_add(p, "semantic", json_object_new_boolean(*opts->semantic));
         if (opts->provider) json_object_object_add(p, "provider", json_object_new_string(opts->provider));
+        if (opts->key_env) json_object_object_add(p, "key_env", json_object_new_string(opts->key_env));
         if (opts->embed_model) json_object_object_add(p, "embed_model", json_object_new_string(opts->embed_model));
         if (opts->as_of) json_object_object_add(p, "as_of", json_object_new_int64(*opts->as_of));
         if (opts->as_of_ms) json_object_object_add(p, "as_of_ms", json_object_new_int64(*opts->as_of_ms));
@@ -195,6 +198,7 @@ struct json_object *drsg_plane_hybrid(drsg_client *c, const char *plane, const c
         if (opts->k) json_object_object_add(p, "k", json_object_new_int64(*opts->k));
         if (opts->candidates) json_object_object_add(p, "candidates", json_object_new_int64(*opts->candidates));
         if (opts->provider) json_object_object_add(p, "provider", json_object_new_string(opts->provider));
+        if (opts->key_env) json_object_object_add(p, "key_env", json_object_new_string(opts->key_env));
         if (opts->embed_model) json_object_object_add(p, "embed_model", json_object_new_string(opts->embed_model));
     }
     struct json_object *result = NULL;
@@ -213,8 +217,10 @@ struct json_object *drsg_plane_ask(drsg_client *c, const char *plane, const char
         if (opts->max_attempts) json_object_object_add(p, "max_attempts", json_object_new_int64(*opts->max_attempts));
         if (opts->limit) json_object_object_add(p, "limit", json_object_new_int64(*opts->limit));
         if (opts->provider) json_object_object_add(p, "provider", json_object_new_string(opts->provider));
+        if (opts->key_env) json_object_object_add(p, "key_env", json_object_new_string(opts->key_env));
         if (opts->model) json_object_object_add(p, "model", json_object_new_string(opts->model));
         if (opts->embed_provider) json_object_object_add(p, "embed_provider", json_object_new_string(opts->embed_provider));
+        if (opts->embed_key_env) json_object_object_add(p, "embed_key_env", json_object_new_string(opts->embed_key_env));
         if (opts->embed_model) json_object_object_add(p, "embed_model", json_object_new_string(opts->embed_model));
     }
     struct json_object *result = NULL;
@@ -295,6 +301,9 @@ struct json_object *drsg_digest_run(drsg_client *c, const char *plane, const cha
         if (opts->embed) json_object_object_add(p, "embed", json_object_new_string(opts->embed));
         if (opts->model) json_object_object_add(p, "model", json_object_new_string(opts->model));
         if (opts->embed_model) json_object_object_add(p, "embed_model", json_object_new_string(opts->embed_model));
+        if (opts->key_env) json_object_object_add(p, "key_env", json_object_new_string(opts->key_env));
+        if (opts->embed_key_env) json_object_object_add(p, "embed_key_env", json_object_new_string(opts->embed_key_env));
+        if (opts->reasoning_effort) json_object_object_add(p, "reasoning_effort", json_object_new_string(opts->reasoning_effort));
         if (opts->source) json_object_object_add(p, "source", json_object_new_string(opts->source));
         if (opts->no_embed) json_object_object_add(p, "no_embed", json_object_new_boolean(*opts->no_embed));
         if (opts->link) json_object_object_add(p, "link", json_object_new_boolean(*opts->link));

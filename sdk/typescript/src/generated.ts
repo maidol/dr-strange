@@ -126,12 +126,12 @@ export class Drsg extends Client {
   }
 
   /** Run a statement in the query language (openCypher subset). A read returns {nodes, edges, count}; a write (CREATE/MERGE/SET/REMOVE/DELETE) returns {write: true, ...change-counts}. Write-gated. (access: write) */
-  planeCypher(params: { plane: string; query: string; embed?: string; params?: Record<string, unknown> }): Promise<Record<string, unknown>> {
+  planeCypher(params: { plane: string; query: string; embed?: string; embed_key_env?: string; embed_model?: string; params?: Record<string, unknown> }): Promise<Record<string, unknown>> {
     return this._call("plane.cypher", params) as Promise<Record<string, unknown>>;
   }
 
   /** Text (or semantic) search over the plane's nodes and edges. (access: read) */
-  planeFind(params: { plane: string; q: string; limit?: number; semantic?: boolean; provider?: string; embed_model?: string; as_of?: number; as_of_ms?: number }): Promise<FindResult> {
+  planeFind(params: { plane: string; q: string; limit?: number; semantic?: boolean; provider?: string; key_env?: string; embed_model?: string; as_of?: number; as_of_ms?: number }): Promise<FindResult> {
     return this._call("plane.find", params) as Promise<FindResult>;
   }
 
@@ -141,12 +141,12 @@ export class Drsg extends Client {
   }
 
   /** Hybrid retrieval: fuse vector similarity, BM25 keyword, and graph-proximity channels into one ranking. Enable a channel by naming its property (vector_prop/keyword_prop) or setting graph_hops; the vector channel embeds q server-side. (access: read) */
-  planeHybrid(params: { plane: string; q: string; label?: string; vector_prop?: string; keyword_prop?: string; metric?: "cosine" | "dot" | "l2"; graph_hops?: number; graph_decay?: number; w_vector?: number; w_keyword?: number; w_graph?: number; k?: number; candidates?: number; provider?: string; embed_model?: string }): Promise<Record<string, unknown>> {
+  planeHybrid(params: { plane: string; q: string; label?: string; vector_prop?: string; keyword_prop?: string; metric?: "cosine" | "dot" | "l2"; graph_hops?: number; graph_decay?: number; w_vector?: number; w_keyword?: number; w_graph?: number; k?: number; candidates?: number; provider?: string; key_env?: string; embed_model?: string }): Promise<Record<string, unknown>> {
     return this._call("plane.hybrid", params) as Promise<Record<string, unknown>>;
   }
 
   /** Natural-language query: an LLM turns the question into a read-only LogicalPlan, runs it (unless dry_run), and returns the generated plan plus result node records. With embed_provider, the model can call find_edge/find_entity embedding tools to ground the plan. Keys from the server env. (access: read) */
-  planeAsk(params: { plane: string; question: string; dry_run?: boolean; max_attempts?: number; limit?: number; provider?: string; model?: string; embed_provider?: string; embed_model?: string }): Promise<Record<string, unknown>> {
+  planeAsk(params: { plane: string; question: string; dry_run?: boolean; max_attempts?: number; limit?: number; provider?: string; key_env?: string; model?: string; embed_provider?: string; embed_key_env?: string; embed_model?: string }): Promise<Record<string, unknown>> {
     return this._call("plane.ask", params) as Promise<Record<string, unknown>>;
   }
 
@@ -171,7 +171,7 @@ export class Drsg extends Client {
   }
 
   /** Extract a node/edge proposal from text via the LLM (dry-run; spends provider credits). `mode` sets how much clean-up follows the extraction: `coarse` reconciles the label and edge-type vocabularies, `fine` (the default) also merges entities that name the same thing, `super` also re-reads every entity against all the passages mentioning it — most accurate, and ~15x the input token usage. (access: write) */
-  digestRun(params: { plane: string; text: string; chat?: string; embed?: string; model?: string; embed_model?: string; source?: string; no_embed?: boolean; link?: boolean; concurrency?: number; chunk_chars?: number; mode?: "coarse" | "fine" | "super" }): Promise<Record<string, unknown>> {
+  digestRun(params: { plane: string; text: string; chat?: string; embed?: string; model?: string; embed_model?: string; key_env?: string; embed_key_env?: string; reasoning_effort?: string; source?: string; no_embed?: boolean; link?: boolean; concurrency?: number; chunk_chars?: number; mode?: "coarse" | "fine" | "super" }): Promise<Record<string, unknown>> {
     return this._call("digest.run", params) as Promise<Record<string, unknown>>;
   }
 
