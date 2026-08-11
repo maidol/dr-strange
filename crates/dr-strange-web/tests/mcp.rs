@@ -243,3 +243,52 @@ async fn two_sessions_share_one_database_over_mcp() {
     let _ = b.cancel().await;
     let _ = c.cancel().await;
 }
+
+/// `write_nodes` names the nodes it created with no properties.
+///
+/// The failure this guards against is silent and has actually happened: six
+/// Fact nodes in a memory graph came out holding nothing but a key, because
+/// `properties` is optional and the caller omitted it while meaning to write
+/// content. Every call succeeded, and the follow-up `write_edges` succeeded
+/// too — nothing anywhere said the content was missing.
+///
+/// The node itself stays legal, so this asserts a *report*, not a rejection,
+/// and asserts the quiet half too: a call that writes properties must come
+/// back with no `no_properties` key at all, or the signal is just noise every
+/// caller learns to ignore.
+#[tokio::test]
+async fn write_nodes_reports_the_nodes_it_created_empty() {
+    let addr = spawn_server();
+    wait_ready(addr).await;
+    let s = connect(addr, TOKEN).await.unwrap();
+
+    let out = call(
+        &s,
+        "write_nodes",
+        json!({"nodes": [
+            {"external_key": "filled", "labels": ["N"], "properties": {"a": 1}},
+            {"external_key": "bare", "labels": ["N"]},
+            {"external_key": "explicitly-empty", "labels": ["N"], "properties": {}},
+        ]}),
+    )
+    .await;
+
+    assert_eq!(out["created"].as_array().unwrap().len(), 3);
+    // Both ways of ending up with nothing are reported, and the caller's own
+    // keys come back — not ids it would have to map.
+    assert_eq!(out["no_properties"], json!(["bare", "explicitly-empty"]));
+
+    let clean = call(
+        &s,
+        "write_nodes",
+        json!({"nodes": [{"external_key": "also-filled", "labels": ["N"],
+                         "properties": {"a": 1}}]}),
+    )
+    .await;
+    assert!(
+        clean.get("no_properties").is_none(),
+        "a correct call must not carry the field at all, got {clean}"
+    );
+
+    let _ = s.cancel().await;
+}

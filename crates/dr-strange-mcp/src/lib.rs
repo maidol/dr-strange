@@ -869,20 +869,42 @@ fn write_nodes_logic(db: &Database, req: WriteNodes) -> AnyResult<Value> {
     let p = db.plane(&req.plane)?;
     let mut txn = p.write()?;
     let mut ids = Vec::new();
+    // Nodes that came out carrying nothing but a key and labels. Reported, not
+    // rejected: a property-less node is ordinary and legitimate (the core
+    // creates them all over), so refusing one would break real callers. What
+    // is not legitimate is doing it *by accident* — `properties` is optional,
+    // so a caller that means to write content and omits the field gets a
+    // silent empty node and a success response. Naming them here is the only
+    // signal that distinguishes the two, and it costs a correct call nothing
+    // because the field is absent unless something is actually bare.
+    let mut bare = Vec::new();
     for node in req.nodes {
         let labels: Vec<&str> = node.labels.iter().map(String::as_str).collect();
         let props = match &node.properties {
             Some(v) => json::json_to_properties(v)?,
             None => Properties::new(),
         };
+        let empty = props.is_empty();
         let id = match &node.external_key {
             Some(key) => txn.create_node_with_key(key, &labels, props)?,
             None => txn.create_node(&labels, props)?,
         };
+        if empty {
+            // The caller's own handle where there is one, so the answer names
+            // what they wrote rather than making them map ids back.
+            bare.push(match &node.external_key {
+                Some(key) => Value::String(key.clone()),
+                None => jval!(id.0),
+            });
+        }
         ids.push(id.0);
     }
     txn.commit()?;
-    Ok(jval!({ "created": ids }))
+    let mut out = jval!({ "created": ids });
+    if !bare.is_empty() {
+        out["no_properties"] = Value::Array(bare);
+    }
+    Ok(out)
 }
 
 fn write_edges_logic(db: &Database, req: WriteEdges) -> AnyResult<Value> {
@@ -1150,7 +1172,10 @@ impl DrStrange {
     }
 
     #[tool(description = "Create nodes (batched). Each: {external_key?, labels, \
-        properties?}. Returns the created ids.")]
+        properties?}. Returns the created ids. `properties` is optional and \
+        omitting it creates a node carrying only its key and labels — legal, \
+        but rarely what you meant, so any such node is named back in \
+        `no_properties` (absent when there are none).")]
     async fn write_nodes(
         &self,
         Parameters(req): Parameters<WriteNodes>,
