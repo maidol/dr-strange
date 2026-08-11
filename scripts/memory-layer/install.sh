@@ -36,6 +36,8 @@
 #   1. Ensure the global daemon is running (start if not).
 #   2. Copy parameterized hook templates into <proj>/.claude/hooks/.
 #   3. Write <proj>/.drsg/env (points at the daemon, project-agnostic).
+#   3b. Document the Event channel in <proj>/CLAUDE.md (sentinel-delimited,
+#      refreshed on re-install; skipped if the project already explains it).
 #   4. Merge SessionStart/UserPromptSubmit/SessionEnd hooks into
 #      <proj>/.claude/settings.local.json (preserves existing content).
 #   5. Register the drsg MCP server (project scope) at the daemon's /mcp.
@@ -326,6 +328,81 @@ if [ -d "$PROJECT_DIR/.git" ] && ! git -C "$PROJECT_DIR" check-ignore -q .drsg/e
   printf '\n# dr-strange memory layer (API token + local telemetry)\n.drsg/\n' \
     >> "$PROJECT_DIR/.gitignore"
 fi
+
+# ---- 3b. document the Event channel in the project's CLAUDE.md --------------
+# The write-memory protocol injected at session start covers Facts and says
+# nothing about Events, so a model in a freshly installed project has no way to
+# learn the cross-agent to-do channel exists. Teaching it here rather than in
+# the protocol keeps the per-session injection at zero: CLAUDE.md is already
+# loaded, and the protocol is a fixed cost paid on every single session.
+#
+# Sentinel-delimited so a re-install refreshes the block instead of stacking
+# copies. A project that already documents Events in its own words is left
+# alone — hand-written project docs outrank a generated block.
+echo "== documenting the Event channel in $PROJECT_DIR/CLAUDE.md"
+python3 - "$PROJECT_DIR" "$PLANE" "$SCRIPT_DIR" <<'PYEOF'
+import os
+import sys
+
+proj_dir, plane, script_dir = sys.argv[1], sys.argv[2], sys.argv[3]
+BEGIN = "<!-- drsg-memory:events:begin -->"
+END = "<!-- drsg-memory:events:end -->"
+
+block = f"""{BEGIN}
+## Cross-agent to-dos (`Event`, memory layer)
+
+Leaving work for an agent in *another* project goes through an `Event` node in
+the `{plane}` plane, not through a `Fact`. **A to-do must not be written as a
+Fact**: Facts reach a session by winning a relevance ranking, so one that loses
+is never delivered at all, while an open Event is injected verbatim.
+
+Post one with the MCP `cypher` tool, in a single statement — the node and its
+edge together, because an Event with no `NOTIFY` edge is invisible in exactly
+the way an unlinked Fact is:
+
+```
+MATCH (p:Project) WHERE p.path = "<recipient project dir>"
+CREATE (e:Event {{key:"evt-<slug>-<unix>-<rand>", kind:"handoff", status:"open",
+                 summary:"<one line>", created_at:<unix int>}})-[:NOTIFY]->(p)
+```
+
+**Address the recipient by `p.path`, never by its key.** A duplicate node can
+shadow a Project's external key, and every key-filtered query then resolves to
+the shadow and silently returns nothing. `path` is written by the session hook
+and nothing else invents it.
+
+Or let the CLI do it:
+`python3 {script_dir}/event.py post <recipient-project-dir> "<one line>"`
+
+**Receiving**: open Events addressed here are injected at session start under
+"Open for you" — no query needed. **Closing**: set `status` to `"done"` (MCP
+`cypher`, or `event.py done <key>`) and the block disappears on its own.
+
+All times are integer Unix seconds. An ISO string will not error, it will
+compare false against every existing value and sort into its own layer.
+{END}"""
+
+path = os.path.join(proj_dir, "CLAUDE.md")
+existing = ""
+if os.path.exists(path):
+    with open(path, encoding="utf-8") as fh:
+        existing = fh.read()
+
+if BEGIN in existing and END in existing:
+    head, rest = existing.split(BEGIN, 1)
+    _, tail = rest.split(END, 1)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(head + block + tail)
+    print("   refreshed the Event section")
+elif "event.py" in existing or "NOTIFY" in existing:
+    # Already explained by hand, in this project's own words and structure.
+    print("   CLAUDE.md already documents Events — left untouched")
+else:
+    sep = "" if not existing else ("\n" if existing.endswith("\n") else "\n\n")
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write(sep + "\n" + block + "\n")
+    print("   added the Event section" if existing else "   created CLAUDE.md with the Event section")
+PYEOF
 
 # ---- 4. merge hooks into settings.local.json --------------------------------
 echo "== registering hooks in $PROJECT_DIR/.claude/settings.local.json"
