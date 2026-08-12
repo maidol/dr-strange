@@ -174,7 +174,7 @@ def event_notice(proj_dir, sid, token):
                   "WHERE p.path = $path "
                   "RETURN e ORDER BY e.created_at DESC LIMIT 20"),
         "params": {"path": proj_dir}}, token)
-    lines, keys = [], []
+    lines, keys, fresh = [], [], []
     for n in res.get("nodes", []):
         pr = n.get("properties", {})
         if pr.get("status") != "open":
@@ -191,9 +191,35 @@ def event_notice(proj_dir, sid, token):
         if pr.get("ref"):
             line += f"  (ref: {pr['ref']})"
         lines.append(f"{line}  <{key}>")
+        # Only what this prompt actually puts on screen, and only if the graph
+        # has no receipt yet — this hook is the delivery path for resumed
+        # sessions, so it is usually the one that writes the first receipt.
+        if not pr.get("seen_at"):
+            fresh.append(key)
     if lines:
         mark_events_shown(proj_dir, sid, keys)
+        ack_events(fresh, sid, token)
     return lines
+
+
+def ack_events(keys, sid, token):
+    """Write the delivery receipt back to the graph — see session_start.py.
+
+    Duplicated rather than shared for the same reason mark_events_shown is: the
+    hooks are installed as independent files with no import path between them.
+
+    Swallowed on failure, and deliberately quiet on stderr too: this hook runs
+    on every prompt, and a daemon hiccup must not print into the user's typing."""
+    if not keys:
+        return
+    try:
+        rpc("plane.cypher", {"plane": PLANE,
+            "query": ("MATCH (e:Event) WHERE key(e) IN $keys "
+                      "SET e.seen_at = $ts, e.seen_by = $sid"),
+            "params": {"keys": sorted(keys), "ts": int(time.time()), "sid": sid}},
+            token)
+    except Exception:
+        pass
 
 
 def clean(s):

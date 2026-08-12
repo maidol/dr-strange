@@ -175,10 +175,41 @@ def open_events(proj_dir, token, limit=3):
         if pr.get("ref"):
             line += f"  (ref: {pr['ref']})"
         key = n.get("external_key", "?")
-        out.append({"key": key, "line": f"{line}  <{key}>"})
+        # `fresh` marks a to-do the graph has no receipt for yet, so the ack
+        # below records when it was FIRST delivered rather than most recently.
+        out.append({"key": key, "line": f"{line}  <{key}>",
+                    "fresh": not pr.get("seen_at")})
         if len(out) >= limit:
             break
     return out
+
+
+def ack_events(keys, sid, token):
+    """Write the delivery receipt back to the graph.
+
+    `.drsg/events_seen.json` already records this, but it is a file in the
+    *recipient's* working copy: the project that posted the to-do cannot read
+    it, so "sent" and "seen" look identical from the sending side. The receipt
+    belongs where both ends can reach it, which is the node itself.
+
+    One statement for all keys — `key(e) IN [...]` is supported, and the
+    change-count comes back so a receipt that wrote nothing is visible instead
+    of assumed. Best-effort like every write on this path: a lost receipt costs
+    the sender a question, a raised exception would cost the user a session."""
+    if not keys:
+        return
+    try:
+        res = rpc("plane.cypher", {"plane": PLANE,
+            "query": ("MATCH (e:Event) WHERE key(e) IN $keys "
+                      "SET e.seen_at = $ts, e.seen_by = $sid"),
+            "params": {"keys": sorted(keys), "ts": int(time.time()), "sid": sid}},
+            token)
+        if not res.get("props_set"):
+            print(f"[drsg-memory] receipt for {len(keys)} Event(s) changed "
+                  f"nothing — they stay indistinguishable from undelivered",
+                  file=sys.stderr)
+    except Exception as e:
+        print(f"[drsg-memory] ack events: {e}", file=sys.stderr)
 
 
 def mark_events_shown(proj_dir, sid, keys):
@@ -461,6 +492,10 @@ def main():
         # fork; under-reporting loses the to-do entirely.
         if source == "startup":
             mark_events_shown(proj_dir, sid, [e["key"] for e in events])
+            # Same predicate, for the same reason: the receipt must mean "a
+            # person saw this", and on a resume nothing rendered. Only the
+            # ones with no receipt yet, so seen_at stays the FIRST delivery.
+            ack_events([e["key"] for e in events if e["fresh"]], sid, token)
 
     # L2: the write-memory protocol — makes the model the value-judge for what
     # deserves persisting, every turn, automatically (no user action needed).
