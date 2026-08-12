@@ -89,26 +89,24 @@ def fetch(path, token):
     return res.get("nodes", [])
 
 
-def cmd_post(args, token):
-    target = os.path.abspath(os.path.normpath(args.recipient))
-    pid = project_id(target, token)
-    if pid is None:
-        sys.exit(f"no Project node with path {target} — has a session ever "
-                 f"started there with the memory layer installed?")
+def post(target, pid, summary, kind, ref, from_project, token):
+    """Create the Event and its NOTIFY edge. Returns the key; raises on any
+    step that did not change the graph. Shared with mcp_events.py so the CLI
+    and the MCP tool cannot drift on what a well-formed to-do is."""
     ts = int(time.time())
-    slug = os.path.basename(target)
-    h = hashlib.sha1(args.summary.encode("utf-8")).hexdigest()[:6]
-    key = f"evt-{slug}-{ts}-{h}"
-    props = {"kind": args.kind, "status": "open", "summary": args.summary,
-             "from_project": os.path.basename(os.path.normpath(os.getcwd())),
+    h = hashlib.sha1(summary.encode("utf-8")).hexdigest()[:6]
+    key = f"evt-{os.path.basename(target)}-{ts}-{h}"
+    props = {"kind": kind, "status": "open", "summary": summary,
+             "from_project": from_project,
              "from_session": os.environ.get("CLAUDE_SESSION_ID", ""),
              "created_at": ts}
-    if args.ref:
-        props["ref"] = args.ref
+    if ref:
+        props["ref"] = ref
     node = rpc("node.create", {"plane": PLANE, "key": key,
                                "labels": ["Event"], "properties": props}, token)
     if not (node or {}).get("id"):
-        sys.exit(f"node.create returned no record for {key} — nothing was posted")
+        raise RuntimeError(f"node.create returned no record for {key} — "
+                           f"nothing was posted")
     # By id, not key: a dangling key makes edge.create fail outright, and an
     # Event with no NOTIFY edge is invisible exactly like an unlinked Fact.
     edge = rpc("edge.create", {"plane": PLANE, "src": key, "dst": pid,
@@ -117,9 +115,20 @@ def cmd_post(args, token):
         # Say which node is now stranded. An Event without its edge is not a
         # half-posted to-do, it is an invisible one: no read path walks it, so
         # the sender would otherwise believe the message was delivered.
-        sys.exit(f"{key} was created but its NOTIFY edge was not — the Event is "
-                 f"unreachable; link or delete it before relying on it")
-    print(key)
+        raise RuntimeError(f"{key} was created but its NOTIFY edge was not — "
+                           f"the Event is unreachable; link or delete it "
+                           f"before relying on it")
+    return key
+
+
+def cmd_post(args, token):
+    target = os.path.abspath(os.path.normpath(args.recipient))
+    pid = project_id(target, token)
+    if pid is None:
+        sys.exit(f"no Project node with path {target} — has a session ever "
+                 f"started there with the memory layer installed?")
+    print(post(target, pid, args.summary, args.kind, args.ref,
+               os.path.basename(os.path.normpath(os.getcwd())), token))
 
 
 def receipt(pr):
@@ -149,7 +158,7 @@ def cmd_list(args, token):
                                           pr.get("summary", "")))
 
 
-def cmd_done(args, token):
+def close(key, token):
     """Close an Event, and report what the graph says rather than what the call
     did.
 
@@ -168,18 +177,22 @@ def cmd_done(args, token):
     hands back the stored record, so the confirmation is already paid for — it
     just has to be read.
     """
-    node = rpc("node.update", {"plane": PLANE, "key": args.key,
+    node = rpc("node.update", {"plane": PLANE, "key": key,
                                "set": {"status": "done", "done_at": int(time.time())}},
                token) or {}
     labels = node.get("labels") or []
     status = (node.get("properties") or {}).get("status")
     if "Event" not in labels:
-        sys.exit(f"{args.key} is not an Event (labels: {labels or 'none'}) — "
-                 f"a node was patched, but no to-do was closed")
+        raise RuntimeError(f"{key} is not an Event (labels: {labels or 'none'}) "
+                           f"— a node was patched, but no to-do was closed")
     if status != "done":
-        sys.exit(f"{args.key} still reads status={status!r} after the update — "
-                 f"nothing was closed")
-    print(f"{args.key} done")
+        raise RuntimeError(f"{key} still reads status={status!r} after the "
+                           f"update — nothing was closed")
+    return f"{key} done"
+
+
+def cmd_done(args, token):
+    print(close(args.key, token))
 
 
 def main():

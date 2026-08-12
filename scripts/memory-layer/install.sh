@@ -356,40 +356,30 @@ the `{plane}` plane, not through a `Fact`. **A to-do must not be written as a
 Fact**: Facts reach a session by winning a relevance ranking, so one that loses
 is never delivered at all, while an open Event is injected verbatim.
 
-Post one with the MCP `cypher` tool, in a single statement — the node and its
-edge together, because an Event with no `NOTIFY` edge is invisible in exactly
-the way an unlinked Fact is:
+Use the `drsg-events` MCP tools — not hand-written cypher:
 
-```
-MATCH (p:Project) WHERE p.path = "<recipient project dir>"
-CREATE (e:Event {{key:"evt-<slug>-<unix>-<rand>", kind:"handoff", status:"open",
-                 summary:"<one line>", created_at:<unix int>}})-[:NOTIFY]->(p)
-```
+| Tool | What it does |
+|---|---|
+| `event_post` | leave a to-do (`recipient` = the other project's directory) |
+| `event_list` | what is open here, and whether it was ever delivered |
+| `event_done` | close one, verifying the node actually changed |
 
-**Address the recipient by `p.path`, never by its key.** A duplicate node can
-shadow a Project's external key, and every key-filtered query then resolves to
-the shadow and silently returns nothing. `path` is written by the session hook
-and nothing else invents it.
+**Receiving** needs no call at all: open Events addressed here are injected at
+session start under "Open for you", and printed to the terminal. Closing makes
+that block disappear on its own.
 
-Or let the CLI do it:
-`python3 {script_dir}/event.py post <recipient-project-dir> "<one line>"`
+The tools exist because each of them encodes a rule that has silently produced
+an invisible or unclosed to-do at least once: the recipient is matched on
+`p.path` and never on its key (a duplicate node can shadow a Project's key, and
+every key-filtered query then resolves to the shadow and returns nothing); the
+node and its `NOTIFY` edge are written together (an Event without that edge is
+unreachable by every read path); and closing needs `key(e)`, because
+`WHERE e.key = ...` matches nothing, reports `props_set: 0`, and does not error.
+Times are integer Unix seconds — an ISO string does not error either, it just
+compares false against every existing value.
 
-**Receiving**: open Events addressed here are injected at session start under
-"Open for you" — no query needed. **Closing**: set `status` to `"done"` and the
-block disappears on its own.
-
-```
-MATCH (e:Event) WHERE key(e) = "<event key>" SET e.status = "done", e.done_at = <unix int>
-```
-
-**`key(e)`, not `e.key`.** The external key is not a property: `WHERE e.key =
-...` matches nothing, reports `props_set: 0`, and does not error — the to-do
-stays open while the close looks like it worked. `python3 {script_dir}/event.py
-done <key>` checks the returned record and exits non-zero if the node did not
-actually change, so prefer it when you are not reading the counts yourself.
-
-All times are integer Unix seconds. An ISO string will not error, it will
-compare false against every existing value and sort into its own layer.
+Same three operations from a shell, if you need them outside a session:
+`python3 {script_dir}/event.py post|list|done …`
 {END}"""
 
 path = os.path.join(proj_dir, "CLAUDE.md")
@@ -452,9 +442,22 @@ if command -v claude >/dev/null 2>&1; then
     && echo "   MCP registered (claude mcp add)" \
     || echo "   WARN: claude mcp add failed — run it manually:"
   echo "     (cd $PROJECT_DIR && claude mcp add --scope local --transport http drsg $MCP_URL --header 'Authorization: Bearer <token>')"
+
+  # The to-do channel as tools, in its own stdio process. Kept out of drsg-mcp
+  # on purpose: Event / NOTIFY are memory-layer conventions on top of a
+  # soft-schema graph, and the engine that does not know what a Fact is should
+  # not learn what an Event is. The project dir travels as argv because a
+  # stdio server's cwd is the client's, not the project's.
+  (cd "$PROJECT_DIR" && claude mcp remove drsg-events --scope local) >/dev/null 2>&1 || true
+  (cd "$PROJECT_DIR" && claude mcp add --scope local drsg-events \
+    -- python3 "$SCRIPT_DIR/mcp_events.py" "$PROJECT_DIR") >/dev/null 2>&1 \
+    && echo "   MCP registered: drsg-events (event_post / event_list / event_done)" \
+    || echo "   WARN: could not register drsg-events — run it manually:
+     (cd $PROJECT_DIR && claude mcp add --scope local drsg-events -- python3 $SCRIPT_DIR/mcp_events.py $PROJECT_DIR)"
 else
   echo "   WARN: 'claude' not found — register MCP manually:"
   echo "     (cd $PROJECT_DIR && claude mcp add --scope local --transport http drsg $MCP_URL --header 'Authorization: Bearer $TOKEN')"
+  echo "     (cd $PROJECT_DIR && claude mcp add --scope local drsg-events -- python3 $SCRIPT_DIR/mcp_events.py $PROJECT_DIR)"
 fi
 
 # ---- 6. post-install self-check -----------------------------------------------

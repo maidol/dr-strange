@@ -360,7 +360,20 @@ Event {
 
 **不需要任何新 RPC**:`node.create` / `edge.create` / `plane.cypher` 就够。
 
-**用法**(`scripts/memory-layer/event.py`,配置读 CWD 的 `.drsg/env`,和 hook 同一份):
+**会话内的接口是 MCP 工具**(`drsg-events`,`scripts/memory-layer/mcp_events.py`,stdio,零依赖):
+`event_post` / `event_list` / `event_done`。install.sh 用
+`claude mcp add --scope local drsg-events -- python3 …/mcp_events.py <项目目录>` 注册,
+项目目录走 argv——stdio server 的 cwd 是客户端的,不是项目的。
+
+**为什么不并进 `drsg-mcp`**:`Event` / `Project` / `NOTIFY` 是记忆层架在 soft schema 之上的约定,
+不是数据库概念。引擎不知道 Fact 是什么(孤儿检测因此放在 hook 里),它也不该学会 Event 是什么;
+多一个进程换的是「数据库还是数据库」。工具实现直接 import `event.py`,不复制逻辑——
+CLI 和 MCP 对「什么算一条合规待办」不能有两种意见。
+
+三条规则被固化进工具,而不是继续写在文档里让人记:收方按 `p.path` 匹配、节点和 `NOTIFY` 边一条语句写完、
+关闭用 `key(e)`。每一条都至少造成过一次隐形或关不掉的待办。**需要用文档教的接口,就是没做成接口。**
+
+**命令行用法**(`scripts/memory-layer/event.py`,配置读 CWD 的 `.drsg/env`,和 hook 同一份):
 
 ```bash
 ./scripts/memory-layer/event.py post /data/projects/uniin/data-safe "构建脚本改了 CC 路径,回来核一下" --kind handoff

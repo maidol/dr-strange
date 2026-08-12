@@ -142,7 +142,12 @@ running under the old environment will keep sending an empty key and
    L3 settings, with the key's **name** only.
 4. Merges the SessionStart / UserPromptSubmit / SessionEnd entries into
    `<project>/.claude/settings.local.json`, keeping whatever is already there.
-5. Registers the `drsg` MCP server (project scope) against the daemon's `/mcp`.
+5. Registers two MCP servers (project scope): `drsg` against the daemon's
+   `/mcp`, and `drsg-events` — a stdio server in this directory exposing
+   `event_post` / `event_list` / `event_done`. The second one is separate on
+   purpose: `Event` and `NOTIFY` are conventions this layer keeps on top of a
+   soft-schema graph, and the engine that does not know what a Fact is has no
+   business learning what an Event is.
 6. **Self-checks**: daemon reachable, plane present, the project key resolving
    to a `Project` node, and a temporary Fact readable through the hooks' own
    recall query. Any failure exits non-zero and says so, rather than reporting
