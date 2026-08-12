@@ -59,6 +59,9 @@ FACT_CAP = 200  # per project, not total — see the module docstring
 # cut are the whole point: tuning MAX or adding a score threshold is guesswork
 # without knowing what was almost injected.
 LOG_RANK = 5
+# Terminal to-do lines per prompt. Same bound session_start.py uses: a to-do
+# is worth interrupting for, a wall of them is not.
+MAX_EVENTS = 3
 
 
 def telemetry(proj_dir, record):
@@ -107,10 +110,90 @@ def load_env(proj_dir):
                 os.environ.setdefault(k.strip(), v.strip())
 
 
+# The to-do lines this prompt should put on the terminal, set once in main().
+# A module global rather than an argument because hook_out() has five call
+# sites, four of them early returns (no token, no facts, no match, daemon
+# down) — and a to-do must survive all of them. An unrelated failure is
+# exactly when the reminder matters most.
+NOTICE = None
+
+
 def hook_out(**extra):
     out = {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit"}}
     out["hookSpecificOutput"].update(extra)
+    # `systemMessage` is top-level and goes to the terminal alone, the mirror
+    # of additionalContext. Nothing here reaches the model.
+    if NOTICE:
+        out["systemMessage"] = NOTICE
     print(json.dumps(out))
+
+
+def mark_events_shown(proj_dir, sid, keys):
+    """Record which Events this session has already put on the terminal.
+
+    Deliberately duplicated from session_start.py — the two hooks are separate
+    files with no shared module, and this file is what keeps a fresh session
+    from being shown the same to-do twice, once by each hook."""
+    try:
+        d = os.path.join(proj_dir, ".drsg")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "events_seen.json"), "w", encoding="utf-8") as f:
+            json.dump({"session": sid, "keys": sorted(keys)}, f)
+    except Exception:
+        pass
+
+
+def events_shown(proj_dir, sid):
+    """Event keys already shown *in this session*. A different session id means
+    an empty set: on a resume the to-do has to be said again, because the REPL
+    never rendered what SessionStart said."""
+    try:
+        with open(os.path.join(proj_dir, ".drsg", "events_seen.json"),
+                  encoding="utf-8") as f:
+            d = json.load(f)
+        return set(d.get("keys") or []) if d.get("session") == sid else set()
+    except Exception:
+        return set()
+
+
+def event_notice(proj_dir, sid, token):
+    """Open to-dos for this project that this session has not shown yet.
+
+    SessionStart shows them too, but only where the REPL renders its output —
+    a fresh start. Asking again here reaches the two cases it cannot: a resumed
+    session, and an Event another project posts while this session is already
+    open (the cross-agent hand-off that today waits for the next startup).
+
+    Costs one small cypher per prompt. Nothing about recall changes: the block
+    leaves over `systemMessage`, `additionalContext` is untouched, and no Fact
+    is filtered, ranked or injected differently — the same line shadow_bm25
+    stays behind."""
+    seen = events_shown(proj_dir, sid)
+    res = rpc("plane.cypher", {"plane": PLANE,
+        "query": ("MATCH (p:Project)<-[:NOTIFY]-(e:Event) "
+                  "WHERE p.path = $path "
+                  "RETURN e ORDER BY e.created_at DESC LIMIT 20"),
+        "params": {"path": proj_dir}}, token)
+    lines, keys = [], []
+    for n in res.get("nodes", []):
+        pr = n.get("properties", {})
+        if pr.get("status") != "open":
+            continue
+        key = n.get("external_key", "?")
+        # Every open key is remembered, not just the newly shown ones, so the
+        # file stays a complete record of what this session has been told.
+        keys.append(key)
+        if key in seen or len(lines) >= MAX_EVENTS:
+            continue
+        line = "- [%s from %s] %s" % (pr.get("kind", "notice"),
+                                      pr.get("from_project", "?"),
+                                      (pr.get("summary") or "")[:80])
+        if pr.get("ref"):
+            line += f"  (ref: {pr['ref']})"
+        lines.append(f"{line}  <{key}>")
+    if lines:
+        mark_events_shown(proj_dir, sid, keys)
+    return lines
 
 
 def clean(s):
@@ -264,6 +347,20 @@ def main():
     # conclusion the analyzer can only reach from records that say so.
     rec = {"event": "recall", "session": data.get("session_id", ""),
            "project": home, "prompt": prompt_id(prompt), "prompt_len": len(prompt)}
+
+    # Before any early return: whether recall finds anything is unrelated to
+    # whether someone left a to-do here, and the failure paths below must not
+    # swallow it. Swallowed whole on error for the same reason shadow_bm25 is —
+    # a coordination extra must never cost the user a prompt.
+    global NOTICE
+    try:
+        ev_lines = event_notice(proj_dir, rec["session"], token)
+        if ev_lines:
+            NOTICE = ("⏳ drsg memory — open for this project:\n"
+                      + "\n".join(ev_lines))
+            rec["events_shown"] = len(ev_lines)
+    except Exception as e:
+        rec["events_error"] = type(e).__name__
 
     def done(status, **extra):
         rec["status"] = status

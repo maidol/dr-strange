@@ -174,10 +174,31 @@ def open_events(proj_dir, token, limit=3):
                                       (pr.get("summary") or "")[:80])
         if pr.get("ref"):
             line += f"  (ref: {pr['ref']})"
-        out.append(f"{line}  <{n.get('external_key', '?')}>")
+        key = n.get("external_key", "?")
+        out.append({"key": key, "line": f"{line}  <{key}>"})
         if len(out) >= limit:
             break
     return out
+
+
+def mark_events_shown(proj_dir, sid, keys):
+    """Record which Events this session has already put on the terminal.
+
+    Two hooks show the same block. This one covers a fresh start; user_prompt.py
+    covers the two cases this one cannot — a resumed session, whose SessionStart
+    output the REPL does not render, and an Event another project posts while
+    this session is already open. One file is what keeps them from showing the
+    same to-do twice.
+
+    Best-effort like every other write here: losing the file costs one repeated
+    line, which is strictly better than losing the to-do."""
+    try:
+        d = os.path.join(proj_dir, ".drsg")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "events_seen.json"), "w", encoding="utf-8") as f:
+            json.dump({"session": sid, "keys": sorted(keys)}, f)
+    except Exception:
+        pass
 
 
 def short_tag(s, n=18):
@@ -423,15 +444,17 @@ def main():
     ev_block = ""
     user_msg = None
     if events:
+        ev_lines = [e["line"] for e in events]
         ev_block = ("⏳ Open for you (set the Event node's `status` to \"done\" "
-                    "once handled):\n" + "\n".join(events))
+                    "once handled):\n" + "\n".join(ev_lines))
         parts.append(ev_block)
         # Same list, second audience. Only Events get a terminal line: the
         # briefing and the protocol are standing context, while a to-do is a
         # decision someone has to make now, and it is the user who decides
         # whether this session is the one that takes it.
         user_msg = ("⏳ drsg memory — open for this project:\n"
-                    + "\n".join(events))
+                    + "\n".join(ev_lines))
+        mark_events_shown(proj_dir, sid, [e["key"] for e in events])
 
     # L2: the write-memory protocol — makes the model the value-judge for what
     # deserves persisting, every turn, automatically (no user action needed).

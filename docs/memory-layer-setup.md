@@ -377,6 +377,18 @@ Event {
 
 处理完把该 Event 节点的 `status` 设成 `"done"` 即可(MCP `cypher` 或上面的 `event.py done`)——**关掉后这一块自动消失**,队列为空时零成本。提示语写的是 MCP 而不是脚本路径,因为不是每个安装点都有 `scripts/memory-layer/`,而 MCP 工具是每个会话都有的接口。
 
+这一块同时走两条路:`hookSpecificOutput.additionalContext` 给模型,顶层 `systemMessage` 给**终端**。
+待办是唯一享受这个待遇的注入——简报和协议是常驻上下文,每次会话在终端刷一遍是噪音;
+待办是要人现在拍板「这个会话接不接」的事,只让模型看见等于把决定权交给了转述。
+
+但 `SessionStart` 的 `systemMessage` **只在全新启动时被 REPL 渲染**(resume 时 hook 照跑、遥测有记录,
+屏幕上没有——实测)。所以 `user_prompt.py` 也查一次:会话 id 变了就把当前所有开放 Event 亮一遍,
+同一会话后续 prompt 只亮新出现的 key,没有就完全静默。去重状态在 `.drsg/events_seen.json`
+(`{"session": …, "keys": […]}`),两个 hook 共用。这顺带覆盖了 `SessionStart` 根本够不着的一种情况:
+**别的项目在你会话开着的时候丢来待办**,现在下一条 prompt 就看得见,不用等下次启动。
+代价是每条 prompt 多一次小 cypher(实测 31–39ms,原 p50 25ms),**注入给模型的内容一个字节不变**——
+不碰召回过滤/排序/注入,不撞 observability 的阶段 1 闸门。
+
 读侧实现是 `session_start.py` 的 `open_events()`:查 20 条,在 Python 里按 `status` 过滤取前 3。**不把 `status` 写进 WHERE**,因为「只对模式里第一个变量下一个谓词」是这份代码里所有查询都在用、已知能跑的形状,而这里的量小到不值得去赌引擎行为。遥测多了 `events` / `event_chars` 两个字段,`brief_chars` / `proto_chars` 的语义不动(`analyze_recall.py` 用 `.get(k, 0)` 读,加字段安全)。
 
 > **P0 刻意不做的**:`status` 的 `acked` 中间态、`/ws` 实时推送、以及**把写 Event 的指令塞进 L2 协议**。最后一条尤其克制——协议已经 809 字符、占启动注入一半以上,先用命令行验证真有人用,再考虑让它涨。
