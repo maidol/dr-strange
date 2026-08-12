@@ -454,7 +454,13 @@ def main():
         # whether this session is the one that takes it.
         user_msg = ("⏳ drsg memory — open for this project:\n"
                     + "\n".join(ev_lines))
-        mark_events_shown(proj_dir, sid, [e["key"] for e in events])
+        # Only claim it was shown where the REPL actually renders it. On a
+        # resume the message above goes nowhere, and marking it seen would
+        # make user_prompt.py stay quiet too — the one path left that can
+        # still reach the person. Over-reporting costs a repeated line on a
+        # fork; under-reporting loses the to-do entirely.
+        if source == "startup":
+            mark_events_shown(proj_dir, sid, [e["key"] for e in events])
 
     # L2: the write-memory protocol — makes the model the value-judge for what
     # deserves persisting, every turn, automatically (no user action needed).
