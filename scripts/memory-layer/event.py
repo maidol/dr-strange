@@ -105,28 +105,80 @@ def cmd_post(args, token):
              "created_at": ts}
     if args.ref:
         props["ref"] = args.ref
-    rpc("node.create", {"plane": PLANE, "key": key,
-                        "labels": ["Event"], "properties": props}, token)
+    node = rpc("node.create", {"plane": PLANE, "key": key,
+                               "labels": ["Event"], "properties": props}, token)
+    if not (node or {}).get("id"):
+        sys.exit(f"node.create returned no record for {key} — nothing was posted")
     # By id, not key: a dangling key makes edge.create fail outright, and an
     # Event with no NOTIFY edge is invisible exactly like an unlinked Fact.
-    rpc("edge.create", {"plane": PLANE, "src": key, "dst": pid,
-                        "type": "NOTIFY"}, token)
+    edge = rpc("edge.create", {"plane": PLANE, "src": key, "dst": pid,
+                               "type": "NOTIFY"}, token)
+    if not edge:
+        # Say which node is now stranded. An Event without its edge is not a
+        # half-posted to-do, it is an invisible one: no read path walks it, so
+        # the sender would otherwise believe the message was delivered.
+        sys.exit(f"{key} was created but its NOTIFY edge was not — the Event is "
+                 f"unreachable; link or delete it before relying on it")
     print(key)
+
+
+def receipt(pr):
+    """How far a to-do actually got: posted → seen → done.
+
+    `seen_at` is written by whichever hook puts the line on someone's terminal,
+    so the *sending* project can tell "never delivered" from "delivered and
+    ignored". `.drsg/events_seen.json` already knew this, but it is a file in
+    the recipient's working copy — the one place the sender cannot look."""
+    if pr.get("status") == "done":
+        return "done"
+    if not pr.get("seen_at"):
+        return "unseen"
+    age = int(time.time()) - int(pr["seen_at"])
+    for unit, n in (("d", 86400), ("h", 3600), ("m", 60)):
+        if age >= n:
+            return "seen %d%s ago" % (age // n, unit)
+    return "seen just now"
 
 
 def cmd_list(args, token):
     path = os.path.abspath(os.path.normpath(args.project or os.getcwd()))
     for n in fetch(path, token):
         pr = n.get("properties", {})
-        print("%-9s %-8s %s  %s" % (pr.get("status", "?"), pr.get("kind", "?"),
-                                    n.get("external_key", "?"),
-                                    pr.get("summary", "")))
+        print("%-9s %-8s %-14s %s  %s" % (pr.get("status", "?"), pr.get("kind", "?"),
+                                          receipt(pr), n.get("external_key", "?"),
+                                          pr.get("summary", "")))
 
 
 def cmd_done(args, token):
-    rpc("node.update", {"plane": PLANE, "key": args.key,
-                        "set": {"status": "done", "done_at": int(time.time())}},
-        token)
+    """Close an Event, and report what the graph says rather than what the call
+    did.
+
+    The two are not the same thing, and the difference is the whole failure mode
+    this guards. An unknown key already errors here (`node.update` resolves the
+    key server-side), but two neighbouring paths do not:
+
+      * a key can resolve to the *wrong* node — digest.run has twice written a
+        second node under an existing key, and `node_by_key` then answers with
+        the shadow;
+      * closing by hand with `MATCH (e:Event) WHERE e.key = ...` matches nothing
+        and still answers `props_set: 0` with no error (use `key(e)`).
+
+    Both leave a to-do open while telling the operator it is closed, which is
+    the one report a coordination channel must never get wrong. `node.update`
+    hands back the stored record, so the confirmation is already paid for — it
+    just has to be read.
+    """
+    node = rpc("node.update", {"plane": PLANE, "key": args.key,
+                               "set": {"status": "done", "done_at": int(time.time())}},
+               token) or {}
+    labels = node.get("labels") or []
+    status = (node.get("properties") or {}).get("status")
+    if "Event" not in labels:
+        sys.exit(f"{args.key} is not an Event (labels: {labels or 'none'}) — "
+                 f"a node was patched, but no to-do was closed")
+    if status != "done":
+        sys.exit(f"{args.key} still reads status={status!r} after the update — "
+                 f"nothing was closed")
     print(f"{args.key} done")
 
 
@@ -157,7 +209,12 @@ def main():
     token = os.environ.get("DRSG_TOKEN", "")
     if not token:
         sys.exit("DRSG_TOKEN missing — run from a project with .drsg/env")
-    args.fn(args, token)
+    try:
+        args.fn(args, token)
+    except RuntimeError as e:
+        # A server-side rejection (unknown key, bad plane) is an operator error,
+        # not a defect worth a traceback. It still exits non-zero.
+        sys.exit(f"drsg: {e}")
 
 
 if __name__ == "__main__":

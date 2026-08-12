@@ -375,8 +375,18 @@ Or let the CLI do it:
 `python3 {script_dir}/event.py post <recipient-project-dir> "<one line>"`
 
 **Receiving**: open Events addressed here are injected at session start under
-"Open for you" — no query needed. **Closing**: set `status` to `"done"` (MCP
-`cypher`, or `event.py done <key>`) and the block disappears on its own.
+"Open for you" — no query needed. **Closing**: set `status` to `"done"` and the
+block disappears on its own.
+
+```
+MATCH (e:Event) WHERE key(e) = "<event key>" SET e.status = "done", e.done_at = <unix int>
+```
+
+**`key(e)`, not `e.key`.** The external key is not a property: `WHERE e.key =
+...` matches nothing, reports `props_set: 0`, and does not error — the to-do
+stays open while the close looks like it worked. `python3 {script_dir}/event.py
+done <key>` checks the returned record and exits non-zero if the node did not
+actually change, so prefer it when you are not reading the counts yourself.
 
 All times are integer Unix seconds. An ISO string will not error, it will
 compare false against every existing value and sort into its own layer.

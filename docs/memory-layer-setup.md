@@ -377,6 +377,18 @@ Event {
 
 处理完把该 Event 节点的 `status` 设成 `"done"` 即可(MCP `cypher` 或上面的 `event.py done`)——**关掉后这一块自动消失**,队列为空时零成本。提示语写的是 MCP 而不是脚本路径,因为不是每个安装点都有 `scripts/memory-layer/`,而 MCP 工具是每个会话都有的接口。
 
+手写 cypher 关待办时**必须用 `key(e)`**:
+
+```
+MATCH (e:Event) WHERE key(e) = "evt-…" SET e.status = "done", e.done_at = <epoch>
+```
+
+external key 不是属性,`WHERE e.key = …` 一条都匹配不上,却返回 `props_set: 0` **并且不报错** ——
+待办还开着,而关闭这个动作看起来成功了。这正是「『我的记忆没了』和『我的记忆好好的』系统自己分不出来」
+那一类故障,只不过发生在写侧。`event.py done` 现在核对 `node.update` 返回的记录(标签必须含
+`Event`、`status` 必须真的变成 `done`),不符就非零退出——它报告的是**图变了**,不再是「调用返回了」。
+`post` 同样校验:节点建了但 `NOTIFY` 边没建会明确报出被搁浅的 key,而不是留下一条谁也读不到的待办。
+
 这一块同时走两条路:`hookSpecificOutput.additionalContext` 给模型,顶层 `systemMessage` 给**终端**。
 待办是唯一享受这个待遇的注入——简报和协议是常驻上下文,每次会话在终端刷一遍是噪音;
 待办是要人现在拍板「这个会话接不接」的事,只让模型看见等于把决定权交给了转述。
@@ -388,6 +400,13 @@ Event {
 **别的项目在你会话开着的时候丢来待办**,现在下一条 prompt 就看得见,不用等下次启动。
 代价是每条 prompt 多一次小 cypher(实测 31–39ms,原 p50 25ms),**注入给模型的内容一个字节不变**——
 不碰召回过滤/排序/注入,不撞 observability 的阶段 1 闸门。
+
+**回执**:把待办放上终端的那个 hook,顺手把 `seen_at`(epoch)+ `seen_by`(会话 id)写回 Event 节点。
+`.drsg/events_seen.json` 早就记着这件事,但它是**收方工作区里的文件**——发件项目唯一看不到的地方,
+于是「发出去了」和「被看到了」从发件侧长得一模一样。回执要放在两端都够得着的地方,那就是节点本身。
+只对图上还没有回执的 key 写,所以 `seen_at` 记的是**第一次**送达;渲染不了的那条路(resume 时的
+`SessionStart`)不写,判据和 `mark_events_shown` 完全一致——回执必须意味着「有人看见了」。
+批量一条语句(`key(e) IN $keys`),失败吞掉,`event.py list` 多一列 `unseen` / `seen 2h ago` / `done`。
 
 读侧实现是 `session_start.py` 的 `open_events()`:查 20 条,在 Python 里按 `status` 过滤取前 3。**不把 `status` 写进 WHERE**,因为「只对模式里第一个变量下一个谓词」是这份代码里所有查询都在用、已知能跑的形状,而这里的量小到不值得去赌引擎行为。遥测多了 `events` / `event_chars` 两个字段,`brief_chars` / `proto_chars` 的语义不动(`analyze_recall.py` 用 `.get(k, 0)` 读,加字段安全)。
 
