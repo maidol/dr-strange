@@ -88,10 +88,16 @@ def load_env(proj_dir):
                 os.environ.setdefault(k.strip(), v.strip())
 
 
-def hook_out(**extra):
+def hook_out(system_message=None, **extra):
     # stdout must contain exactly one JSON object.
     out = {"hookSpecificOutput": {"hookEventName": "SessionStart"}}
     out["hookSpecificOutput"].update(extra)
+    # `systemMessage` is top-level, not hook-specific, and it is the only
+    # channel that reaches the terminal: additionalContext goes to the model
+    # alone. A to-do another project left here was therefore invisible to the
+    # person who decides whether it gets done this session.
+    if system_message:
+        out["systemMessage"] = system_message
     print(json.dumps(out))
 
 
@@ -415,10 +421,17 @@ def main():
     # MCP tools are the one interface every session has.
     events = open_events(proj_dir, token)
     ev_block = ""
+    user_msg = None
     if events:
         ev_block = ("⏳ Open for you (set the Event node's `status` to \"done\" "
                     "once handled):\n" + "\n".join(events))
         parts.append(ev_block)
+        # Same list, second audience. Only Events get a terminal line: the
+        # briefing and the protocol are standing context, while a to-do is a
+        # decision someone has to make now, and it is the user who decides
+        # whether this session is the one that takes it.
+        user_msg = ("⏳ drsg memory — open for this project:\n"
+                    + "\n".join(events))
 
     # L2: the write-memory protocol — makes the model the value-judge for what
     # deserves persisting, every turn, automatically (no user action needed).
@@ -444,7 +457,7 @@ def main():
                          # without the ABOUT edge again.
                          "orphan_facts": None if orphans is None else len(orphans),
                          "ms": int((time.time() - ts_start) * 1000)})
-    hook_out(additionalContext=ctx)
+    hook_out(system_message=user_msg, additionalContext=ctx)
 
 
 if __name__ == "__main__":
