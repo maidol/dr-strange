@@ -11,7 +11,6 @@
 
 mod assets;
 mod auth;
-mod extract;
 pub mod fetch;
 mod methods;
 mod rpc;
@@ -53,6 +52,19 @@ pub struct ServeOptions {
     /// transaction, and an unbounded wait would leave every other writer
     /// blocked with nothing to report.
     pub write_timeout: Option<Duration>,
+    /// How long a single request's queries may run before stopping with a
+    /// retryable timeout; `None` runs to completion.
+    ///
+    /// Bounded for the same reason as [`ServeOptions::write_timeout`]: the
+    /// query is someone else's, and since `/mcp` shipped an agent's runaway
+    /// `MATCH` had nothing bounding it at all.
+    pub query_timeout: Option<Duration>,
+    /// When set, `/mcp`'s `write_nodes` embeds the nodes it writes —
+    /// `(preset-or-url, model, key-env)`. Configured by the operator rather
+    /// than asked for per call, so an agent cannot write silently unsearchable
+    /// nodes by forgetting a flag. The key is read from the environment at call
+    /// time, never carried here.
+    pub embed_provider: Option<(String, Option<String>, Option<String>)>,
 }
 
 /// A PEM certificate chain + private key for native TLS.
@@ -130,9 +142,15 @@ impl Default for ServeOptions {
             digest: DigestDefaults::default(),
             fetch: FetchDefaults::default(),
             write_timeout: Some(DEFAULT_WRITE_TIMEOUT),
+            query_timeout: Some(DEFAULT_QUERY_TIMEOUT),
+            embed_provider: None,
         }
     }
 }
+
+/// Generous for an interactive agent query, and far short of "forever".
+/// A deliberately heavy analytical query can raise it per deployment.
+const DEFAULT_QUERY_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Long enough that an ordinary import or digest is waited out, short enough
 /// that a client learns the writer is busy rather than hanging on it.

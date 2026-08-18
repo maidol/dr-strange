@@ -20,6 +20,11 @@ max_concurrent = 1024
 # bulk import or digest blocks every other writer while it runs; a bound turns
 # that into an answer instead of a hang. Default 30. Set 0 to wait forever.
 write_timeout_secs = 30
+# How long one request's queries may run before stopping with the same retryable
+# timeout. Bounds an agent's runaway MATCH so it cannot occupy the server
+# indefinitely. Cooperative and row-paced: it stops work that flows, not a graph
+# algorithm mid-iteration. Default 60. Set 0 to run to completion.
+query_timeout_secs = 60
 # Extra browser origins allowed past the CSRF guard (→ DRSG_ALLOWED_ORIGINS).
 allowed_origins = ["https://app.example.com"]
 
@@ -41,3 +46,21 @@ dir = "logs"
 # OPENAI_API_KEY = "sk-..."
 # DEEPSEEK_API_KEY = "..."
 # DASHSCOPE_API_KEY = "..."   # Qwen / DashScope
+
+# Server-side ingestion tuning. A digest.run request may override the first two.
+[digest]
+# Per-chunk extraction chat calls to run concurrently. Default 8.
+# concurrency = 8
+# Target chunk size in characters, paragraph-aware. Default 4000.
+# chunk_chars = 4000
+# Setting embed_provider turns on embed-on-write for /mcp's write_nodes: nodes
+# an agent writes get a vector built from the same recipe `digest` uses (key +
+# labels + text properties) and stored in the same `embedding` property, so both
+# land in one index and one search finds both. Off unless set — an agent then
+# has to supply its own vectors, and one that forgets writes nodes no vector
+# search will ever return. A node that already carries `embedding` is untouched.
+# Costs one provider round-trip per write_nodes call (the batch is embedded in
+# one request, not one per node).
+# embed_provider = "openai"
+# embed_model = "text-embedding-3-small"
+# embed_key_env = "OPENAI_API_KEY"

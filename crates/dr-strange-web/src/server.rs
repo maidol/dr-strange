@@ -7,7 +7,7 @@
 use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Context;
 use axum::Router;
@@ -76,6 +76,9 @@ pub struct AppState {
     pub digest: crate::DigestDefaults,
     /// URL-fetch policy and budgets (from `[fetch]` config / built-ins).
     pub fetch: crate::FetchDefaults,
+    /// Per-request query budget (`[server] query_timeout_secs`); `None` runs
+    /// to completion.
+    pub query_timeout: Option<Duration>,
 }
 
 impl AppState {
@@ -84,6 +87,9 @@ impl AppState {
             db: self.db.as_ref(),
             db_path: self.db_path.as_deref(),
             digest: self.digest,
+            // Stamped per request, not per process: the budget is how long
+            // *this* call may run, so it starts when the call does.
+            deadline: self.query_timeout.map(|d| Instant::now() + d),
         }
     }
 }
@@ -199,7 +205,11 @@ fn mcp_tool_concurrency(max_concurrent: usize) -> usize {
 /// the `digest` tool and `POST /rpc digest.run` obey the same `concurrency`
 /// and `chunk_chars` — an operator lowering `concurrency` to stay under a
 /// provider's rate limit should not find one of the two surfaces ignoring it.
-fn mcp_router(state: Arc<AppState>, max_concurrent: usize) -> Router<Arc<AppState>> {
+fn mcp_router(
+    state: Arc<AppState>,
+    max_concurrent: usize,
+    embed: Option<(String, Option<String>, Option<String>)>,
+) -> Router<Arc<AppState>> {
     let db = state.db.clone();
     let digest = dr_strange_mcp::DigestTuning {
         chunk_chars: state.digest.chunk_chars,
@@ -215,7 +225,17 @@ fn mcp_router(state: Arc<AppState>, max_concurrent: usize) -> Router<Arc<AppStat
     sessions.session_config.keep_alive = Some(MCP_SESSION_IDLE);
     sessions.session_config.init_timeout = Some(MCP_SESSION_INIT);
     let service = StreamableHttpService::new(
-        move || Ok(DrStrange::with_digest(db.clone(), digest).with_tool_gate(tools.clone())),
+        move || {
+            let mut svc = DrStrange::with_digest(db.clone(), digest).with_tool_gate(tools.clone());
+            if let Some((provider, model, key_env)) = &embed {
+                svc = svc.with_embed_provider(dr_strange_mcp::EmbedProvider {
+                    provider: provider.clone(),
+                    model: model.clone(),
+                    key_env: key_env.clone(),
+                });
+            }
+            Ok(svc)
+        },
         Arc::new(sessions),
         StreamableHttpServerConfig::default(),
     );
@@ -232,7 +252,11 @@ fn mcp_router(state: Arc<AppState>, max_concurrent: usize) -> Router<Arc<AppStat
         .route_layer(middleware::from_fn_with_state(state, mcp_auth))
 }
 
-fn router(state: Arc<AppState>, max_concurrent: usize) -> Router {
+fn router(
+    state: Arc<AppState>,
+    max_concurrent: usize,
+    embed: Option<(String, Option<String>, Option<String>)>,
+) -> Router {
     // Outermost → innermost: catch panics so a bug becomes a 500 (not a dropped
     // connection), then cap total requests in flight, then stamp defensive
     // headers, then bound the body size. The cap counts a request as in flight
@@ -255,7 +279,7 @@ fn router(state: Arc<AppState>, max_concurrent: usize) -> Router {
         ))
         .layer(DefaultBodyLimit::max(MAX_BODY));
     Router::new()
-        .merge(mcp_router(state.clone(), max_concurrent))
+        .merge(mcp_router(state.clone(), max_concurrent, embed))
         .route("/rpc", post(rpc_http))
         .route("/ws", get(ws_upgrade))
         .route("/digest/extract", post(extract_http))
@@ -327,15 +351,12 @@ async fn extract_http(
             // Err ⇒ the client hung up; nothing left to do but stop trying.
             tx.blocking_send(Ok(Bytes::from(line))).is_ok()
         };
-        // Scope the progress closure so its borrow of `send` ends before the
-        // final message is sent.
-        let result = {
-            let mut on_page = |page, total| {
-                send(json!({ "progress": { "page": page, "total": total } }));
-            };
-            crate::extract::extract_text_with_progress(&q.name, &body, &mut on_page)
-        };
-        match result {
+        // No progress messages: conversion is a single fast call now (anydoc
+        // is milliseconds where page-by-page PDF extraction was seconds), so
+        // the page shows an indeterminate loading state rather than a bar that
+        // would jump straight to 100. The stream stays NDJSON because the
+        // crawl endpoint shares this reader and does still report progress.
+        match dr_strange_llm::to_markdown(&q.name, &body) {
             Ok(text) => send(json!({ "chars": text.chars().count(), "text": text })),
             Err(e) => send(json!({ "error": e.to_string() })),
         };
@@ -676,8 +697,9 @@ pub async fn run(db: Database, db_path: Option<PathBuf>, opts: ServeOptions) -> 
         changes,
         digest: opts.digest,
         fetch: opts.fetch,
+        query_timeout: opts.query_timeout,
     });
-    let app = router(state, opts.max_concurrent);
+    let app = router(state, opts.max_concurrent, opts.embed_provider.clone());
     // Bind a std listener up front so we can report the actual port (handy when
     // the caller asked for :0) before either serving path takes over. Both paths
     // register it with tokio, which rejects a blocking fd — so make it

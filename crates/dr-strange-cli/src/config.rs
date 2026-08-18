@@ -51,6 +51,17 @@ pub struct DigestCfg {
     pub concurrency: Option<usize>,
     /// Target chunk size in characters (default 4000).
     pub chunk_chars: Option<usize>,
+    /// Embedding provider (preset name or base URL). Setting it turns on
+    /// embed-on-write for `/mcp`'s `write_nodes`: nodes an agent writes get a
+    /// vector from the same recipe `digest` uses, so both land in one index.
+    /// Unset leaves writes exactly as given.
+    pub embed_provider: Option<String>,
+    /// Embedding model, when the preset's default is not wanted.
+    pub embed_model: Option<String>,
+    /// Environment variable holding the embedding key. The key is read from
+    /// the process environment at call time — never from config, never from a
+    /// request.
+    pub embed_key_env: Option<String>,
 }
 
 /// The `[fetch]` section — URL ingestion policy.
@@ -91,6 +102,9 @@ pub struct ServerCfg {
     /// retryable timeout. `0` waits forever (the embedded default); omitted
     /// means 30s.
     pub write_timeout_secs: Option<u64>,
+    /// How long one request's queries may run before stopping with a retryable
+    /// timeout. `0` runs to completion; omitted means 60s.
+    pub query_timeout_secs: Option<u64>,
     /// Extra allowed browser origins (→ `DRSG_ALLOWED_ORIGINS`).
     pub allowed_origins: Option<Vec<String>>,
     /// TLS certificate/key; when present, `serve` speaks HTTPS.
@@ -180,6 +194,9 @@ pub fn serve_options(cfg: &Config, cli_addr: Option<SocketAddr>) -> ServeOptions
         // operator who wants the embedded behaviour back can ask for it.
         opts.write_timeout = (secs > 0).then(|| std::time::Duration::from_secs(secs));
     }
+    if let Some(secs) = cfg.server.query_timeout_secs {
+        opts.query_timeout = (secs > 0).then(|| std::time::Duration::from_secs(secs));
+    }
     if let Some(tls) = &cfg.server.tls {
         opts.tls = Some(TlsOptions {
             cert: tls.cert.clone(),
@@ -191,6 +208,13 @@ pub fn serve_options(cfg: &Config, cli_addr: Option<SocketAddr>) -> ServeOptions
     }
     if let Some(c) = cfg.digest.chunk_chars {
         opts.digest.chunk_chars = c;
+    }
+    if let Some(provider) = &cfg.digest.embed_provider {
+        opts.embed_provider = Some((
+            provider.clone(),
+            cfg.digest.embed_model.clone(),
+            cfg.digest.embed_key_env.clone(),
+        ));
     }
     if let Some(e) = cfg.fetch.enabled {
         opts.fetch.enabled = e;

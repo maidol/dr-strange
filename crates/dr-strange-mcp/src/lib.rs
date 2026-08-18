@@ -20,7 +20,7 @@ use tokio::sync::Semaphore;
 use anyhow::Result as AnyResult;
 use dr_strange_core::{
     Database, Dir, HybridWeights, LogicalPlan, LouvainOptions, Metric, NodeId, PageRankOptions,
-    PlaneHandle, Properties, ShortestPathOptions, json,
+    PlaneHandle, PropDesc, PropValue, Properties, ShortestPathOptions, json,
 };
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
@@ -40,6 +40,26 @@ pub struct DrStrange {
     digest: DigestTuning,
     /// Ceiling on tool bodies running at once — see [`DrStrange::with_tool_gate`].
     tools: Arc<Semaphore>,
+    /// Embedding provider for writes, when the host configured one — see
+    /// [`DrStrange::with_embed_provider`]. `None` leaves `write_nodes` writing
+    /// exactly what it was given.
+    embed: Option<EmbedProvider>,
+    /// Whether `digest` may read a `path` the caller names — see
+    /// [`DrStrange::with_local_files`]. Off unless the host says otherwise.
+    local_files: bool,
+}
+
+/// How the host reaches an embedding provider. Only the *names* live here; the
+/// key is read from the process environment when a call is made, never carried
+/// in a request or in this struct.
+#[derive(Debug, Clone)]
+pub struct EmbedProvider {
+    /// Preset name or base URL.
+    pub provider: String,
+    /// Embedding model, when the preset's default is not wanted.
+    pub model: Option<String>,
+    /// Environment variable holding the key.
+    pub key_env: Option<String>,
 }
 
 /// Digest knobs the host resolved, applied to the `digest` tool.
@@ -84,7 +104,36 @@ impl DrStrange {
             tool_router: Self::tool_router(),
             digest,
             tools: Arc::new(Semaphore::new(DEFAULT_TOOL_CONCURRENCY)),
+            embed: None,
+            local_files: false,
         }
+    }
+
+    /// Let `digest` read a document path the caller names.
+    ///
+    /// For the stdio server this is right: it runs on the agent's own machine,
+    /// as that agent's user, and "digest this file" is the obvious thing to ask.
+    /// For a shared `drsg serve` it would be an arbitrary-file-read primitive —
+    /// an authenticated remote agent could name any path the server process can
+    /// open, digest it into the graph, and read it back with a query. Off unless
+    /// the host opts in, so the network transport cannot acquire it by accident.
+    pub fn with_local_files(mut self, allowed: bool) -> Self {
+        self.local_files = allowed;
+        self
+    }
+
+    /// Embed nodes as they are written, using `provider`.
+    ///
+    /// Configured by the host rather than asked for per call, because an agent
+    /// that forgets a flag writes silently unsearchable nodes — the failure
+    /// this removes. The text is [`dr_strange_llm::entity_text`] and the vector
+    /// lands in `embedding`, the same recipe and property `digest` uses, so an
+    /// agent's writes and a digest's share one vector space and one index.
+    ///
+    /// A node that already carries `embedding` is left alone.
+    pub fn with_embed_provider(mut self, provider: EmbedProvider) -> Self {
+        self.embed = Some(provider);
+        self
     }
 
     /// Share one tool-concurrency gate across every session.
@@ -251,8 +300,19 @@ struct Ask {
 
 #[derive(Deserialize, JsonSchema)]
 struct Digest {
-    /// The document text to digest into a graph.
+    /// The document text to digest into a graph. Give this **or** `path`.
+    #[serde(default)]
     text: String,
+    /// Path to a document the *server* can read — Word, PowerPoint, Excel,
+    /// OpenDocument, RTF, EPUB, CSV, PDF, Markdown or plain text — converted to
+    /// Markdown before digesting.
+    ///
+    /// Only honoured by the stdio server, which runs on the same machine as the
+    /// agent that spawned it. A shared `drsg serve` refuses it: reading any path
+    /// the caller names would let an authenticated remote agent pull arbitrary
+    /// server files into the graph and query them back out.
+    #[serde(default)]
+    path: Option<String>,
     #[serde(default = "default_plane")]
     plane: String,
     /// Write the result. Default `false` — a dry-run that returns the proposed
@@ -865,10 +925,21 @@ fn cypher_logic(db: &Database, req: Cypher) -> AnyResult<Value> {
     }
 }
 
-fn write_nodes_logic(db: &Database, req: WriteNodes) -> AnyResult<Value> {
+/// The property an auto-generated embedding is written to — the same one
+/// `digest` writes and `search` reads, so an agent's writes and a digest's land
+/// in one index rather than two.
+const EMBED_PROP: &str = "embedding";
+
+fn write_nodes_logic(
+    db: &Database,
+    req: WriteNodes,
+    embedder: Option<&dyn dr_strange_llm::Embedder>,
+) -> AnyResult<Value> {
     let p = db.plane(&req.plane)?;
-    let mut txn = p.write()?;
-    let mut ids = Vec::new();
+
+    // Decode before embedding: a batch that cannot decode should fail before it
+    // costs a provider call.
+    let mut decoded: Vec<(NodeInput, Properties)> = Vec::with_capacity(req.nodes.len());
     // Nodes that came out carrying nothing but a key and labels. Reported, not
     // rejected: a property-less node is ordinary and legitimate (the core
     // creates them all over), so refusing one would break real callers. What
@@ -877,19 +948,78 @@ fn write_nodes_logic(db: &Database, req: WriteNodes) -> AnyResult<Value> {
     // silent empty node and a success response. Naming them here is the only
     // signal that distinguishes the two, and it costs a correct call nothing
     // because the field is absent unless something is actually bare.
-    let mut bare = Vec::new();
+    //
+    // Judged on what the caller sent, before embedding runs: with a provider
+    // configured every node ends up carrying a vector, so past that point
+    // nothing would ever look bare again — and a node whose only content is a
+    // vector derived from its own key is exactly the accident worth naming.
+    let mut was_bare: Vec<bool> = Vec::with_capacity(req.nodes.len());
     for node in req.nodes {
-        let labels: Vec<&str> = node.labels.iter().map(String::as_str).collect();
         let props = match &node.properties {
             Some(v) => json::json_to_properties(v)?,
             None => Properties::new(),
         };
-        let empty = props.is_empty();
+        was_bare.push(props.is_empty());
+        decoded.push((node, props));
+    }
+
+    let mut embedded = 0usize;
+    if let Some(embedder) = embedder {
+        // A node that already carries a vector is left alone: a caller who
+        // supplied their own embedding always wins over the server's guess.
+        let targets: Vec<usize> = decoded
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, props))| !props.contains_key(EMBED_PROP))
+            .map(|(i, _)| i)
+            .collect();
+        if !targets.is_empty() {
+            let texts: Vec<String> = targets
+                .iter()
+                .map(|&i| {
+                    let (node, props) = &decoded[i];
+                    dr_strange_llm::entity_text(
+                        node.external_key.as_deref().unwrap_or(""),
+                        &node.labels,
+                        props,
+                    )
+                    .trim()
+                    .to_string()
+                })
+                .collect();
+            // One call for the whole batch, not one per node: these are network
+            // round-trips on a blocking thread, so a fifty-node write should
+            // cost one of them rather than fifty.
+            let reply = embedder.embed(&texts)?;
+            // Positional: vector `n` belongs to text `n`. A provider returning a
+            // different count would silently mis-assign every vector after the
+            // gap, so refuse rather than zip and hope.
+            if reply.vectors.len() != texts.len() {
+                anyhow::bail!(
+                    "embedder returned {} vectors for {} texts; refusing to guess which is which",
+                    reply.vectors.len(),
+                    texts.len()
+                );
+            }
+            for (&i, vector) in targets.iter().zip(reply.vectors) {
+                decoded[i]
+                    .1
+                    .insert(EMBED_PROP.into(), PropDesc::new(PropValue::Vector(vector)));
+                embedded += 1;
+            }
+        }
+    }
+
+    let mut txn = p.write()?;
+    let mut ids = Vec::new();
+    let mut bare = Vec::new();
+    for (i, (node, props)) in decoded.into_iter().enumerate() {
+        let labels: Vec<&str> = node.labels.iter().map(String::as_str).collect();
         let id = match &node.external_key {
             Some(key) => txn.create_node_with_key(key, &labels, props)?,
             None => txn.create_node(&labels, props)?,
         };
-        if empty {
+        if was_bare[i] {
             // The caller's own handle where there is one, so the answer names
             // what they wrote rather than making them map ids back.
             bare.push(match &node.external_key {
@@ -900,7 +1030,7 @@ fn write_nodes_logic(db: &Database, req: WriteNodes) -> AnyResult<Value> {
         ids.push(id.0);
     }
     txn.commit()?;
-    let mut out = jval!({ "created": ids });
+    let mut out = jval!({ "created": ids, "embedded": embedded });
     if !bare.is_empty() {
         out["no_properties"] = Value::Array(bare);
     }
@@ -940,8 +1070,35 @@ fn drop_plane_logic(db: &Database, req: DropPlane) -> AnyResult<Value> {
     Ok(jval!({ "dropped": req.name }))
 }
 
-fn digest_logic(db: &Database, req: Digest, tuning: DigestTuning) -> AnyResult<Value> {
+fn digest_logic(
+    db: &Database,
+    req: Digest,
+    tuning: DigestTuning,
+    local_files: bool,
+) -> AnyResult<Value> {
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    // Resolve the document before anything else: a refused `path` should cost
+    // no provider call.
+    let document = match &req.path {
+        None => req.text.clone(),
+        Some(_) if !local_files => anyhow::bail!(
+            "this server does not read local files — send the document as `text`. \
+             (`path` is honoured only by the stdio server, which runs on your own machine.)"
+        ),
+        Some(path) => {
+            let name = std::path::Path::new(path)
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.clone());
+            let bytes = std::fs::read(path).map_err(|e| anyhow::anyhow!("reading {path}: {e}"))?;
+            dr_strange_llm::to_markdown(&name, &bytes)
+                .map_err(|e| anyhow::anyhow!("reading {path}: {e}"))?
+        }
+    };
+    if document.trim().is_empty() {
+        anyhow::bail!("nothing to digest — give `text`, or `path` on a stdio server");
+    }
 
     let chat_provider = req.chat.as_deref().unwrap_or("openai");
     let embed_provider = req.embed.as_deref().unwrap_or(chat_provider);
@@ -992,7 +1149,7 @@ fn digest_logic(db: &Database, req: Digest, tuning: DigestTuning) -> AnyResult<V
 
     let cands = dr_strange_llm::PlaneCandidates::new(&p);
     let candidates = link.then_some(&cands as &dyn dr_strange_llm::CandidateSource);
-    let result = dr_strange_llm::digest(&req.text, &chat, &embedder, candidates, &opts)?;
+    let result = dr_strange_llm::digest(&document, &chat, &embedder, candidates, &opts)?;
     let r = &result.report;
     let mut out = jval!({
         "applied": req.apply,
@@ -1011,10 +1168,14 @@ fn digest_logic(db: &Database, req: Digest, tuning: DigestTuning) -> AnyResult<V
 
     if req.apply {
         let mut txn = p.write()?;
-        let stats = result.apply(&mut txn)?;
+        let stats = result.apply(&p, &mut txn)?;
         txn.commit()?;
-        out["nodes_written"] = jval!(stats.nodes);
-        out["edges_written"] = jval!(stats.edges);
+        out["nodes_written"] = jval!(stats.written.nodes);
+        out["edges_written"] = jval!(stats.written.edges);
+        // Named, not just counted: an agent that proposed an entity the plane
+        // already knew should be told, or it will keep re-proposing it.
+        out["nodes_skipped"] = jval!(stats.skipped.len());
+        out["skipped_keys"] = jval!(stats.skipped);
     } else {
         // Dry-run: return the proposed graph (capped) so the agent can inspect
         // before a second call with apply=true.
@@ -1180,8 +1341,31 @@ impl DrStrange {
         &self,
         Parameters(req): Parameters<WriteNodes>,
     ) -> Result<CallToolResult, McpError> {
-        self.blocking("write_nodes", move |db| write_nodes_logic(db, req))
-            .await
+        let embed = self.embed.clone();
+        self.blocking("write_nodes", move |db| {
+            // Built inside the blocking body: constructing it reads the
+            // environment, and `embed` itself is a blocking HTTP call (the LLM
+            // layer is sync, on ureq), so it belongs on this thread and not on
+            // the async runtime.
+            let embedder = match &embed {
+                None => None,
+                Some(cfg) => Some(dr_strange_llm::build_provider(
+                    &cfg.provider,
+                    cfg.model.as_deref(),
+                    None,
+                    cfg.key_env.as_deref(),
+                    true,
+                )?),
+            };
+            write_nodes_logic(
+                db,
+                req,
+                embedder
+                    .as_ref()
+                    .map(|e| e as &dyn dr_strange_llm::Embedder),
+            )
+        })
+        .await
     }
 
     #[tool(description = "Create edges (batched) by endpoint external keys. \
@@ -1234,8 +1418,11 @@ impl DrStrange {
         Parameters(req): Parameters<Digest>,
     ) -> Result<CallToolResult, McpError> {
         let tuning = self.digest;
-        self.blocking("digest", move |db| digest_logic(db, req, tuning))
-            .await
+        let local_files = self.local_files;
+        self.blocking("digest", move |db| {
+            digest_logic(db, req, tuning, local_files)
+        })
+        .await
     }
 }
 
@@ -1262,10 +1449,158 @@ impl ServerHandler for DrStrange {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
     use std::time::Duration;
 
     use super::*;
     use serde_json::from_value;
+
+    /// Counts calls and texts so a test can prove the batch is one round-trip.
+    struct CountingEmbedder {
+        calls: std::sync::atomic::AtomicUsize,
+        texts: Mutex<Vec<String>>,
+    }
+
+    impl CountingEmbedder {
+        fn new() -> Self {
+            Self {
+                calls: std::sync::atomic::AtomicUsize::new(0),
+                texts: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl dr_strange_llm::Embedder for CountingEmbedder {
+        fn embed(&self, texts: &[String]) -> AnyResult<dr_strange_llm::EmbedReply> {
+            self.calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.texts.lock().unwrap().extend_from_slice(texts);
+            Ok(dr_strange_llm::EmbedReply {
+                // Distinct per text, so a mis-assignment would be visible.
+                vectors: (0..texts.len()).map(|i| vec![i as f32, 1.0]).collect(),
+                tokens: texts.len() as u64,
+            })
+        }
+    }
+
+    /// Embedding a write is one provider round-trip for the whole batch, not
+    /// one per node: these are network calls on a blocking thread.
+    #[test]
+    fn write_nodes_embeds_the_batch_in_one_call() {
+        let db = Database::in_memory().unwrap();
+        let em = CountingEmbedder::new();
+        let out = write_nodes_logic(
+            &db,
+            from_value(jval!({"nodes": [
+                {"external_key": "a", "labels": ["Doc"], "properties": {"title": "graph"}},
+                {"external_key": "b", "labels": ["Doc"], "properties": {"title": "sql"}},
+                {"external_key": "c", "labels": ["Doc"], "properties": {"title": "vector"}}
+            ]}))
+            .unwrap(),
+            Some(&em),
+        )
+        .unwrap();
+
+        assert_eq!(out["embedded"], 3);
+        assert_eq!(
+            em.calls.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "three nodes must cost one round-trip, not three"
+        );
+        // The text is the shared recipe: identity first, then properties.
+        let texts = em.texts.lock().unwrap().clone();
+        assert!(texts[0].starts_with("a (Doc)"), "got {:?}", texts[0]);
+        assert!(texts[0].contains("title: graph"), "got {:?}", texts[0]);
+
+        // Vectors landed positionally, in the property `digest` and `search` use.
+        let p = db.plane("startup").unwrap();
+        for (key, want) in [("a", 0.0), ("b", 1.0), ("c", 2.0)] {
+            let node = p.node_by_key(key).unwrap().unwrap();
+            match &node.properties.get(EMBED_PROP).unwrap().value {
+                PropValue::Vector(v) => assert_eq!(v[0], want, "{key} got the wrong vector"),
+                other => panic!("{key}: expected a vector, got {other:?}"),
+            }
+        }
+    }
+
+    /// A caller who supplied their own embedding always wins.
+    #[test]
+    fn write_nodes_leaves_a_supplied_vector_alone() {
+        let db = Database::in_memory().unwrap();
+        let em = CountingEmbedder::new();
+        let out = write_nodes_logic(
+            &db,
+            from_value(jval!({"nodes": [
+                {"external_key": "mine", "labels": ["Doc"],
+                 "properties": {"embedding": {"$vector": [9.0, 9.0]}}},
+                {"external_key": "theirs", "labels": ["Doc"], "properties": {"title": "x"}}
+            ]}))
+            .unwrap(),
+            Some(&em),
+        )
+        .unwrap();
+
+        assert_eq!(out["embedded"], 1, "only the node without a vector");
+        assert_eq!(
+            em.texts.lock().unwrap().len(),
+            1,
+            "the supplied vector must not even be sent for embedding"
+        );
+        let p = db.plane("startup").unwrap();
+        let mine = p.node_by_key("mine").unwrap().unwrap();
+        match &mine.properties.get(EMBED_PROP).unwrap().value {
+            PropValue::Vector(v) => {
+                assert_eq!(v, &vec![9.0, 9.0], "the caller's vector was replaced")
+            }
+            other => panic!("expected a vector, got {other:?}"),
+        }
+    }
+
+    /// With no provider configured, a write is exactly what was asked for.
+    #[test]
+    fn write_nodes_without_a_provider_embeds_nothing() {
+        let db = Database::in_memory().unwrap();
+        let out = write_nodes_logic(
+            &db,
+            from_value(jval!({"nodes": [
+                {"external_key": "a", "labels": ["Doc"], "properties": {"title": "graph"}}
+            ]}))
+            .unwrap(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(out["embedded"], 0);
+        let p = db.plane("startup").unwrap();
+        let node = p.node_by_key("a").unwrap().unwrap();
+        assert!(!node.properties.contains_key(EMBED_PROP));
+    }
+
+    /// A served MCP endpoint must not read paths its caller names — that is an
+    /// arbitrary-file-read primitive dressed as an ingestion feature.
+    #[test]
+    fn digest_refuses_a_path_unless_the_host_allows_local_files() {
+        let db = Database::in_memory().unwrap();
+        let req: Digest = from_value(jval!({"path": "/etc/passwd"})).unwrap();
+        let err = digest_logic(&db, req, DigestTuning::default(), false)
+            .expect_err("a networked server must refuse a caller-named path");
+        let msg = err.to_string();
+        assert!(msg.contains("does not read local files"), "got: {msg}");
+        // It must say what to do instead, or an agent just retries the same call.
+        assert!(
+            msg.contains("text"),
+            "should point at the alternative: {msg}"
+        );
+    }
+
+    /// Refused before any provider call — a rejected path should cost nothing.
+    #[test]
+    fn digest_with_neither_text_nor_path_is_refused() {
+        let db = Database::in_memory().unwrap();
+        let req: Digest = from_value(jval!({"text": "   "})).unwrap();
+        let err = digest_logic(&db, req, DigestTuning::default(), true)
+            .expect_err("an empty document must not reach a provider");
+        assert!(err.to_string().contains("nothing to digest"), "{err}");
+    }
 
     /// Every tool body must pass the gate. Nothing else bounds them: the
     /// transport answers a call as soon as it is queued, releasing its own
@@ -1326,6 +1661,7 @@ mod tests {
                 {"external_key": "d0", "labels": ["Doc"], "properties": {"emb": {"$vector": [0.0, 0.0]}, "year": 2020}},
                 {"external_key": "d1", "labels": ["Doc"], "properties": {"emb": {"$vector": [1.0, 0.0]}, "year": 2021}}
             ]})).unwrap(),
+            None,
         )
         .unwrap();
         write_edges_logic(

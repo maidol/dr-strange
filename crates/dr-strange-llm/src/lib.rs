@@ -12,6 +12,7 @@
 
 mod ask;
 mod digest;
+pub mod document;
 mod identity;
 mod openai;
 mod preset;
@@ -21,9 +22,10 @@ mod refine;
 
 pub use ask::{AskOptions, AskResult, ask};
 pub use digest::{
-    CandidateSource, DigestEdge, DigestMode, DigestNode, DigestOptions, DigestReport, DigestResult,
-    ExistingEntity, PlaneCandidates, SOURCE_MARKER, digest,
+    ApplyStats, CandidateSource, DigestEdge, DigestMode, DigestNode, DigestOptions, DigestReport,
+    DigestResult, ExistingEntity, PlaneCandidates, SOURCE_MARKER, digest, entity_text,
 };
+pub use document::to_markdown;
 pub use identity::IdentityReport;
 pub use openai::{OpenAiProvider, build_provider};
 pub use preset::{PRESET_NAMES, ProviderPreset, preset};

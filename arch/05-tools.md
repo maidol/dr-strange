@@ -1,14 +1,16 @@
 # CLI Tools Layer
 
-**Status**: draft · `drsg` built (M4), `digest` deferred · 2026-07-28
+**Status**: shipped — `drsg` (M4) and `digest`, the latter as AIgest's three
+passes (ROADMAP §8), reading URLs (§9) and any office document (§7 here) ·
+last revised 2026-08-11
 
 **M4 landed** the `drsg` binary (clap): init, plane list/create/drop/show,
 import/export (JSONL in the `json` dialect below), get (id or
 `@external-key`), query (a serialized `LogicalPlan` as JSON), catalog, index
 ensure, stats, check. Handlers are testable functions over the core API
 writing to a `Write`. The JSON dialect lives in `dr-strange-core`'s
-feature-gated `json` module (shared with MCP). **`digest` is intentionally
-absent** pending its own design session (§3, arch/07).
+feature-gated `json` module (shared with MCP). `digest` was absent at M4
+pending its own design session; that session happened and it shipped (§3).
 
 Scope: the `drsg` binary (`dr-strange-cli` crate) — the human-facing command-line
 wrapper over `dr-strange-core`. First consumer of the public API; its job is equal
@@ -63,9 +65,11 @@ document (the plane model's intended usage, [09-planes.md](09-planes.md)).
   `drsg digest paper.pdf --plane auto --api-key ... [--model ...]
   [--dry-run]` — `--dry-run` prints the proposed subgraph without writing.
 
-> **Deferred**: the detailed design (extraction prompting/schemas, chunking,
-> incremental re-digest, dedup against existing planes, cost controls) will
-> be discussed separately and land in [07-llm.md](07-llm.md).
+**Shipped**, and the detailed design lives in [07-llm.md](07-llm.md) and
+ROADMAP §8: three passes (extract, reconcile, refine) with the mode chosen per
+run, chunking that respects paragraph and document boundaries, dedup against a
+plane's existing entities, and a URL reader (§9). A document may be any office
+format, not only text — see 07 §1.
 
 ## 4. Open questions
 
@@ -89,9 +93,24 @@ document (the plane model's intended usage, [09-planes.md](09-planes.md)).
    already in the plane; edges carry no key, so the policy governs node
    identity only and they are always appended.
 
-   Note the same hazard exists wherever else `bulk_load` takes untrusted
-   input — the `write_nodes` RPC and `digest`'s entity writes — which is a
-   separate decision: bounding it inside `bulk_load` would cost the fast path
-   a lookup per key, and that path is a headline benchmark.
+   Every other path that feeds `bulk_load` untrusted keys is now guarded the
+   same way — `digest.write` over `/rpc`, and `DigestResult::apply`, which
+   covers both `drsg digest` and the MCP `digest` tool. Those skip and report
+   the keys rather than refusing, because an extraction proposes every entity
+   as new: naming something already known is the normal case there, where a
+   colliding *import* key means the file went in twice. The MCP `write_nodes`
+   tool was never affected — it goes through `create_node_with_key`, which has
+   always rejected a taken key.
+
+   The check stays at the callers rather than inside `bulk_load`: only paths
+   taking untrusted input pay the lookup per key, and the fast path — a
+   headline benchmark — keeps its trusting contract for callers that have
+   already guaranteed fresh keys.
+
+   Worth knowing about the failure mode, since it is worse than "a duplicate
+   node": `bulk_load` writes the external-key index unconditionally, so a
+   colliding key *overwrites* that entry. The original node stays in place but
+   becomes reachable only by id, and every `key(…)` read against it silently
+   returns empty.
 4. ~~`digest` detailed design — deferred (see §3).~~ **Resolved: shipped** as
    AIgest's three passes (ROADMAP §8), extended to read URLs in §9.
