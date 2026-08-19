@@ -18,6 +18,7 @@ mod relevance;
 mod robots;
 
 use ahash::{AHashMap, AHashSet};
+use std::fmt::Write as _;
 use std::io::Read;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -665,16 +666,43 @@ impl Crawl<'_> {
 fn terse(e: &ureq::Error) -> String {
     match e {
         ureq::Error::Status(code, _) => format!("HTTP {code}"),
-        ureq::Error::Transport(t) => t
-            .message()
-            .map(str::to_string)
-            .unwrap_or_else(|| "the request failed".into()),
+        ureq::Error::Transport(t) => {
+            let mut why = t
+                .message()
+                .map(str::to_string)
+                .unwrap_or_else(|| "the request failed".into());
+            // The message alone is the layer ureq was in, not the reason it
+            // stopped: a refusal from the address guard arrives as `resolve
+            // dns name '…'` with the refusal itself hung off the source. Drop
+            // that and a refused address is indistinguishable from a DNS
+            // outage.
+            if let Some(src) = std::error::Error::source(t) {
+                write!(why, ": {src}").expect("writing to a String cannot fail");
+            }
+            why
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The address guard refuses inside the resolver, and ureq turns that into
+    /// `resolve dns name '…'` with the reason hidden in the error's source. A
+    /// refused address then reads exactly like a DNS outage, which is how an
+    /// operator ends up debugging their nameserver over a working one.
+    #[test]
+    fn a_refusal_from_the_address_guard_survives_ureq() {
+        let agent = ureq::AgentBuilder::new()
+            .resolver(guard::PublicOnly { allow: vec![] })
+            .build();
+        // Refused while resolving, so nothing is dialled and no port is opened.
+        let err = agent.get("http://127.0.0.1:9/").call().unwrap_err();
+        let msg = terse(&err);
+        assert!(msg.contains("refusing to connect"), "{msg}");
+        assert!(msg.contains("loopback"), "{msg}");
+    }
 
     #[test]
     fn a_bare_host_is_read_as_https() {
