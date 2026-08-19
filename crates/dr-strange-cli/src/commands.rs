@@ -4,6 +4,8 @@
 
 use std::io::{BufRead, Write};
 use std::path::Path;
+#[cfg(feature = "digest")]
+use std::path::PathBuf;
 
 use anyhow::{Context, Result, anyhow, bail};
 use dr_strange_core::{
@@ -46,10 +48,397 @@ fn pin(p: PlaneHandle<'_>, at: Option<dr_strange_parser::AsOfSpec>) -> Result<Pl
     Ok(p)
 }
 
+#[cfg(not(feature = "digest"))]
 pub fn init(path: &Path, out: &mut dyn Write) -> Result<()> {
     open(path)?;
     writeln!(out, "initialized dr-strange database at {}", path.display())?;
     Ok(())
+}
+
+// ---- init bootstrap (drsg init) -------------------------------------------
+
+#[cfg(feature = "digest")]
+const INIT_TOKEN_LEN: usize = 40;
+
+#[cfg(feature = "digest")]
+const INIT_HEALTH_CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+#[cfg(feature = "digest")]
+const GITIGNORE_PATTERNS: &[&str] = &[
+    "*.drsg",
+    "*.drsg.jsonl",
+    "*.drsg.hnsw",
+    "*.drsg.bm25",
+    "logs/",
+    ".mcp.json",
+];
+
+/// Bootstraps `dir` for agent MCP access: ensures `.gitignore` covers the
+/// artifacts this leaves behind, spawns `drsg serve watch` detached in the
+/// background on a freshly-picked address+token, waits for it to come up,
+/// and writes the connection details to `dir`'s `.mcp.json`. Never blocks
+/// past the health check — the spawned server keeps running after this
+/// returns, the same way this repo's own `serve watch` instances do.
+#[cfg(feature = "digest")]
+pub fn init_bootstrap(
+    db_path: &Path,
+    dir: PathBuf,
+    plane: Option<String>,
+    addr: Option<std::net::SocketAddr>,
+    token: Option<String>,
+    out: &mut dyn Write,
+) -> Result<()> {
+    use rand::distr::{Alphanumeric, SampleString};
+
+    let db_path = if db_path.is_absolute() {
+        db_path.to_path_buf()
+    } else {
+        dir.join(db_path)
+    };
+    open(&db_path)?;
+    ensure_gitignore_patterns(&dir)?;
+
+    let addr = match addr {
+        Some(addr) => addr,
+        None => pick_free_port()?,
+    };
+    let token =
+        token.unwrap_or_else(|| Alphanumeric.sample_string(&mut rand::rng(), INIT_TOKEN_LEN));
+    let plane_name = plane.unwrap_or_else(|| default_plane(&dir.display().to_string()));
+
+    let exe = std::env::current_exe().context("resolving the running drsg binary's path")?;
+    let mut cmd = std::process::Command::new(&exe);
+    cmd.current_dir(&dir)
+        .arg("--db")
+        .arg(&db_path)
+        .arg("serve")
+        .arg("--addr")
+        .arg(addr.to_string())
+        .arg("watch")
+        .arg("--dir")
+        .arg(&dir)
+        .arg("--plane")
+        .arg(&plane_name)
+        .arg("--force")
+        .env("DRSG_TOKEN", &token)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // SAFETY: `setsid()` is async-signal-safe and touches only the
+        // child's own process state; this runs in the forked child before
+        // exec, per `pre_exec`'s contract.
+        unsafe {
+            cmd.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
+    let mut child = cmd.spawn().with_context(|| {
+        format!(
+            "spawning `{} serve watch` for {}",
+            exe.display(),
+            dir.display()
+        )
+    })?;
+    let pid = child.id();
+
+    if !wait_for_listener(addr, &mut child, INIT_HEALTH_CHECK_TIMEOUT) {
+        let log_tail =
+            tail_recent_log(&dir).unwrap_or_else(|| "(no log file found under logs/)".to_string());
+        let _ = child.kill();
+        bail!("`drsg serve watch` (pid {pid}) never started listening on {addr}\n{log_tail}");
+    }
+
+    write_mcp_json_entry(&dir, &addr, &token)?;
+    writeln!(
+        out,
+        "plane '{plane_name}' bootstrapped — serve watch pid {pid}, http://{addr}/mcp, wrote {}",
+        dir.join(".mcp.json").display()
+    )?;
+
+    // Beyond Claude Code's `.mcp.json`, only add a file for an agent whose
+    // own marker (a directory it creates, or a config file it already owns)
+    // is already present — writing one for a tool nobody here uses would
+    // just be repo clutter.
+    if probe_and_write_cursor(&dir, &addr, &token)? {
+        writeln!(
+            out,
+            "  + Cursor: wrote {}",
+            dir.join(".cursor/mcp.json").display()
+        )?;
+    }
+    if probe_and_write_opencode(&dir, &addr, &token)? {
+        writeln!(
+            out,
+            "  + OpenCode: wrote {}",
+            dir.join(".opencode.json").display()
+        )?;
+    }
+    if probe_and_write_gemini(&dir, &addr, &token)? {
+        writeln!(
+            out,
+            "  + Gemini CLI: wrote {}",
+            dir.join(".gemini/settings.json").display()
+        )?;
+    }
+    if probe_and_write_codex(&dir, &addr)? {
+        writeln!(
+            out,
+            "  + Codex CLI: wrote {} (no token inside it — Codex reads the bearer from its \
+             own process environment; export {CODEX_TOKEN_ENV_VAR}={token} before launching \
+             `codex` here, and mark this project trusted, or its project-scoped MCP config is \
+             ignored)",
+            dir.join(".codex/config.toml").display()
+        )?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "digest")]
+fn pick_free_port() -> Result<std::net::SocketAddr> {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").context("picking a free port")?;
+    listener.local_addr().context("reading the picked port")
+}
+
+/// Polls `addr` until something accepts a TCP connection, the child exits
+/// first, or `timeout` elapses.
+#[cfg(feature = "digest")]
+fn wait_for_listener(
+    addr: std::net::SocketAddr,
+    child: &mut std::process::Child,
+    timeout: std::time::Duration,
+) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if std::net::TcpStream::connect(addr).is_ok() {
+            return true;
+        }
+        if matches!(child.try_wait(), Ok(Some(_))) {
+            return false;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
+/// The last few lines of the most recently modified file under `dir/logs`
+/// (the same rolling log `dr_strange_log::init` already writes) — the best
+/// available diagnostic when the spawned server never comes up.
+#[cfg(feature = "digest")]
+fn tail_recent_log(dir: &Path) -> Option<String> {
+    let logs_dir = dir.join("logs");
+    let newest = std::fs::read_dir(&logs_dir)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
+        .max_by_key(|e| e.metadata().and_then(|m| m.modified()).ok())?;
+    let contents = std::fs::read_to_string(newest.path()).ok()?;
+    let tail: Vec<&str> = contents.lines().rev().take(20).collect();
+    Some(format!(
+        "--- tail of {} ---\n{}",
+        newest.path().display(),
+        tail.into_iter().rev().collect::<Vec<_>>().join("\n")
+    ))
+}
+
+/// Appends whichever of `GITIGNORE_PATTERNS` are missing from `dir`'s
+/// `.gitignore` (creating it if absent) — idempotent, never duplicates, and
+/// never touches unrelated lines.
+#[cfg(feature = "digest")]
+fn ensure_gitignore_patterns(dir: &Path) -> Result<()> {
+    let path = dir.join(".gitignore");
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    let have: std::collections::HashSet<&str> = existing.lines().map(str::trim).collect();
+    let missing: Vec<&str> = GITIGNORE_PATTERNS
+        .iter()
+        .copied()
+        .filter(|p| !have.contains(p))
+        .collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    let mut content = existing;
+    if !content.is_empty() && !content.ends_with('\n') {
+        content.push('\n');
+    }
+    if !content.is_empty() {
+        content.push('\n');
+    }
+    content.push_str(
+        "# drsg — local database, logs, and the MCP config carrying a live bearer token\n",
+    );
+    for p in missing {
+        content.push_str(p);
+        content.push('\n');
+    }
+    std::fs::write(&path, content).with_context(|| format!("writing {}", path.display()))
+}
+
+/// Upserts `entry` under `path`'s JSON `top_key.entry_name`, preserving
+/// every other key untouched. Creates `path` fresh (as `{top_key: {}}`) if
+/// it doesn't exist yet.
+#[cfg(feature = "digest")]
+fn upsert_json_mcp_entry(path: &Path, top_key: &str, entry_name: &str, entry: Value) -> Result<()> {
+    let mut root: Value = match std::fs::read_to_string(path) {
+        Ok(s) => serde_json::from_str(&s)
+            .with_context(|| format!("{} exists but is not valid JSON", path.display()))?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => json!({}),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+    };
+    let obj = root
+        .as_object_mut()
+        .ok_or_else(|| anyhow!("{} does not contain a JSON object", path.display()))?;
+    let servers = obj.entry(top_key).or_insert_with(|| json!({}));
+    let servers = servers
+        .as_object_mut()
+        .ok_or_else(|| anyhow!("{}'s '{top_key}' key is not an object", path.display()))?;
+    servers.insert(entry_name.to_string(), entry);
+    let pretty = serde_json::to_string_pretty(&root)?;
+    std::fs::write(path, pretty + "\n").with_context(|| format!("writing {}", path.display()))
+}
+
+/// Upserts the `"drsg-watch"` entry under `dir`'s `.mcp.json`'s
+/// `mcpServers` — Claude Code's own convention, also read as-is by GitHub
+/// Copilot CLI (which walks from cwd up to the repo root looking for this
+/// exact file).
+#[cfg(feature = "digest")]
+fn write_mcp_json_entry(dir: &Path, addr: &std::net::SocketAddr, token: &str) -> Result<()> {
+    upsert_json_mcp_entry(
+        &dir.join(".mcp.json"),
+        "mcpServers",
+        "drsg-watch",
+        json!({
+            "type": "http",
+            "url": format!("http://{addr}/mcp"),
+            "headers": { "Authorization": format!("Bearer {token}") },
+        }),
+    )
+}
+
+/// Cursor reads the identical shape from its own path instead of
+/// `.mcp.json`. Only written when `.cursor/` already exists — that's
+/// Cursor's own marker, created the first time someone opens this repo in
+/// it, regardless of MCP use.
+#[cfg(feature = "digest")]
+fn probe_and_write_cursor(dir: &Path, addr: &std::net::SocketAddr, token: &str) -> Result<bool> {
+    if !dir.join(".cursor").is_dir() {
+        return Ok(false);
+    }
+    upsert_json_mcp_entry(
+        &dir.join(".cursor").join("mcp.json"),
+        "mcpServers",
+        "drsg-watch",
+        json!({
+            "type": "http",
+            "url": format!("http://{addr}/mcp"),
+            "headers": { "Authorization": format!("Bearer {token}") },
+        }),
+    )?;
+    Ok(true)
+}
+
+/// OpenCode has no directory marker of its own (it's terminal-first, no
+/// rules/config dir it creates unprompted) — the only honest signal that
+/// this repo's contributors already use it is a pre-existing
+/// `.opencode.json`, so that's the marker, not something created fresh.
+#[cfg(feature = "digest")]
+fn probe_and_write_opencode(dir: &Path, addr: &std::net::SocketAddr, token: &str) -> Result<bool> {
+    if !dir.join(".opencode.json").is_file() {
+        return Ok(false);
+    }
+    upsert_json_mcp_entry(
+        &dir.join(".opencode.json"),
+        "mcp",
+        "drsg-watch",
+        json!({
+            "type": "remote",
+            "url": format!("http://{addr}/mcp"),
+            "headers": { "Authorization": format!("Bearer {token}") },
+            "enabled": true,
+        }),
+    )?;
+    Ok(true)
+}
+
+/// Gemini CLI shares Claude Code's `mcpServers` key but names the URL field
+/// `httpUrl` instead of `url`, and has no `type` discriminator. Written
+/// only when `.gemini/` already exists.
+#[cfg(feature = "digest")]
+fn probe_and_write_gemini(dir: &Path, addr: &std::net::SocketAddr, token: &str) -> Result<bool> {
+    if !dir.join(".gemini").is_dir() {
+        return Ok(false);
+    }
+    upsert_json_mcp_entry(
+        &dir.join(".gemini").join("settings.json"),
+        "mcpServers",
+        "drsg-watch",
+        json!({
+            "httpUrl": format!("http://{addr}/mcp"),
+            "headers": { "Authorization": format!("Bearer {token}") },
+        }),
+    )?;
+    Ok(true)
+}
+
+/// The env var Codex CLI reads its bearer token from at its *own* launch
+/// time — Codex's schema takes `bearer_token_env_var` (a variable name),
+/// never a literal token, so the secret never lands in `.codex/config.toml`
+/// itself. The caller still has to export it before running `codex` here.
+#[cfg(feature = "digest")]
+const CODEX_TOKEN_ENV_VAR: &str = "DRSG_TOKEN";
+
+/// Codex CLI's project-scoped MCP config, `.codex/config.toml`, is TOML —
+/// parsed and re-emitted as a generic table (like the JSON upserts above,
+/// this preserves every other *key* but not hand-written comments or
+/// formatting). Written only when `.codex/` already exists. Note this does
+/// **not** set `trust_level = "trusted"`: Codex treats that as a deliberate
+/// user decision and ignores project-scoped MCP config for untrusted
+/// projects, so the caller still has to trust the project themselves.
+#[cfg(feature = "digest")]
+fn probe_and_write_codex(dir: &Path, addr: &std::net::SocketAddr) -> Result<bool> {
+    let path = dir.join(".codex").join("config.toml");
+    if !dir.join(".codex").is_dir() {
+        return Ok(false);
+    }
+    let mut root: toml::Value = match std::fs::read_to_string(&path) {
+        Ok(s) => s
+            .parse()
+            .with_context(|| format!("{} exists but is not valid TOML", path.display()))?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            toml::Value::Table(Default::default())
+        }
+        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+    };
+    let root_table = root
+        .as_table_mut()
+        .ok_or_else(|| anyhow!("{} does not contain a TOML table", path.display()))?;
+    let mcp_servers = root_table
+        .entry("mcp_servers")
+        .or_insert_with(|| toml::Value::Table(Default::default()));
+    let mcp_servers = mcp_servers
+        .as_table_mut()
+        .ok_or_else(|| anyhow!("{}'s 'mcp_servers' key is not a table", path.display()))?;
+    let mut entry = toml::value::Table::new();
+    entry.insert(
+        "url".to_string(),
+        toml::Value::String(format!("http://{addr}/mcp")),
+    );
+    entry.insert(
+        "bearer_token_env_var".to_string(),
+        toml::Value::String(CODEX_TOKEN_ENV_VAR.to_string()),
+    );
+    mcp_servers.insert("drsg-watch".to_string(), toml::Value::Table(entry));
+    let rendered = toml::to_string_pretty(&root)?;
+    std::fs::write(&path, rendered).with_context(|| format!("writing {}", path.display()))?;
+    Ok(true)
 }
 
 // ---- planes --------------------------------------------------------------
@@ -2758,6 +3147,200 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn scratch_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("drsg-cli-init-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[cfg(feature = "digest")]
+    #[test]
+    fn pick_free_port_returns_a_bindable_loopback_address() {
+        let addr = pick_free_port().unwrap();
+        assert_eq!(addr.ip(), std::net::IpAddr::from([127, 0, 0, 1]));
+        assert_ne!(addr.port(), 0);
+        // The picked port is actually free to bind again immediately after.
+        std::net::TcpListener::bind(addr).unwrap();
+    }
+
+    #[cfg(feature = "digest")]
+    #[test]
+    fn ensure_gitignore_patterns_is_idempotent_and_preserves_unrelated_lines() {
+        let dir = scratch_dir("gitignore");
+        std::fs::write(dir.join(".gitignore"), "node_modules/\n*.drsg\n").unwrap();
+
+        ensure_gitignore_patterns(&dir).unwrap();
+        let first = std::fs::read_to_string(dir.join(".gitignore")).unwrap();
+        assert!(
+            first.contains("node_modules/"),
+            "kept unrelated line: {first}"
+        );
+        for pat in GITIGNORE_PATTERNS {
+            assert!(first.contains(pat), "missing {pat}: {first}");
+        }
+
+        ensure_gitignore_patterns(&dir).unwrap();
+        let second = std::fs::read_to_string(dir.join(".gitignore")).unwrap();
+        assert_eq!(first, second, "a second run must not duplicate lines");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "digest")]
+    #[test]
+    fn mcp_json_upsert_adds_overwrites_and_preserves_other_entries() {
+        let dir = scratch_dir("mcpjson");
+        let addr: std::net::SocketAddr = "127.0.0.1:12345".parse().unwrap();
+
+        // Fresh file: creates `mcpServers` and the entry.
+        write_mcp_json_entry(&dir, &addr, "tok1").unwrap();
+        let v: Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join(".mcp.json")).unwrap()).unwrap();
+        assert_eq!(
+            v["mcpServers"]["drsg-watch"]["url"],
+            "http://127.0.0.1:12345/mcp"
+        );
+        assert_eq!(
+            v["mcpServers"]["drsg-watch"]["headers"]["Authorization"],
+            "Bearer tok1"
+        );
+
+        // An existing, unrelated server entry survives an overwrite.
+        let mut v = v;
+        v["mcpServers"]["other"] = json!({"type": "stdio", "command": "foo"});
+        std::fs::write(
+            dir.join(".mcp.json"),
+            serde_json::to_string_pretty(&v).unwrap(),
+        )
+        .unwrap();
+
+        write_mcp_json_entry(&dir, &addr, "tok2").unwrap();
+        let v: Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join(".mcp.json")).unwrap()).unwrap();
+        assert_eq!(
+            v["mcpServers"]["drsg-watch"]["headers"]["Authorization"], "Bearer tok2",
+            "must overwrite in place, not duplicate"
+        );
+        assert_eq!(
+            v["mcpServers"]["other"]["command"], "foo",
+            "unrelated entry preserved"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "digest")]
+    #[test]
+    fn agent_probes_skip_when_their_marker_is_absent() {
+        let dir = scratch_dir("no-markers");
+        let addr: std::net::SocketAddr = "127.0.0.1:12345".parse().unwrap();
+
+        assert!(!probe_and_write_cursor(&dir, &addr, "tok").unwrap());
+        assert!(!probe_and_write_opencode(&dir, &addr, "tok").unwrap());
+        assert!(!probe_and_write_gemini(&dir, &addr, "tok").unwrap());
+        assert!(!probe_and_write_codex(&dir, &addr).unwrap());
+        assert!(!dir.join(".cursor").exists());
+        assert!(!dir.join(".opencode.json").exists());
+        assert!(!dir.join(".gemini").exists());
+        assert!(!dir.join(".codex").exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "digest")]
+    #[test]
+    fn cursor_probe_writes_the_mcp_shape_when_dot_cursor_exists() {
+        let dir = scratch_dir("cursor");
+        std::fs::create_dir_all(dir.join(".cursor")).unwrap();
+        let addr: std::net::SocketAddr = "127.0.0.1:12345".parse().unwrap();
+
+        assert!(probe_and_write_cursor(&dir, &addr, "tok").unwrap());
+        let v: Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join(".cursor/mcp.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            v["mcpServers"]["drsg-watch"]["url"],
+            "http://127.0.0.1:12345/mcp"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "digest")]
+    #[test]
+    fn opencode_probe_only_fires_on_an_existing_opencode_json() {
+        let dir = scratch_dir("opencode");
+        let addr: std::net::SocketAddr = "127.0.0.1:12345".parse().unwrap();
+
+        // No pre-existing `.opencode.json`: nothing is created.
+        assert!(!probe_and_write_opencode(&dir, &addr, "tok").unwrap());
+        assert!(!dir.join(".opencode.json").exists());
+
+        // Once it exists, the entry is upserted under `mcp`, not `mcpServers`.
+        std::fs::write(dir.join(".opencode.json"), "{}").unwrap();
+        assert!(probe_and_write_opencode(&dir, &addr, "tok").unwrap());
+        let v: Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join(".opencode.json")).unwrap())
+                .unwrap();
+        assert_eq!(v["mcp"]["drsg-watch"]["type"], "remote");
+        assert_eq!(v["mcp"]["drsg-watch"]["url"], "http://127.0.0.1:12345/mcp");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "digest")]
+    #[test]
+    fn gemini_probe_uses_http_url_field_not_url() {
+        let dir = scratch_dir("gemini");
+        std::fs::create_dir_all(dir.join(".gemini")).unwrap();
+        let addr: std::net::SocketAddr = "127.0.0.1:12345".parse().unwrap();
+
+        assert!(probe_and_write_gemini(&dir, &addr, "tok").unwrap());
+        let v: Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.join(".gemini/settings.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            v["mcpServers"]["drsg-watch"]["httpUrl"],
+            "http://127.0.0.1:12345/mcp"
+        );
+        assert!(
+            v["mcpServers"]["drsg-watch"]["url"].is_null(),
+            "must use httpUrl, not url"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "digest")]
+    #[test]
+    fn codex_probe_writes_toml_with_env_var_name_never_the_raw_token() {
+        let dir = scratch_dir("codex");
+        std::fs::create_dir_all(dir.join(".codex")).unwrap();
+        let addr: std::net::SocketAddr = "127.0.0.1:12345".parse().unwrap();
+
+        assert!(probe_and_write_codex(&dir, &addr).unwrap());
+        let rendered = std::fs::read_to_string(dir.join(".codex/config.toml")).unwrap();
+        let v: toml::Value = rendered.parse().unwrap();
+        assert_eq!(
+            v["mcp_servers"]["drsg-watch"]["url"].as_str().unwrap(),
+            "http://127.0.0.1:12345/mcp"
+        );
+        assert_eq!(
+            v["mcp_servers"]["drsg-watch"]["bearer_token_env_var"]
+                .as_str()
+                .unwrap(),
+            CODEX_TOKEN_ENV_VAR
+        );
+        assert!(
+            !rendered.contains("Bearer"),
+            "the raw token must never land in this file: {rendered}"
+        );
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

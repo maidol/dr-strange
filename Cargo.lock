@@ -1114,7 +1114,7 @@ dependencies = [
 
 [[package]]
 name = "dr-strange-cli"
-version = "2.0.0-alpha"
+version = "2.0.1"
 dependencies = [
  "ahash",
  "anyhow",
@@ -1124,7 +1124,9 @@ dependencies = [
  "dr-strange-log",
  "dr-strange-parser",
  "dr-strange-web",
+ "libc",
  "mimalloc",
+ "rand 0.10.2",
  "serde",
  "serde_json",
  "toml",
@@ -1133,7 +1135,7 @@ dependencies = [
 
 [[package]]
 name = "dr-strange-core"
-version = "2.0.0-alpha"
+version = "2.0.1"
 dependencies = [
  "ahash",
  "criterion",
@@ -1153,7 +1155,7 @@ dependencies = [
 
 [[package]]
 name = "dr-strange-llm"
-version = "2.0.0-alpha"
+version = "2.0.1"
 dependencies = [
  "ahash",
  "anydoc",
@@ -1176,7 +1178,7 @@ dependencies = [
 
 [[package]]
 name = "dr-strange-log"
-version = "2.0.0-alpha"
+version = "2.0.1"
 dependencies = [
  "tracing",
  "tracing-appender",
@@ -1185,7 +1187,7 @@ dependencies = [
 
 [[package]]
 name = "dr-strange-mcp"
-version = "2.0.0-alpha"
+version = "2.0.1"
 dependencies = [
  "anyhow",
  "dr-strange-core",
@@ -1203,7 +1205,7 @@ dependencies = [
 
 [[package]]
 name = "dr-strange-parser"
-version = "2.0.0-alpha"
+version = "2.0.1"
 dependencies = [
  "ahash",
  "dr-strange-core",
@@ -1212,7 +1214,7 @@ dependencies = [
 
 [[package]]
 name = "dr-strange-web"
-version = "2.0.0-alpha"
+version = "2.0.1"
 dependencies = [
  "ahash",
  "anyhow",
@@ -1243,7 +1245,7 @@ dependencies = [
 
 [[package]]
 name = "drsg-bench"
-version = "2.0.0-alpha"
+version = "2.0.1"
 dependencies = [
  "anyhow",
  "clap",
