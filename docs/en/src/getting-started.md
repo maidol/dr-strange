@@ -249,6 +249,13 @@ intranet wiki — and is the one deliberate exception to that. It is not a switc
 that turns the guard off, and a server reachable by untrusted clients should
 leave it empty. To refuse URL fetching entirely, set `enabled = false`.
 
+It re-permits *reading*. `plugin.install` over RPC does not consult it and
+stays public-only however it is set, because a plugin is a wasm component the
+server goes on to execute: re-permitting an intranet wiki is not an offer to
+run code served from it. To install from the private network, do it from the
+CLI — `drsg plugin install ./py.wasm` takes a local path and never touches the
+network at all, which is also the way out when a download is refused.
+
 Precedence is fixed: an environment variable already set in the process always
 takes precedence over the corresponding file value, and the `--addr` flag
 overrides `[server].addr`. Providing `[server.tls]` switches the server to

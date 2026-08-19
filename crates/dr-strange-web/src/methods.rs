@@ -392,7 +392,15 @@ pub struct PluginInstall {
 
 /// `plugin.install` — download, validate, hash-pin and store a plugin.
 /// Write-gated; the URL passes the same resolved-address network policy as
-/// every other fetch (public addresses only).
+/// every other fetch.
+///
+/// It is *stricter* than the crawler on one point, deliberately: the allow
+/// list below is empty, so `[fetch] allow_private` does not reach here even
+/// though it reaches `fetch`. What lands is a wasm component the server will
+/// execute, not a page it will read, and an operator who re-permitted
+/// `10.0.0.0/8` to reach an intranet wiki did not thereby offer to run code
+/// served from it. Installing from the private network is the CLI's job,
+/// where the operator is at the keyboard: `drsg plugin install <path>`.
 pub fn plugin_install(_ctx: &Ctx<'_>, p: Value) -> Result<Value, RpcError> {
     let req: PluginInstall = params(p)?;
     if !(req.url.starts_with("http://") || req.url.starts_with("https://")) {
@@ -401,6 +409,7 @@ pub fn plugin_install(_ctx: &Ctx<'_>, p: Value) -> Result<Value, RpcError> {
         ));
     }
     const CAP: usize = 256 << 20;
+    // Empty allow list on purpose — see this function's docs.
     let bytes = crate::fetch::fetch_bytes(&req.url, CAP, &[])
         .map_err(|e| RpcError::server(format!("{e:#}")))?;
     let store = plugin_store()?;

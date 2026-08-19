@@ -88,7 +88,9 @@ pub struct FetchCfg {
     pub max_depth: Option<usize>,
     /// Requests in flight at once (default 4).
     pub concurrency: Option<usize>,
-    /// CIDR blocks to re-permit despite not being publicly routable.
+    /// CIDR blocks to re-permit despite not being publicly routable. It
+    /// re-permits *reading* — `plugin.install` over RPC ignores it and stays
+    /// public-only, because what it downloads is executed.
     pub allow_private: Option<Vec<String>>,
 }
 
