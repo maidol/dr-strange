@@ -131,19 +131,27 @@ with open(path, "w") as f:
 PY
 }
 
-# The pid of the daemon watching THIS repository, whatever port it is on.
+# The pid of the daemon serving THIS repository, whatever port it is on.
 #
-# The port alone is not a good enough identity once `--port` exists: `restart
-# --port 7702` has to stop the daemon that is currently on 7701, and a port
-# that is occupied may be occupied by something else entirely. The command line
-# is what actually says which repository a daemon serves.
-repo_daemon_pid() {
-  local p
-  for p in $(pgrep -x drsg 2>/dev/null || true); do
-    if tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null | grep -qF -- "--dir $REPO "; then
-      echo "$p"; return 0
-    fi
-  done
+# Identity is the database's LOCK file, held open for the process's lifetime by
+# the native backend. Two weaker identities were tried and are wrong:
+#
+#   - the port: `restart --port N` must stop a daemon that is by definition on
+#     the *old* address, and an occupied port may be occupied by anything;
+#   - the command line: `drsg init` spawns its daemon with `--dir .` and
+#     `--db ./graph.drsg`, relative to a cwd the pattern never sees, so
+#     matching on the repository path misses exactly the daemons init started
+#     — and then a start opens a database that is already open, which is the
+#     one error this lookup exists to prevent.
+#
+# The lock is also the resource that actually matters: one process per db.
+db_holder_pid() {
+  local lock
+  lock="$(readlink -f "$DB/LOCK" 2>/dev/null || true)"
+  [ -n "$lock" ] || return 0
+  # One `find` rather than a readlink per fd: /proc has a few thousand of them.
+  find /proc/[0-9]*/fd -maxdepth 1 -lname "$lock" -printf '%h\n' 2>/dev/null |
+    sed -n 's|/proc/\([0-9]*\)/fd|\1|p' | head -1
   # Found nothing is a normal answer, not a failure: callers test for empty.
   return 0
 }
@@ -161,7 +169,7 @@ start() {
     echo "ERROR: no drsg binary at '$BIN' — build it (\`cargo build --release -p dr-strange-cli\` in $SELF_REPO) or set DRSG_CODE_BIN." >&2
     exit 1
   fi
-  local mine; mine="$(repo_daemon_pid)"
+  local mine; mine="$(db_holder_pid)"
   if [ -n "$mine" ]; then
     echo "already running (pid $mine) on $(pid_addr "$mine") — use restart${port:+ --port $port} to move it"
     return 0
@@ -179,7 +187,7 @@ start() {
       watch --dir "$REPO" --plane "$PLANE" ${force:+$force} \
       >> "$LOG" 2>&1 < /dev/null &
   for _ in $(seq 1 40); do healthy && break; sleep 0.5; done
-  local pid; pid="$(repo_daemon_pid)"
+  local pid; pid="$(db_holder_pid)"
   if [ -z "$pid" ] || ! healthy; then
     echo "ERROR: never started listening on $ADDR. Last lines of $LOG:" >&2
     tail -20 "$LOG" >&2
@@ -211,7 +219,7 @@ stop() {
   read_config
   # By repository, not by port: `restart --port N` must stop the daemon that is
   # running now, which is by definition on the *old* address.
-  local pid; pid="$(repo_daemon_pid)"
+  local pid; pid="$(db_holder_pid)"
   [ -z "$pid" ] && [ -f "$PID" ] && kill -0 "$(cat "$PID")" 2>/dev/null && pid="$(cat "$PID")"
   if [ -z "$pid" ]; then
     rm -f "$PID"
@@ -235,9 +243,9 @@ stop() {
 
 status() {
   read_config
-  local pid; pid="$(repo_daemon_pid)"
+  local pid; pid="$(db_holder_pid)"
   if [ -z "$pid" ]; then
-    echo "not running ($REPO: no drsg watching it; .mcp.json says $CFG_ADDR)"
+    echo "not running ($REPO: nothing holds its database; .mcp.json says $CFG_ADDR)"
     return 1
   fi
   ADDR="$(pid_addr "$pid")"
