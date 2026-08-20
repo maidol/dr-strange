@@ -1462,7 +1462,9 @@ fn snippet_logic(
             );
         }
         dr_strange_core::compact::Resolved::None => {
-            anyhow::bail!("no symbol matches `{}` in this plane", req.name);
+            // Routed through the shared renderer so a rebuild in flight is
+            // named here too, instead of reading as plain absence.
+            anyhow::bail!("{}", dr_strange_core::compact::no_match(&plane, &req.name)?);
         }
     };
     // The digest's own copy first — exact by construction.
