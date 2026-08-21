@@ -72,9 +72,19 @@ EOF
   # needs the L3 LLM key (persisted by install.sh) in ITS
   # env for digest.run to authenticate — export the env file's key=value pairs.
   set -a; [ -f "$ENVFILE" ] && source "$ENVFILE"; set +a
-  DRSG_TOKEN="$TOKEN" nohup "$DRSG_MEM_BIN" --db "$DRSG_MEM_DIR/memory.drsg" serve --addr "$DRSG_MEM_ADDR" \
-      >> "$LOG" 2>&1 &
-  echo $! > "$PID"
+  # Launched from DRSG_MEM_DIR, not from wherever the caller happened to stand:
+  # drsg auto-loads `./drsg.toml` from the working directory, so starting this
+  # daemon inside a code repository silently hands it that repository's server
+  # config. A repo that sets `[digest] embed_provider` this way turns on
+  # embed-on-write for `/mcp` write_nodes, and every Fact write then fails on a
+  # key the memory layer never needed — the memory plane is not vectorized and
+  # recall runs on n-grams and BM25.
+  (
+    cd "$DRSG_MEM_DIR"
+    DRSG_TOKEN="$TOKEN" nohup "$DRSG_MEM_BIN" --db "$DRSG_MEM_DIR/memory.drsg" serve --addr "$DRSG_MEM_ADDR" \
+        >> "$LOG" 2>&1 &
+    echo $! > "$PID"
+  )
   echo "started pid $(cat "$PID"); db=$DRSG_MEM_DIR/memory.drsg; addr=$DRSG_MEM_ADDR"
   # Wait for readiness.
   for _ in $(seq 1 20); do
