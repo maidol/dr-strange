@@ -18,7 +18,8 @@
 # so the daemon and the clients cannot drift apart.
 #
 # Env (defaults shown):
-#   DRSG_CODE_BIN    this repo's target/release/drsg, else `drsg` on PATH
+#   DRSG_CODE_BIN    the watched repo's target/release/drsg, else this
+#                    checkout's, else `drsg` on PATH
 #   DRSG_CODE_DB     <repo>/graph.drsg        the db *directory* (native backend)
 #   DRSG_CODE_PLANE  the repo's own name      plane to keep in sync
 #
@@ -61,10 +62,17 @@ if [ -z "$REPO" ]; then
   exit 1
 fi
 
-# The binary lives with *this* checkout; a target repository has no reason to
-# have built drsg. Falls back to PATH for an installed one.
+# Where drsg is, in the order that stays true wherever this script is run from.
+# `$SELF_REPO` assumes the script sits in a checkout's `scripts/` — which stops
+# being true the moment a copy is kept outside the repository (a copy exists
+# precisely because a branch that does not track this file deletes it). The
+# target repo is tried first for the same reason: with `--dir`, the repo being
+# watched is the one the caller named, and its own build is the binary they
+# most likely meant. Falls back to PATH for an installed one.
 if [ -n "${DRSG_CODE_BIN:-}" ]; then
   BIN="$DRSG_CODE_BIN"
+elif [ -x "$REPO/target/release/drsg" ]; then
+  BIN="$REPO/target/release/drsg"
 elif [ -x "$SELF_REPO/target/release/drsg" ]; then
   BIN="$SELF_REPO/target/release/drsg"
 else
