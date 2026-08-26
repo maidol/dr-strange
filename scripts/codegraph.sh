@@ -18,8 +18,10 @@
 # so the daemon and the clients cannot drift apart.
 #
 # Env (defaults shown):
-#   DRSG_CODE_BIN    the watched repo's target/release/drsg, else this
-#                    checkout's, else `drsg` on PATH
+#   DRSG_CODE_BIN    whatever last started this repo's daemon, else the watched
+#                    repo's target/release/drsg, else this checkout's, else
+#                    `drsg` on PATH. A repository that does not build drsg
+#                    itself needs this named once; it is remembered after that.
 #   DRSG_CODE_DB     <repo>/graph.drsg        the db *directory* (native backend)
 #   DRSG_CODE_PLANE  the repo's own name      plane to keep in sync
 #
@@ -62,22 +64,6 @@ if [ -z "$REPO" ]; then
   exit 1
 fi
 
-# Where drsg is, in the order that stays true wherever this script is run from.
-# `$SELF_REPO` assumes the script sits in a checkout's `scripts/` — which stops
-# being true the moment a copy is kept outside the repository (a copy exists
-# precisely because a branch that does not track this file deletes it). The
-# target repo is tried first for the same reason: with `--dir`, the repo being
-# watched is the one the caller named, and its own build is the binary they
-# most likely meant. Falls back to PATH for an installed one.
-if [ -n "${DRSG_CODE_BIN:-}" ]; then
-  BIN="$DRSG_CODE_BIN"
-elif [ -x "$REPO/target/release/drsg" ]; then
-  BIN="$REPO/target/release/drsg"
-elif [ -x "$SELF_REPO/target/release/drsg" ]; then
-  BIN="$SELF_REPO/target/release/drsg"
-else
-  BIN="drsg"
-fi
 DB="${DRSG_CODE_DB:-$REPO/graph.drsg}"
 # Matches drsg's own default_plane(): the source directory's name.
 PLANE="${DRSG_CODE_PLANE:-$(basename "$REPO")}"
@@ -90,6 +76,35 @@ MCP_JSON="$REPO/.mcp.json"
 STATE="${XDG_STATE_HOME:-$HOME/.local/state}/drsg/codegraph/$(basename "$REPO")-$(printf %s "$REPO" | sha256sum | cut -c1-8)"
 PID="$STATE/pid"
 LOG="$STATE/log"
+BIN_MEMO="$STATE/bin"
+
+# Where drsg is, in the order that stays true wherever this script is run from.
+# `$SELF_REPO` assumes the script sits in a checkout's `scripts/` — which stops
+# being true the moment a copy is kept outside the repository (a copy exists
+# precisely because a branch that does not track this file deletes it). The
+# target repo is tried first for the same reason: with `--dir`, the repo being
+# watched is the one the caller named, and its own build is the binary they
+# most likely meant. Falls back to PATH for an installed one.
+#
+# Between the override and the guesses sits what actually started this repo's
+# daemon last time. A repository that is not itself a drsg checkout has no
+# binary of its own to find, so every guess below misses and the caller has to
+# supply `DRSG_CODE_BIN` — once is reasonable, every restart forever is not.
+# The path is remembered, never a copy of the binary, so an upgrade in place is
+# picked up without touching this. A remembered path that has gone away (the
+# checkout it named moved, or a branch switch deleted its target/) simply falls
+# through to the guesses rather than becoming a permanent wrong answer.
+if [ -n "${DRSG_CODE_BIN:-}" ]; then
+  BIN="$DRSG_CODE_BIN"
+elif [ -s "$BIN_MEMO" ] && [ -x "$(cat "$BIN_MEMO")" ]; then
+  BIN="$(cat "$BIN_MEMO")"
+elif [ -x "$REPO/target/release/drsg" ]; then
+  BIN="$REPO/target/release/drsg"
+elif [ -x "$SELF_REPO/target/release/drsg" ]; then
+  BIN="$SELF_REPO/target/release/drsg"
+else
+  BIN="drsg"
+fi
 
 # Address and token both come from .mcp.json, the file the MCP clients read.
 # Regenerating a token here would silently invalidate every client config that
@@ -171,12 +186,22 @@ addr_holder()  { ss -ltnp 2>/dev/null | awk -v a="$1" '$4 == a {sub(/.*pid=/, ""
 
 healthy() { curl -sf -m 2 "http://$ADDR/health" >/dev/null 2>&1; }
 
+# Checked before `restart` stops anything: a missing binary used to be found
+# only on the way back up, which left the daemon down and the caller holding an
+# error about a repository they were not working in.
+require_bin() {
+  if [ -x "$BIN" ] || command -v "$BIN" >/dev/null 2>&1; then
+    return 0
+  fi
+  echo "ERROR: no drsg binary at '$BIN' — $REPO does not build one itself, so name the one to run:" >&2
+  echo "         DRSG_CODE_BIN=/path/to/drsg $0 start --dir $REPO${port:+ --port $port}" >&2
+  echo "       It is remembered per repository afterwards, so this is a one-time argument." >&2
+  exit 1
+}
+
 start() {
   read_config
-  if [ ! -x "$BIN" ] && ! command -v "$BIN" >/dev/null 2>&1; then
-    echo "ERROR: no drsg binary at '$BIN' — build it (\`cargo build --release -p dr-strange-cli\` in $SELF_REPO) or set DRSG_CODE_BIN." >&2
-    exit 1
-  fi
+  require_bin
   local mine; mine="$(db_holder_pid)"
   if [ -n "$mine" ]; then
     echo "already running (pid $mine) on $(pid_addr "$mine") — use restart${port:+ --port $port} to move it"
@@ -202,6 +227,12 @@ start() {
     exit 1
   fi
   echo "$pid" > "$PID"
+  # Only after it is known to serve: remembering a binary that failed to start
+  # would make the next run repeat the failure with no argument left to blame.
+  local resolved
+  if resolved="$(command -v "$BIN" 2>/dev/null)"; then
+    printf '%s\n' "$resolved" > "$BIN_MEMO"
+  fi
   echo "started pid $pid — http://$ADDR/mcp, repo=$REPO, db=$DB, plane=$PLANE${force:+ (rebuilt)}"
   if [ "$ADDR" != "$CFG_ADDR" ]; then
     persist_addr "$ADDR"
@@ -274,7 +305,7 @@ status() {
 case "$cmd" in
   start)   start ;;
   stop)    stop ;;
-  restart) stop; start ;;
+  restart) read_config; require_bin; stop; start ;;
   status)  status ;;
   logs)    tail -f "$LOG" ;;
   *) echo "usage: $0 {start|stop|restart|status|logs} [--dir PATH] [--port N] [--force]"; exit 1 ;;
