@@ -76,6 +76,7 @@ agent's long-term memory, Dr Strange aims to be the single store for all of it.
 | **Commit-synced watch** | `serve watch` folds every commit into the plane, convergent with a full re-digest |
 | **Agent tools** | `context` · `search` · `describe` · `grep` · `trace` · `impact` · `snippet` — one round trip each |
 | **Backup / restore** | consistent, id-faithful whole-database snapshots |
+| **Read-only replicas** | `serve --follow` mirrors a running server for read-scaling across a cluster |
 | **Interfaces** | a web UI, six language SDKs, a CLI, and an MCP server speaking the agent verbs |
 
 The model-backed features (natural-language query, document ingestion, and
@@ -196,9 +197,34 @@ repository.
 
 ```console
 $ drsg init
-plane 'myrepo' bootstrapped — serve watch pid 48213, http://127.0.0.1:51900/mcp, wrote .mcp.json
-  + Cursor: wrote .cursor/mcp.json
+plane 'myrepo' bootstrapped — serve watch pid 48213, http://127.0.0.1:51900/mcp
+  history → plane 'myrepo_git', current with every commit — `drsg history --plane myrepo`
+  + wrote ./.mcp.json
+  + Cursor: wrote ./.cursor/mcp.json
 ```
+
+**Run `drsg init` again whenever the server is gone.** It spawns `serve
+watch` detached and records that process's address and bearer token in
+`.mcp.json`, but nothing ever restarts it: an MCP `http` entry tells a client
+where to connect, not what to launch, so no agent relaunches it and it does
+not survive a reboot, a crash, or a kill. Re-running `init` is the way back,
+and it is safe at any time — it probes the recorded endpoint first, leaves a
+live server alone without opening the database (so it cannot collide with the
+running one), and restarts a dead one on the *same* address and token,
+skipping the re-parse because the plane resumes from its recorded commit.
+Every agent's configuration stays valid across the restart.
+
+```console
+$ drsg init                       # already up: nothing to do
+drsg is already serving . at http://127.0.0.1:51900/mcp — reusing it, the plane is untouched
+
+$ drsg init                       # after a reboot: same address, same token
+plane 'myrepo' restarted — serve watch pid 51002, http://127.0.0.1:51900/mcp
+```
+
+Once per repository, then again whenever the server is gone. Pinning `addr`
+and `token` under `[server]` in `drsg.toml` keeps the endpoint byte-identical
+across restarts even if the recorded port is taken by then.
 
 Seven verbs answer an agent's questions, one round trip each, as compact
 one-fact-per-line text. All seven are MCP tools on `drsg serve`; five are
@@ -214,6 +240,7 @@ they live with the server).
 | `trace` | how one symbol reaches another: the shortest recorded call path |
 | `impact` | blast radius: everything reaching a symbol, grouped by distance |
 | `snippet` | one symbol's source text |
+| `history` | the repository behind the code: HEAD, branches, tags, rebases and the newest commits |
 
 Two disciplines run through every tool. An ambiguous name is never
 guessed at: the reply is a list of candidates to pick from. And a call
@@ -221,11 +248,39 @@ listing is a stated lower bound: what the parser could not resolve is kept
 as `UnresolvedRef` facts with reasons, and the answer says so — a wrong edge
 is worse than a missing one.
 
+**History, too.** Digesting a directory that is a git checkout also reads the
+repository's **history** into a plane of its own, `<plane>_git`: commits,
+branches, tags, merges (`order = 1` is the line a commit was made on), and
+the rebases only the reflog remembers — what each replayed, and the tips it
+rewrote away. Facts only, never a model call, and no `git` binary is run: the
+`git` plugin reads the object store itself, inside the sandbox. Two planes
+because they answer different questions and have different lifetimes — the
+code plane is the tree *now*, history only grows — and a second digest of an
+unchanged repository writes nothing at all. `serve watch` keeps it current
+commit by commit, so `drsg init` bootstraps both planes; `drsg history` (and
+the MCP tool of the same name) reads one back:
+
+```console
+$ drsg history --plane myrepo
+429 commit(s), 11 of them merges; 7 branch(es), 15 tag(s), 2 rebase(s)
+branches (7 shown of 7):
+  * master         5cb5d79  chore(release): bump version to 2.1.1
+    origin/master  5cb5d79  chore(release): bump version to 2.1.1
+rebases (2):
+    master  2026-08-11  onto 7bf6b9a, 3 commit(s), replaced 1c0b734
+commits (newest 15 of 429):
+  5cb5d79  2026-08-25  crabis  chore(release): bump version to 2.1.1
+  …
+```
+
+`--no-git` turns the whole stage off, on `digest` and on `serve watch` alike.
+
 **Plugins.** `drsg plugin install` installs any parser plugin — a local
 `.wasm` file or a URL — validating it as a component and pinning its SHA-256,
 re-checked at every load. The no-argument form offers the official catalog:
 eight languages — Rust, Go, TypeScript/JavaScript, Python, Java, C, web
-(HTML/CSS), and TOML — pinned to release tags of the
+(HTML/CSS) and TOML, plus `git` for a repository's history — each pinned to a
+release tag of the
 [dr-strange-extension](https://github.com/wangyingsm/dr-strange-extension)
 repository ([latest releases](https://github.com/wangyingsm/dr-strange-extension/releases)).
 The same repository carries the plugin SDKs: the parser contract is an open

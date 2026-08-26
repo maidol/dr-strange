@@ -4,6 +4,154 @@ All notable changes to Dr Strange are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.0] - 2026-08-26
+
+### Added
+- **`drsg digest` now reads a repository's history, into a plane of its own.**
+  A checkout carries two sources of truth: the tree says what the code is, and
+  the repository says how it got there. Digesting a directory that turns out
+  to be a git checkout now also reads its **commits, branches, tags, merges
+  and rebases** into `<plane>_git`, beside the code plane — facts only, and
+  never a model call. The reading is done by a new sandboxed plugin, `git@1`,
+  in the extensions repository: it carries its own reader for git's object
+  store (loose objects, v2 pack indexes, both delta forms), refs and reflog,
+  so **no `git` binary is run** and none is required.
+
+  Two planes rather than one, because the two answer different questions and
+  have different lifetimes: a code plane is a picture of the tree *now* and is
+  rewritten whenever a file changes, while history only ever grows. Writing is
+  append-mostly and shaped by what can actually change — a commit is immutable,
+  so one already in the plane is left alone and its `PARENT` edges are never
+  rewritten; only a moving pointer (a branch, a tag, a rebase) is patched. A
+  second digest of an unchanged repository writes nothing at all.
+
+  `--no-git` turns the stage off; `--git-plane <name>` puts it somewhere else.
+  The history stage runs **before** anything that can reach for a model, so a
+  digest that dies on a missing API key does not take the repository's history
+  down with it. `[plugins.git]` carries the settings (`max_commits`, `reflog`,
+  `remotes`, `tags`, `body`).
+
+  What a `Rebase` node can and cannot claim is stated rather than implied: a
+  rebase leaves no trace in the commit graph — it writes new commits and moves
+  a ref — so the only record is the reflog, which is local to one clone and
+  expires (`gc.reflogExpire`, 90 days by default). Rebases are reconstructed
+  from it, the report says so, and an absent `Rebase` never means "no rebase
+  happened". The same reflog is why commits no ref can still reach are kept
+  and marked `reachable: false`: they are what a rewrite left behind.
+
+- **`drsg history`, and an MCP tool of the same name.** One verb that orients a
+  reader in a repository: where HEAD is, what the branches and tags point at,
+  which branches were rebased and what each replaced, and the newest commits —
+  as compact text, the way `context` answers "what is this symbol". Naming the
+  code plane finds the history beside it (`myrepo` → `myrepo_git`), because the
+  first is what a reader has in mind. Every listing says what it is a listing
+  *of* (`newest 15 of 429`): a truncated one that looked complete is the one
+  failure a reader cannot see.
+
+- **`serve watch` keeps the history plane current, so `drsg init` bootstraps
+  both.** History is read at startup and again on every HEAD move, beside the
+  code fold and sharing the plugins it already loaded. A commit that touched no
+  file the code plane holds — an empty one, or one that moved only something
+  ignored — still lands, because it moved a branch. `--no-git` turns it off, as
+  on `digest`. A tag or branch created *without* a commit reaches the plane on
+  the next HEAD move: the watcher wakes on HEAD, and polling every ref would
+  double its git calls for a rare case.
+
+- **The agent surface says the history plane exists.** `list_planes` now labels
+  each plane with what it holds and names its counterpart, and the MCP server's
+  instructions carry the history vocabulary (`Commit`/`Merge`, `Branch`, `Tag`,
+  `Rebase`; `PARENT` with `order`, `TIP`, `TAGS`, `ONTO`, `REPLACED`,
+  `PRODUCED`, `RESULT`, `ON`) along with the two things it must not
+  over-read — that a missing rebase is missing evidence rather than evidence of
+  absence, and that `reachable: false` marks what a rewrite left behind. An
+  agent can ask a question without first discovering the schema.
+
+- **The `git` plugin is in the official catalog**, pinned to `git-v1.0.0`
+  (`sha256:ce50d72f…`), so a bare `drsg plugin install` offers it beside the
+  eight language parsers.
+
+- **A plugin may be dispatched by the shape of the source, not only by a file
+  extension.** Routing everywhere else asks what a file is called; a
+  repository's history is not a file. A plugin named `git`, when installed, is
+  handed a host rooted at the repository's **git directory** and nothing else
+  — a *narrower* grant than the working tree every code plugin gets, and one
+  the tree's plugins never had: `.git` was always excluded from the ordinary
+  walk. Nothing is guessed — with no such plugin installed, a digest simply
+  does not read history and says so once.
+
+### Fixed
+- **Four log messages had lost their line continuations** and printed runs of
+  spaces mid-sentence (`"…from a different directory — file        attribution
+  will not line up"`). Three predate this release.
+
+- **A plugin that claims no file extension no longer prints `handles:` with
+  nothing after it** on install — it says how it is dispatched instead.
+
+## [2.1.1] - 2026-08-25
+
+### Changed
+- **`drsg init` is idempotent — the "make sure drsg is up here" command.**
+  The server it spawns is nobody's child: an MCP `http` entry is a connect
+  instruction, so no agent client ever relaunches it, and nothing survives a
+  reboot. Answering "is drsg up for this repo?" therefore has to be `init`'s
+  own job. It now reads the endpoint a previous run recorded in `.mcp.json`
+  and probes `GET /health`: a server still answering is left alone and the
+  database is never opened (so re-running no longer dies on the single-writer
+  lock); one that died is restarted on the *same* address and token, so every
+  agent's config stays valid, and without `--force`, so the plane resumes
+  from its sync point instead of re-parsing the whole tree. An HTTP probe
+  rather than a bare TCP connect, because after a reboot an unrelated process
+  may hold that arbitrary port — and if one does, `init` moves to a free port
+  and says so. Safe to run from a `SessionStart` hook.
+- **`drsg init --addr` falls back to `drsg.toml`'s `[server] addr`**, the way
+  `--token` already fell back to `[server] token`. Pinning both keeps a
+  repo's MCP endpoint byte-identical across restarts.
+
+### Fixed
+- **`drsg init` in a project with no commits.** `serve watch` read HEAD
+  before anything else and gave up when there was none, so a directory whose
+  first commit was still unborn — the ordinary state of a new project — got
+  no plane, no digest, and no watcher, while `init` reported success and
+  exited 0 with the real error buried in `logs/`. The tree is now parsed
+  straight away, so the plane is queryable the moment `init` returns; the
+  watcher then waits for the repository's first commit and rebuilds on it
+  (the tree can move between the scan and that commit, and only a real
+  commit can be recorded as a sync point) before folding commits as usual. A
+  directory that is not a repository at all gets the same initial parse and
+  says plainly that nothing will fold into it.
+
+## [2.1.0] - 2026-08-22
+
+### Added
+- **`serve --follow` — read-only replicas (arch/01 §9).** A second
+  `drsg serve` can mirror a running one for read-scaling across a cluster:
+  every write RPC is refused regardless of token, and the replica
+  bootstraps from the master's `GET /snapshot` then tails its `GET /ws/wal`
+  for new commits, shipped as raw WAL ops so the replica's KV content
+  converges byte-for-byte with its source. Every reconnect does a full
+  resync from scratch — no partial catch-up. Native-backend only.
+
+## [2.0.2] - 2026-08-22
+
+### Fixed
+- **`snippet` reads source from the plane's own root.** It previously
+  resolved the node in the named plane but read the file from the
+  process-level `source_root`, so a second plane could silently return
+  another repository's file at the same relative path. Now uses the
+  plane's own `synced_root`, falling back to the process-level tree only
+  when neither is available.
+- **`serve watch` marks a plane mid-rebuild instead of reporting it
+  absent.** A lookup against a plane that `resync` is still refilling used
+  to read identically to "not found." The plane now carries a persisted
+  `rebuilding_since` marker, and every verb's response notes it — on both
+  empty and found answers — until the rebuild completes.
+
+### Performance
+- **Wasm plugin compilation runs in parallel.** `Plugins::load` now
+  enables wasmtime's `parallel-compilation` feature instead of compiling
+  every installed component on one thread; measured 13.8s -> 2.2s to load,
+  cutting `serve watch` startup-to-servable from ~15s to ~4s.
+
 ## [2.0.1] - 2026-08-19
 
 ### Added

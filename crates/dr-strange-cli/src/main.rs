@@ -19,7 +19,7 @@ use std::io::{self, BufReader, Write};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use anyhow::Result;
+use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use dr_strange_core::{Dir, Metric};
 
@@ -43,8 +43,13 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Bootstrap this repository for agent MCP access: digest it, spawn
-    /// `serve watch` detached in the background on a freshly-picked
-    /// address+token, and write the connection details to `.mcp.json`.
+    /// `serve watch` detached in the background, and write the connection
+    /// details to `.mcp.json`.
+    ///
+    /// Safe to re-run — it is the "make sure drsg is up here" command.
+    /// A server that is still answering is left alone; one that died is
+    /// restarted on the address and token agents already hold, without
+    /// re-parsing the tree.
     #[cfg(feature = "digest")]
     Init {
         /// Repository to digest and watch.
@@ -54,13 +59,15 @@ enum Command {
         /// as the fallback.
         #[arg(long)]
         plane: Option<String>,
-        /// Address for the spawned server to listen on. **Omitted**: an
-        /// OS-assigned free port on 127.0.0.1.
+        /// Address for the spawned server to listen on. **Omitted**:
+        /// `drsg.toml`'s `[server] addr`, then the address a previous run
+        /// recorded in `.mcp.json`, then an OS-assigned free port on
+        /// 127.0.0.1.
         #[arg(long)]
         addr: Option<SocketAddr>,
-        /// Bearer token for the spawned server. **Omitted**: a random token
-        /// is generated, unless `DRSG_TOKEN`/`drsg.toml`'s `[server] token`
-        /// is already set.
+        /// Bearer token for the spawned server. **Omitted**:
+        /// `DRSG_TOKEN`/`drsg.toml`'s `[server] token`, then the token a
+        /// previous run recorded in `.mcp.json`, then a fresh random one.
         #[arg(long)]
         token: Option<String>,
     },
@@ -164,6 +171,19 @@ enum Command {
         #[arg(long, default_value_t = 3)]
         depth: usize,
     },
+    /// A repository's history at a glance: where HEAD is, what the branches
+    /// and tags point at, what was rebased, and the newest commits. Reads the
+    /// `_git` plane a digest of a git checkout writes — naming the code plane
+    /// finds it.
+    History {
+        /// The history plane, or the code plane beside it (`<plane>_git` is
+        /// tried when the one named holds no commits).
+        #[arg(long, default_value = "startup")]
+        plane: String,
+        /// How many commits to list, newest first.
+        #[arg(long, default_value_t = 15)]
+        limit: usize,
+    },
     /// Print the soft-schema catalog (a plane's, or the whole database's).
     Catalog {
         #[arg(long)]
@@ -226,6 +246,21 @@ enum Command {
         addr: Option<SocketAddr>,
         #[command(subcommand)]
         mode: Option<ServeMode>,
+        /// Run as a read-only replica of another `drsg serve` (arch/01 §9):
+        /// every write RPC is refused, and this database (`--db`) mirrors
+        /// the master's, bootstrapping from its `/snapshot` then tailing its
+        /// `/ws/wal`. The master's address, e.g. `ws://host:7700` or
+        /// `wss://host:7700`. Mutually exclusive with `mode` (checked at
+        /// startup, not by clap — a subcommand can't be a `conflicts_with`
+        /// target) — a replica mirrors its master rather than running its
+        /// own ingestion.
+        #[arg(long, value_name = "URL")]
+        follow: Option<String>,
+        /// Bearer token presented to the `--follow` master. Falls back to
+        /// `DRSG_FOLLOW_TOKEN`. Distinct from this replica's own `DRSG_TOKEN`,
+        /// which still gates *its* downstream clients.
+        #[arg(long, requires = "follow")]
+        follow_token: Option<String>,
     },
     /// Ask a natural-language question; an LLM turns it into a read-only plan
     /// and runs it (ROADMAP §3).
@@ -369,6 +404,17 @@ enum Command {
         /// URL only: how far to follow links. 0 reads just the page named.
         #[arg(long, default_value_t = 1)]
         depth: usize,
+        /// Don't read the repository's history. By default, digesting a
+        /// directory that is a git checkout also reads its commits, branches,
+        /// tags and rebases into a plane of its own — facts only, never a
+        /// model call — when the `git` plugin is installed.
+        #[arg(long)]
+        no_git: bool,
+        /// Where that history lands. **Omitted**: `<plane>_git`, beside the
+        /// code plane. History and code are kept apart because they answer
+        /// different questions and have different lifetimes.
+        #[arg(long)]
+        git_plane: Option<String>,
     },
 }
 
@@ -392,6 +438,12 @@ enum ServeMode {
         /// Facts only — embeddings return on the next `drsg digest`.
         #[arg(long)]
         force: bool,
+        /// Don't keep the repository's history plane (`<plane>_git`) current.
+        /// By default every commit that folds into the code plane also
+        /// refreshes history — commits, branches, tags and rebases — when the
+        /// `git` plugin is installed.
+        #[arg(long)]
+        no_git: bool,
     },
 }
 
@@ -576,8 +628,16 @@ fn run(cli: Cli, cfg: &config::Config, out: &mut dyn Write) -> Result<()> {
             addr,
             token,
         } => {
+            // Both fall back to `drsg.toml`'s `[server]`, the same way
+            // `serve` reads them — pinning an address and token there is what
+            // keeps a repo's MCP endpoint stable across restarts.
+            let addr = addr.or(cfg.server.addr);
             let token = token.or_else(|| cfg.server.token.clone());
-            commands::init_bootstrap(&cli.db, dir, plane, addr, token, out)
+            // The plugin store, so `init` can say whether this repository's
+            // history will be read — the answer depends on what is installed,
+            // and a promise it cannot keep would be worse than silence.
+            let plugin_config = config::plugin_config(cfg)?;
+            commands::init_bootstrap(&cli.db, dir, plane, addr, token, &plugin_config, out)
         }
         #[cfg(not(feature = "digest"))]
         Command::Init => commands::init(&cli.db, out),
@@ -676,6 +736,10 @@ fn run(cli: Cli, cfg: &config::Config, out: &mut dyn Write) -> Result<()> {
                 dr_strange_core::compact::impact(&p, &name, depth)?
             )?;
             Ok(())
+        }
+        Command::History { plane, limit } => {
+            let db = commands::open(&cli.db)?;
+            commands::history(&db, &plane, limit, out)
         }
         Command::Catalog { plane } => {
             let db = commands::open(&cli.db)?;
@@ -798,32 +862,73 @@ fn run(cli: Cli, cfg: &config::Config, out: &mut dyn Write) -> Result<()> {
             let db = commands::open(&cli.db)?;
             commands::restore(&db, &input, out)
         }
-        Command::Serve { addr, mode } => {
-            let db = commands::open(&cli.db)?;
-            #[allow(unused_mut)]
-            let mut opts = config::serve_options(cfg, addr);
-            #[cfg(feature = "digest")]
-            if let Some(ServeMode::Watch { dir, plane, force }) = mode {
-                let plane =
-                    plane.unwrap_or_else(|| commands::default_plane(&dir.display().to_string()));
-                let plugin_config = config::plugin_config(cfg)?;
-                // The same embed config the server's search uses keeps the
-                // watched plane's vectors current after each fold.
-                let embed = opts.embed_provider.clone();
-                // The watched tree is the graph's source — attach it, so the
-                // MCP `grep` tool answers literal-text questions beside the
-                // graph's structural ones.
-                opts.source_root = Some(dir.clone());
-                opts.on_start = Some(Box::new(move |db| {
-                    commands::watch(db, dir, plane, plugin_config, embed, force)
-                }));
+        Command::Serve {
+            addr,
+            mode,
+            follow,
+            follow_token,
+        } => {
+            if follow.is_some() && mode.is_some() {
+                bail!("--follow and a serve subcommand (e.g. `watch`) are mutually exclusive");
             }
-            #[cfg(not(feature = "digest"))]
-            let _ = mode;
-            // Hands off to the web crate, which owns its own async runtime and
-            // blocks until a shutdown signal; `out` is unused (the server logs
-            // itself).
-            dr_strange_web::serve(db, Some(cli.db.clone()), opts)
+            if let Some(upstream) = follow {
+                let follow_opts = dr_strange_web::FollowOptions {
+                    upstream,
+                    token: follow_token.or_else(|| std::env::var("DRSG_FOLLOW_TOKEN").ok()),
+                };
+                // Every (re)connect is a full resync from scratch (arch/01
+                // §9): each loop iteration wipes `cli.db` and reopens a fresh,
+                // empty, read-only engine before `serve` bootstraps it from
+                // the master's `/snapshot`.
+                loop {
+                    commands::prepare_follower_dir(&cli.db)?;
+                    let db = dr_strange_core::Database::open_read_only(&cli.db)
+                        .with_context(|| format!("opening replica at {}", cli.db.display()))?;
+                    let mut opts = config::serve_options(cfg, addr);
+                    opts.follow = Some(follow_opts.clone());
+                    match dr_strange_web::serve(db, Some(cli.db.clone()), opts)? {
+                        dr_strange_web::ServeOutcome::Stopped => break Ok(()),
+                        dr_strange_web::ServeOutcome::ResyncNeeded => {
+                            tracing::warn!(
+                                "resyncing from master after losing the replication stream"
+                            );
+                            std::thread::sleep(std::time::Duration::from_secs(2));
+                        }
+                    }
+                }
+            } else {
+                let db = commands::open(&cli.db)?;
+                #[allow(unused_mut)]
+                let mut opts = config::serve_options(cfg, addr);
+                #[cfg(feature = "digest")]
+                if let Some(ServeMode::Watch {
+                    dir,
+                    plane,
+                    force,
+                    no_git,
+                }) = mode
+                {
+                    let plane = plane
+                        .unwrap_or_else(|| commands::default_plane(&dir.display().to_string()));
+                    let plugin_config = config::plugin_config(cfg)?;
+                    // The same embed config the server's search uses keeps the
+                    // watched plane's vectors current after each fold.
+                    let embed = opts.embed_provider.clone();
+                    // The watched tree is the graph's source — attach it, so the
+                    // MCP `grep` tool answers literal-text questions beside the
+                    // graph's structural ones.
+                    opts.source_root = Some(dir.clone());
+                    opts.on_start = Some(Box::new(move |db| {
+                        commands::watch(db, dir, plane, plugin_config, embed, force, !no_git)
+                    }));
+                }
+                #[cfg(not(feature = "digest"))]
+                let _ = mode;
+                // Hands off to the web crate, which owns its own async runtime
+                // and blocks until a shutdown signal; `out` is unused (the
+                // server logs itself). Never `--follow`, so always `Stopped`.
+                dr_strange_web::serve(db, Some(cli.db.clone()), opts).map(|_| ())
+            }
         }
         #[cfg(feature = "digest")]
         Command::Vectorize {
@@ -906,6 +1011,8 @@ fn run(cli: Cli, cfg: &config::Config, out: &mut dyn Write) -> Result<()> {
             depth,
             handler,
             plugin_source,
+            no_git,
+            git_plane,
         } => {
             let db = commands::open(&cli.db)?;
             // The `[plugins]` section, with the legacy flag folded in on top.
@@ -939,6 +1046,8 @@ fn run(cli: Cli, cfg: &config::Config, out: &mut dyn Write) -> Result<()> {
                 embed_key_env: embed_key_env.as_deref(),
                 handler: handler.as_deref(),
                 plugin_config,
+                git: !no_git,
+                git_plane: git_plane.as_deref(),
             };
             commands::digest(&db, &args, out)
         }
