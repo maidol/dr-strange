@@ -33,8 +33,20 @@ Matching strategy — character n-gram reverse match (CJK-friendly, zero-dep):
   * The core shipped a Chinese (jieba) BM25 analyzer in 2f175ee, after this
     hook was written, so the premise above ("BM25 can't do Chinese") no longer
     holds. Replacing the ranker is a read-path change and the observability
-    plan freezes those until its phase-1 gate, so BM25 runs here in *shadow*:
+    plan froze those until its phase-1 gate, so BM25 runs here in *shadow*:
     scored and logged every prompt, never injected. See `shadow_bm25`.
+  * The gate opened at 49 sessions and the shadow lost, decisively: over 355
+    prompts where both rankers were logged, BM25's top-3 cleared the usage bar
+    30% of the time against this ranker's 48%, and on the picks where the two
+    disagreed, 23% against 45% — barely above the 16% chance floor. The two
+    agree on nothing (54% of prompts share zero of top-3), so that is a real
+    difference and not a tie. The ranker therefore stays. The shadow keeps
+    running because the corpus keeps growing and the comparison costs one RPC.
+
+Phase 2 (control arm): a fixed share of prompts have their recall computed and
+logged but withheld — see `arm`. The utilization proxy cannot judge the effect
+of injection (it scores rank 4 as highly as rank 3, so it is blind to the
+treatment); tool outcomes joined per prompt by session_end.py can.
 
 Design rules (same as session_start.py):
   * Talk to the shared daemon over /rpc, never open the DB directly.
@@ -62,6 +74,12 @@ LOG_RANK = 5
 # Terminal to-do lines per prompt. Same bound session_start.py uses: a to-do
 # is worth interrupting for, a wall of them is not.
 MAX_EVENTS = 3
+# Share of prompts held back as the control arm. Small on purpose: the cost of
+# the arm is paid by the user, one degraded prompt at a time, and the gain is
+# statistical. 15% over a session of ~35 prompts is about five, while both arms
+# still accrue inside every session — which is what lets the comparison cancel
+# the 5x spread in failure rate between sessions.
+SUPPRESS_PCT = 15
 
 
 def telemetry(proj_dir, record):
@@ -88,6 +106,18 @@ def prompt_id(prompt):
     not become a second copy of everything the user typed, secrets included.
     A digest satisfies both."""
     return hashlib.sha1(prompt.encode("utf-8", "replace")).hexdigest()[:16]
+
+
+def arm(session_id, pid):
+    """"treated" or "suppressed" for this prompt. Pure: no I/O, no RNG.
+
+    Deterministic rather than random so the assignment can be reproduced from
+    the log alone, survives the hook running twice on the same prompt, and does
+    not depend on process state. The session id is hashed in so that the same
+    question asked in two sessions can land on either side — otherwise a prompt
+    someone repeats often would be permanently stuck in one arm."""
+    h = hashlib.sha1(f"{session_id}:{pid}".encode()).hexdigest()
+    return "suppressed" if int(h[:8], 16) % 100 < SUPPRESS_PCT else "treated"
 
 
 def rpc(method, params, token):
@@ -373,6 +403,11 @@ def main():
     # conclusion the analyzer can only reach from records that say so.
     rec = {"event": "recall", "session": data.get("session_id", ""),
            "project": home, "prompt": prompt_id(prompt), "prompt_len": len(prompt)}
+    # Assigned for every prompt, including the ones that end up with nothing to
+    # inject: the arm is a property of the prompt, not of the outcome, and the
+    # split is only verifiable if the misses are logged too. The analyzer counts
+    # the arm only where an injection was actually on the table.
+    rec["arm"] = arm(rec["session"], rec["prompt"])
 
     # Before any early return: whether recall finds anything is unrelated to
     # whether someone left a to-do here, and the failure paths below must not
@@ -428,6 +463,13 @@ def main():
         origin = "" if f["origin"] == home else f" [from {f['origin']}]"
         lines.append(f"- ({f['key']}){origin} {f['tag']}")
     block = "# Relevant memory\n" + "\n".join(lines)
+    if rec["arm"] == "suppressed":
+        # The control side. Everything above ran and is logged identically —
+        # what was withheld is recorded by key, so the two arms differ in one
+        # thing and the analyzer can still say what this prompt gave up.
+        done("suppressed", withheld=[f["key"] for f in hits], chars=len(block))
+        hook_out()
+        return
     done("injected", injected=[f["key"] for f in hits], chars=len(block))
     hook_out(additionalContext=block)
 

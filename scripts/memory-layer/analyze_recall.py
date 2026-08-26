@@ -50,6 +50,23 @@ model *chose not to do* — the gcc fact working perfectly looks like a build
 that simply didn't fail. Read it as a floor on a per-fact basis and a trend in
 aggregate; it is not a quality score, and P2 (trap recurrence) is the metric
 that answers "did it prevent the accident".
+
+## Two measurements that bound what this proxy can say
+
+*A chance floor exists and is large.* Scoring facts the prompt never ranked
+against the same reply clears the old 6-char bar 45% of the time. Utilization is
+therefore never reported bare: the floor is computed from the same replies and
+printed beside it, and the pre-registered kill line is stated as excess over
+chance rather than as a raw rate.
+
+*Injection itself does not move this metric.* Production ranks five and injects
+three, so rank 3 (injected) and rank 4 (not) sit adjacent in score and differ
+only in whether the model saw them. They score the same — 46% vs 43% at 20
+chars, against 57% for rank 1. So what is being measured is whether a fact was
+*on topic*, not whether showing it changed the answer. That is worth knowing on
+its own, and it is also why the phase-3 control arm cannot use this number as
+its outcome: it is blind to the treatment. Tool-outcome counters, joined per
+prompt (`event: tools`), are that arm's readout instead.
 """
 import argparse
 import bisect
@@ -75,7 +92,26 @@ DF_SHARE = 0.15
 # 6/6 true positives, 3/170 false (1.8%). The three are `create` and `return`
 # — English keywords that belong to the fact and to unrelated prose equally,
 # which no threshold on this signal can separate.
-MIN_MATCH_CHARS = 6
+#
+# Raised 6 → 20 once the placebo arm below made the chance floor measurable.
+# At 6 a *random unranked* fact cleared this bar 45% of the time, so a headline
+# "74% utilization" was 45 points of vocabulary overlap and 29 of signal. Across
+# the whole sweep on 1436 injections vs 1506 placebo draws:
+#
+#     thr      injected   placebo   lift
+#       6         74%       45%     1.7x
+#      20         50%       16%     3.1x     <- here
+#      40         28%        7%     4.1x
+#
+# 20 is where the lift is bought without throwing away half the true positives;
+# beyond it the rate falls faster than the floor does. Re-tuning costs nothing
+# and invalidates nothing — the frozen mass is what the threshold reads.
+MIN_MATCH_CHARS = 20
+# Random facts drawn per judged prompt to measure the chance floor. They are
+# sampled from the facts this prompt did NOT rank, scored against the same
+# reply, and frozen like any other verdict — the floor has to survive transcript
+# retention exactly as the numerator does, or the pair stops being comparable.
+PLACEBO_K = 3
 # Recorded prompts a Fact must have been eligible for before "it never matched
 # anything" is a statement about its wording rather than about its age.
 MIN_ELIGIBLE = 20
@@ -266,10 +302,29 @@ def match_mass(fact_grams, prompt_grams, reply):
     return sum(hi - lo for lo, hi in merged)
 
 
+def placebo_keys(r, eligible, k):
+    """K facts this prompt never ranked, drawn stably from (prompt, key).
+
+    Hashing each candidate rather than seeding a shuffle: a shuffle's output
+    depends on the pool's length, so every fact written afterwards redraws the
+    whole sample — and each redraw is a cache miss that can never be filled once
+    the transcript ages out. Hashing keeps a draw valid for as long as the fact
+    exists, so the floor accumulates the same way the numerator does.
+    """
+    salt = f"{r.get('session')}:{r.get('prompt')}:"
+    return sorted(eligible,
+                  key=lambda x: hashlib.sha1((salt + x).encode()).digest())[:k]
+
+
 # --- frozen verdicts -------------------------------------------------------
 
 def load_verdicts(projects):
-    """{(session, prompt, key): record} — every verdict already frozen."""
+    """{(session, prompt, key, arm): record} — every verdict already frozen.
+
+    `arm` distinguishes a real injection from a placebo draw. Records written
+    before the placebo arm existed carry no `arm` field and are all injections,
+    so the default keeps them addressable under the same key they were saved
+    with."""
     out = {}
     for p in projects:
         f = os.path.join(p, ".drsg", VERDICTS)
@@ -282,7 +337,8 @@ def load_verdicts(projects):
                 continue
             # Later lines win: a recompute after a VERDICT_VERSION bump appends
             # rather than rewrites, so the file stays append-only.
-            out[(v.get("session"), v.get("prompt"), v.get("key"))] = v
+            out[(v.get("session"), v.get("prompt"), v.get("key"),
+                 v.get("arm", "injected"))] = v
     return out
 
 
@@ -374,6 +430,35 @@ def main():
     fresh, cached, stale = 0, 0, 0
     frozen = {} if args.no_cache else load_verdicts(projects)
     new_by_project = defaultdict(list)
+    placebo = [0, 0]                         # drawn, cleared
+
+    def verdict(r, key, blob, arm):
+        """Matched mass for one (prompt, fact) pair, or None if unjudgeable.
+
+        Frozen first, computed from a live transcript second, and a stale frozen
+        value third — using an old mass beats dropping the sample, but the count
+        is reported so it never passes as fresh."""
+        nonlocal fresh, cached, stale
+        have = frozen.get((r.get("session"), r.get("prompt"), key, arm))
+        if have is not None and have.get("ver") == VERDICT_VERSION:
+            cached += 1
+            return have.get("mass", 0)
+        if blob is not None:
+            mass = match_mass(disc.get(key, set()), set(), blob)
+            fresh += 1
+            row = {"ts": r.get("ts"), "session": r.get("session"),
+                   "prompt": r.get("prompt"), "key": key, "mass": mass,
+                   "origin": facts[key]["origin"], "project": r.get("project"),
+                   "ver": VERDICT_VERSION}
+            if arm != "injected":
+                row["arm"] = arm
+            new_by_project[r["_proj_dir"]].append(row)
+            return mass
+        if have is not None:
+            stale += 1
+            return have.get("mass", 0)
+        return None
+
     for r in recalls:
         if r.get("status") != "injected":
             continue
@@ -382,31 +467,16 @@ def main():
         # The prompt's own grams are unavailable (only its digest is logged), so
         # the echo filter uses the injected tags of the *other* facts in the same
         # turn as the nearest stand-in for shared context.
+        judged = 0
         for key in r.get("injected", []):
             f = facts.get(key)
             if not f:
                 continue
-            have = frozen.get((r.get("session"), r.get("prompt"), key))
-            if have is not None and have.get("ver") == VERDICT_VERSION:
-                mass = have.get("mass", 0)
-                cached += 1
-            elif blob is not None:
-                mass = match_mass(disc.get(key, set()), set(), blob)
-                fresh += 1
-                new_by_project[r["_proj_dir"]].append({
-                    "ts": r.get("ts"), "session": r.get("session"),
-                    "prompt": r.get("prompt"), "key": key, "mass": mass,
-                    "origin": f["origin"], "project": r.get("project"),
-                    "ver": VERDICT_VERSION,
-                })
-            elif have is not None:
-                # Transcript gone and the definition has moved on. Using the old
-                # mass beats dropping the sample, but it must be visible.
-                mass = have.get("mass", 0)
-                stale += 1
-            else:
+            mass = verdict(r, key, blob, "injected")
+            if mass is None:
                 unmatched += 1
                 continue
+            judged += 1
             inj[key] += 1
             ok = mass >= MIN_MATCH_CHARS
             if ok:
@@ -414,6 +484,18 @@ def main():
             o = f["origin"] if f["origin"] == r.get("project") else f"{f['origin']} (foreign)"
             by_origin[o][0] += 1
             by_origin[o][1] += 1 if ok else 0
+
+        # The chance floor, from the same reply. Only where the real arm was
+        # judged, so numerator and floor always rest on the same prompts.
+        if judged:
+            ranked = {d["key"] for d in (r.get("ranked") or [])}
+            pool = [k for k in facts if k not in ranked and disc.get(k)]
+            for key in placebo_keys(r, pool, PLACEBO_K):
+                mass = verdict(r, key, blob, "placebo")
+                if mass is None:
+                    continue
+                placebo[0] += 1
+                placebo[1] += 1 if mass >= MIN_MATCH_CHARS else 0
 
     if not args.no_cache:
         save_verdicts(new_by_project)
@@ -445,6 +527,8 @@ def main():
     print("-- utilization " + "-" * 57)
     print(f"injections  : {total_inj}")
     print(f"used        : {total_use}  ({pct(total_use, total_inj)})")
+    print(f"chance floor: {placebo[1]}  ({pct(placebo[1], placebo[0])} of "
+          f"{placebo[0]} unranked facts scored against the same replies)")
     if by_origin:
         print()
         print(f"  {'origin':<28} {'inj':>5} {'used':>5}  rate")
@@ -475,14 +559,31 @@ def main():
     # Without this split the report tells the author of a Fact written an hour
     # ago to "rewrite the summary", on the strength of zero observations.
     prompt_ts = sorted(r["ts"] for r in recalls)
-    unproven, dumb = [], []
+    # Best rank a fact ever reached, injected or not. Without it "never
+    # injected" reads as a verdict on the fact's wording, and for most of them
+    # it is not: 4 of the first 6 this report named had placed 4th — matched
+    # well, sometimes at triple the score of what got in, and lost to MAX=3.
+    # Telling their authors to "rewrite the summary" was advice against the
+    # wrong problem.
+    best_rank = {}
+    for r in recalls:
+        for i, d in enumerate(r.get("ranked") or []):
+            k = d.get("key")
+            if k is not None and i < best_rank.get(k, 99):
+                best_rank[k] = i
+    unproven, dumb, nearmiss = [], [], []
     for k in facts:
         if k in inj:
             continue
         born = facts[k].get("created_at")
         eligible = (len(prompt_ts) - bisect.bisect_left(prompt_ts, born)
                     if born is not None else len(prompt_ts))
-        (unproven if eligible < MIN_ELIGIBLE else dumb).append((k, eligible))
+        if eligible < MIN_ELIGIBLE:
+            unproven.append((k, eligible))
+        elif k in best_rank:
+            nearmiss.append((k, best_rank[k] + 1))
+        else:
+            dumb.append((k, eligible))
 
     def show(rows, limit=20, chances=False):
         for k, e in sorted(rows):
@@ -499,9 +600,15 @@ def main():
         for k in dead:
             print(f"    {k}")
     if dumb:
-        print(f"\n  never injected ({len(dumb)}/{len(facts)}) — wording matches no real "
-              "prompt; rewrite the summary or delete:")
+        print(f"\n  never ranked ({len(dumb)}/{len(facts)}) — did not reach even the "
+              "logged top-5 for any prompt; this one really is about wording:")
         show(dumb)
+    if nearmiss:
+        print(f"\n  ranked but never injected ({len(nearmiss)}/{len(facts)}) — matched, "
+              f"then lost to the MAX cut. Nothing wrong with the fact:")
+        for k, rk in sorted(nearmiss, key=lambda t: t[1]):
+            print(f"    {k}  [{facts[k]['origin']}] {facts[k]['summary'][:46]}"
+                  f"  (best rank {rk})")
     if unproven:
         print(f"\n  too new to judge ({len(unproven)}/{len(facts)}) — fewer than "
               f"{MIN_ELIGIBLE} recorded prompts since it was written:")
@@ -524,13 +631,73 @@ def main():
         print(f"hook latency  : p50 {percentile(ms,50)}ms  p95 {percentile(ms,95)}ms")
 
     print()
+    print("-- control arm " + "-" * 56)
+    # Phase 3's question — did having the memory make the work better — needs an
+    # outcome the utilization proxy cannot give (it scores rank 4 as highly as
+    # rank 3, so it is blind to injection itself). The outcome is tool failures,
+    # attributed to the prompt they followed by session_end.py and joined here on
+    # (session, prompt). Assignment is per prompt, so both arms accrue inside
+    # every session and the between-session spread (0.9%–14% at baseline) cancels.
+    tool_rows = {(r.get("session"), r.get("prompt")): r
+                 for r in records if r.get("event") == "tools"}
+    arms = defaultdict(lambda: [0, 0, 0])   # arm -> prompts, calls, errors
+    assigned = defaultdict(int)
+    for r in recalls:
+        a = r.get("arm")
+        # Only prompts that had something to inject. `no_match` and `no_facts`
+        # are identical on both sides, and counting them would dilute the
+        # contrast with turns where the arm made no difference by construction.
+        if not a or r.get("status") not in ("injected", "suppressed"):
+            continue
+        assigned[a] += 1
+        t = tool_rows.get((r.get("session"), r.get("prompt")))
+        if not t:
+            continue
+        s = arms[a]
+        s[0] += 1
+        s[1] += t.get("calls", 0)
+        s[2] += t.get("errors", 0)
+    if not assigned:
+        print("  not running — no prompt carries an `arm`. Until then every")
+        print("  number above describes the treated population only.")
+    else:
+        print(f"  assigned      : " + "  ".join(
+            f"{a}={n}" for a, n in sorted(assigned.items())))
+        if not arms:
+            print("  no outcomes joined yet — session_end.py writes them when a")
+            print("  session ends, so the first rows appear one session from now.")
+        else:
+            print(f"  {'arm':<12} {'prompts':>8} {'calls':>8} {'errors':>8}   rate")
+            for a, (n, c, e) in sorted(arms.items()):
+                print(f"  {a:<12} {n:>8} {c:>8} {e:>8}   {pct(e, c)}")
+            print("  Not a verdict: the phase-3 gate is 100 sessions of arm data,")
+            print("  and the session-start briefing is never suppressed, so the")
+            print("  contrast is per-prompt recall only — a floor on the effect.")
+
+    print()
     print("-- read against the pre-registered thresholds " + "-" * 26)
     if len({r.get("session") for r in records}) < 30:
         print("  NOT ENOUGH DATA. Fewer than 30 sessions recorded; every rate above")
         print("  is descriptive only. Do not act on it yet.")
+    elif not total_inj:
+        print("  no judged injections in this window.")
     else:
-        print(f"  utilization {pct(total_use, total_inj)} "
-              f"({'FAIL — below 20%' if total_inj and total_use / total_inj < 0.2 else 'ok'})")
+        u = total_use / total_inj
+        fl = placebo[1] / placebo[0] if placebo[0] else 0.0
+        # The registered line was "utilization < 20% → the recall strategy
+        # failed". It was written against a measure whose chance floor was
+        # unknown and turned out to be 45%, so a raw 20% sat *below* chance and
+        # could never fire the way it was meant to. Restated in the terms it was
+        # always reaching for — how far above random the recall is — which is
+        # also the only form that survives a change to MIN_MATCH_CHARS. The
+        # restatement is recorded here rather than done quietly: it happened
+        # after seeing data, which is exactly when to say so out loud.
+        exc = (u - fl) / (1 - fl) if fl < 1 else 0.0
+        print(f"  utilization {u*100:.0f}% vs {fl*100:.0f}% chance floor"
+              f"  → {exc*100:.0f}% excess over chance "
+              f"({'FAIL — recall is at chance' if exc < 0.20 else 'ok'})")
+        print("     (registered as 'utilization < 20%', restated as excess over")
+        print("      chance once the floor was measured — same intent, same 20%)")
 
 
 if __name__ == "__main__":

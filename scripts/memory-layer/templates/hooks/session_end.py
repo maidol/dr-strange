@@ -13,10 +13,19 @@ improved the work (docs/memory-layer-observability.md, P3). Raw counts only — 
 denominator and the per-tool split are stored so the analysis can decide later
 what counts as a failure, instead of that judgment being baked in here.
 
+The same counts are additionally emitted **per prompt** as `{"event": "tools"}`
+lines in `.drsg/recall.jsonl`. The control arm is assigned per prompt, so a
+session total cannot be attributed to an arm — a session that is 85% treated has
+one failure rate and it belongs to neither side. The per-prompt rows join to the
+recall rows on (session, prompt), which is what makes the arm readable at all.
+The session properties stay exactly as they were: they are the baseline series
+that has been accruing since 2026-08-10 and must not change shape mid-flight.
+
 Must stay fast — SessionEnd hooks share a tight budget (settings `timeout`
 raises it, default 1.5s shared). One read + one RPC; the transcript is streamed
 (no full-file load), errors are swallowed. Never blocks session end.
 """
+import hashlib
 import json
 import os
 import re
@@ -24,7 +33,7 @@ import subprocess
 import sys
 import time
 import urllib.request
-from collections import Counter
+from collections import Counter, defaultdict
 
 # --- Configuration (overridable via .drsg/env) -----------------------------
 API = "http://127.0.0.1:7700/rpc"
@@ -68,15 +77,62 @@ def _result_text(block):
     return (c if isinstance(c, str) else "").lower()
 
 
+def prompt_id(prompt):
+    """Digest of a prompt — must stay byte-identical to user_prompt.py's.
+
+    It is the join key between the arm assignment (written when the prompt
+    arrives) and the outcome (counted here, after the fact). Two hooks with no
+    import path between them, so the definition is duplicated rather than
+    shared; changing one without the other silently produces two disjoint
+    key spaces and an arm with no outcomes."""
+    return hashlib.sha1(prompt.encode("utf-8", "replace")).hexdigest()[:16]
+
+
+def _user_text(content):
+    """The typed part of a user message, empty for a pure tool_result turn."""
+    if isinstance(content, str):
+        return content.strip()
+    return "".join(str(i.get("text", "")) for i in (content or [])
+                   if isinstance(i, dict) and i.get("type") == "text").strip()
+
+
+def telemetry(proj_dir, rows):
+    """Append the per-prompt tool outcomes to .drsg/recall.jsonl.
+
+    The same file the recall hook writes, because the join is (session, prompt)
+    and a second file would only give the two something to drift apart on.
+    Best-effort: session end must never fail on a log write.
+
+    A session that ends more than once appends a second, longer set of rows for
+    the same keys. The analyzer keeps the last row per key, which is the more
+    complete one — so re-runs correct rather than double-count."""
+    if not rows:
+        return
+    try:
+        d = os.path.join(proj_dir, ".drsg")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "recall.jsonl"), "a", encoding="utf-8") as f:
+            for r in rows:
+                f.write(json.dumps(r, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
 def mine(transcript_path):
-    """Scan the transcript JSONL for files touched, commands run, tool outcomes."""
+    """Scan the transcript JSONL for files touched, commands run, tool outcomes.
+
+    Tool outcomes come back twice: once summed over the session, and once split
+    by the prompt they followed. The split is the arm-comparable one; the sum is
+    the existing baseline series."""
     files = Counter()
     commands = Counter()
     tools = Counter()          # calls / errors / rejected
     failed_by = Counter()      # which tool failed, so infra noise stays separable
     names = {}                 # tool_use_id -> tool name (results carry only the id)
+    per_prompt = defaultdict(Counter)   # prompt digest -> calls / errors / rejected
+    pending = None                      # the prompt those results are answering
     if not transcript_path or not os.path.exists(transcript_path):
-        return files, commands, tools, failed_by
+        return files, commands, tools, failed_by, per_prompt
     n = 0
     with open(transcript_path, encoding="utf-8", errors="replace") as f:
         for line in f:
@@ -93,7 +149,16 @@ def mine(transcript_path):
             kind = d.get("type")
             if kind not in ("assistant", "user"):
                 continue
-            for t in d.get("message", {}).get("content") or []:
+            content = d.get("message", {}).get("content")
+            if kind == "user":
+                # A tool_result arrives typed as "user" carrying no text part.
+                # Only a genuinely typed prompt opens a new attribution window —
+                # treating every result turn as one would scatter a single
+                # multi-tool answer across a dozen empty buckets.
+                text = _user_text(content)
+                if text:
+                    pending = prompt_id(text)
+            for t in content or []:
                 if not isinstance(t, dict):
                     continue
                 if t.get("type") == "tool_use":
@@ -109,16 +174,24 @@ def mine(transcript_path):
                         if cmd:
                             commands[re.sub(r"\\s+", " ", cmd)] += 1
                 elif t.get("type") == "tool_result":
+                    # Results before the first typed prompt (a resumed session
+                    # replaying its tail) have no prompt to belong to. They stay
+                    # in the session total and out of the per-prompt split
+                    # rather than being charged to whatever came next.
+                    bucket = per_prompt[pending] if pending else Counter()
                     tools["calls"] += 1
+                    bucket["calls"] += 1
                     if not t.get("is_error"):
                         continue
                     text = _result_text(t)
                     if any(p in text for p in NOT_A_FAILURE):
                         tools["rejected"] += 1
+                        bucket["rejected"] += 1
                     else:
                         tools["errors"] += 1
+                        bucket["errors"] += 1
                         failed_by[names.get(t.get("tool_use_id"), "?")] += 1
-    return files, commands, tools, failed_by
+    return files, commands, tools, failed_by, per_prompt
 
 
 def main():
@@ -141,7 +214,17 @@ def main():
 
     # L1 structural mining (best-effort).
     try:
-        files, commands, tools, failed_by = mine(data.get("transcript_path", ""))
+        files, commands, tools, failed_by, per_prompt = mine(
+            data.get("transcript_path", ""))
+        # Per-prompt first: it is the arm's only readout, and it must not be
+        # lost to a daemon that happens to be down when the session ends.
+        # Truncation note: like the session totals, these counts come from the
+        # MAX_LINES window — the rate holds, the absolute count does not.
+        telemetry(proj_dir, [
+            {"event": "tools", "session": sid, "prompt": pid,
+             "calls": c["calls"], "errors": c["errors"],
+             "rejected": c["rejected"], "ts": int(time.time())}
+            for pid, c in per_prompt.items()])
         if files:
             props["files_touched"] = ",".join(f"{k}×{v}" for k, v in files.most_common(6))
         if commands:
