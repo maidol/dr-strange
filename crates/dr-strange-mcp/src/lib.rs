@@ -2071,8 +2071,9 @@ impl DrStrange {
 
     #[tool(description = "Blast radius: everything reaching this symbol \
         through incoming structural edges (CALLS, REFERENCES, INSTANTIATES, \
-        IMPORTS, EXTENDS, IMPLEMENTS), grouped by distance with exact \
-        counts. Fuzzy name; depth defaults to 3.")]
+        IMPORTS, EXTENDS, IMPLEMENTS, USES_TYPE — so a type's radius includes \
+        what is typed by it, not only what builds it), grouped by distance \
+        with exact counts. Fuzzy name; depth defaults to 3.")]
     async fn impact(
         &self,
         Parameters(req): Parameters<ImpactReq>,

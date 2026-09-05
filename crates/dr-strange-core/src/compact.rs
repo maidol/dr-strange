@@ -583,10 +583,13 @@ fn render_path(plane: &PlaneHandle<'_>, path: &[crate::NodeId], out: &mut String
 
 /// `impact` — the blast radius: what reaches this symbol, breadth-first over
 /// INCOMING structural edges (CALLS, REFERENCES, INSTANTIATES, IMPORTS,
-/// EXTENDS, IMPLEMENTS), grouped by distance, counts always exact even when
-/// listings elide.
+/// EXTENDS, IMPLEMENTS, USES_TYPE), grouped by distance, counts always exact
+/// even when listings elide.
 pub fn impact(plane: &PlaneHandle<'_>, name: &str, depth: usize) -> Result<String> {
     const LEVEL_CAP: usize = 20;
+    // `USES_TYPE` is what makes this verb answerable *about a type*: without
+    // it the walk saw only who constructed one, and reported a fraction of
+    // the radius as if it were the whole of it.
     const IMPACT_EDGES: &[&str] = &[
         "CALLS",
         "REFERENCES",
@@ -594,6 +597,7 @@ pub fn impact(plane: &PlaneHandle<'_>, name: &str, depth: usize) -> Result<Strin
         "IMPORTS",
         "EXTENDS",
         "IMPLEMENTS",
+        "USES_TYPE",
     ];
     let node = match resolve(plane, name)? {
         Resolved::One(n) => n,
