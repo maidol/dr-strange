@@ -380,6 +380,32 @@
     if (selected?.kind === 'node') resolveKeyLinks(selected.data.properties)
   })
 
+  // An edge's endpoints, for its subtitle: the same `{ id, key, label }` a
+  // property link carries, so both read and behave alike. Looked up rather
+  // than read off the canvas — an endpoint can be folded into a bead or off
+  // screen entirely, and the subtitle names it either way.
+  let edgeEnds = $state({}) // node id -> { key, label } | null
+
+  async function resolveEdgeEnds(edge) {
+    const wanted = [edge.src, edge.dst].filter((id) => !(id in edgeEnds))
+    if (!wanted.length) return
+    const found = await Promise.all(
+      wanted.map(async (id) => {
+        try {
+          const n = await rpc('node.get', { plane, id })
+          return [id, n ? { key: n.external_key ?? '', label: n.labels?.[0] ?? '' } : null]
+        } catch {
+          return [id, null] // the id still links; only the hint is lost
+        }
+      }),
+    )
+    edgeEnds = { ...edgeEnds, ...Object.fromEntries(found) }
+  }
+
+  $effect(() => {
+    if (selected?.kind === 'edge') resolveEdgeEnds(selected.data)
+  })
+
   // Pretty grid: fixed-width columns of 6 values, index-addressable via rows.
   async function loadCatalog() {
     try {
@@ -1124,6 +1150,11 @@
     if (!started || plane === seededPlane) return
     seededPlane = plane
     labelFilter = ''
+    // Both caches answer "what does this name/id stand for", and neither
+    // question survives the plane it was asked in — an id above all, since
+    // every plane has a node 5.
+    keyLinks = {}
+    edgeEnds = {}
     // A different plane is a different question, so it starts from the ranked
     // seed rather than inheriting a `Show All` from the plane before it —
     // which could be a graph of a wholly different size.
@@ -1651,7 +1682,26 @@
         {/if}
         <p class="sub">{selected.data.labels?.join(', ') || '(no labels)'}</p>
       {:else}
-        <p class="sub">{selected.data.type} · {selected.data.src} → {selected.data.dst}</p>
+        <!-- The endpoints are the two other things an edge is about, and
+             reaching either one meant finding it again by hand. Each is the
+             same link a property value gets: click to centre that node, hover
+             for the key it stands for. -->
+        <p class="sub">
+          {selected.data.type} ·
+          <!-- Keyed by position, not by id: a self-edge names one node twice. -->
+          {#each [selected.data.src, selected.data.dst] as end, i (i)}
+            {#if i > 0}<span class="sep"> → </span>{/if}
+            <button
+              class="key-link"
+              title="Centre this node"
+              onclick={() => focusNode(end)}
+              onmouseenter={(e) => showHint(e, edgeEnds[end]?.key || `#${end}`, edgeEnds[end]?.label)}
+              onmouseleave={() => (hint = null)}
+              onfocus={(e) => showHint(e, edgeEnds[end]?.key || `#${end}`, edgeEnds[end]?.label)}
+              onblur={() => (hint = null)}
+            >#{end}</button>
+          {/each}
+        </p>
       {/if}
       {#if !editing}
         <dl>
