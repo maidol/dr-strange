@@ -356,6 +356,12 @@ impl PluginStore {
             }
         };
 
+        // Which build answered, carried on every fact it produces. The hash is
+        // this plugin's identity here — pinned at install, re-checked above —
+        // so it is what a reader needs to tell one release of a parser from
+        // another when deciding whether an absence in the graph is real.
+        let plugin = plugin.with_build(&entry.sha256, &entry.source);
+
         // The component's own answer outranks the record. A name mismatch is
         // an integrity failure; extensions merely drifted are taken from the
         // component, which is the authority on itself.

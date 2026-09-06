@@ -43,6 +43,7 @@
 #[cfg(feature = "plugins")]
 mod catalog;
 mod ground;
+mod ledger;
 #[cfg(feature = "plugins")]
 mod registry;
 mod repo;
@@ -68,6 +69,7 @@ pub use catalog::{
     read_cache as cached_catalog, refresh_cache,
 };
 pub use ground::{FactsAndPlane, fold, stamp_run};
+pub use ledger::{LEDGER_PROP, record_ledger};
 
 /// Bytes the loaded wasm plugins hold right now, process-wide: every compiled
 /// plugin image plus the linear memory of every instance mid-call. Zero with
@@ -130,7 +132,11 @@ impl Preprocessed {
 /// Skips and collisions are *counted and named* rather than dropped silently: a
 /// thin graph should be explained by its report, not investigated by re-running
 /// the ingest with different arguments.
-#[derive(Debug, Default)]
+///
+/// `Clone` because the CLI drains the notes as it prints them and the plane's
+/// ledger needs the same account after that — printing and recording are two
+/// readers of one report, not one consuming it from the other.
+#[derive(Debug, Default, Clone)]
 pub struct PreprocessReport {
     /// `(name@version, facts emitted)`, in the order the handlers ran.
     pub handlers: Vec<(String, usize)>,
@@ -140,6 +146,10 @@ pub struct PreprocessReport {
     pub skipped: usize,
     /// Keys two handlers both produced — a plugin bug, kept visible.
     pub collisions: Vec<String>,
+    /// Extensions no installed plugin claimed, as `.ext (n)` — the files that
+    /// were read as prose instead of parsed. Structured beside the note that
+    /// says the same thing in a sentence, so a reader later can act on it.
+    pub unclaimed: Vec<String>,
     /// Anything else a reader would want to know, such as a stated limit.
     pub notes: Vec<String>,
 }
@@ -158,12 +168,35 @@ pub struct Manifest {
     /// An inline SVG for UIs to show beside the name; `None` means the UI's
     /// default mark. Rendered without script execution.
     pub logo: Option<String>,
+    /// Which *build* of the plugin this is: the short SHA-256 of the artifact,
+    /// filled in by the host from the store record rather than by the
+    /// component — a plugin cannot know its own hash, and one that claimed to
+    /// would be claiming something unverifiable.
+    ///
+    /// `None` for the built-in reader and anything else with no artifact
+    /// behind it.
+    pub build: Option<String>,
+    /// Where that artifact came from — a release URL or a local path, as the
+    /// store recorded it at install. Carried so a plane's ledger can turn a
+    /// build hash back into a release without the store, which is mutable and
+    /// may by then describe a different build entirely.
+    pub source: Option<String>,
 }
 
 impl Manifest {
     /// The value stamped into `_generated_by`.
+    ///
+    /// `version` is the *fact-format* version — the shape of what the plugin
+    /// emits — and it changes almost never, so on its own it cannot tell a
+    /// plane parsed by go 1.4 from one parsed by go 1.5. That difference is
+    /// exactly what a reader needs to know before concluding that an absence
+    /// means absence: a plane with no `Channel` nodes may hold no channels, or
+    /// may predate the parser that could see them. The build says which.
     fn stamp(&self) -> String {
-        format!("{}@{}", self.name, self.version)
+        match &self.build {
+            Some(build) => format!("{}@{}+{build}", self.name, self.version),
+            None => format!("{}@{}", self.name, self.version),
+        }
     }
 
     /// Whether this handler claims a file with the given extension.
@@ -695,6 +728,7 @@ pub fn route_paths(
                 .iter()
                 .map(|(ext, n)| format!(".{ext} ({n})"))
                 .collect();
+            merged.report.unclaimed = listed.clone();
             merged.report.notes.push(format!(
                 "no installed plugin claims {} — these files were read as plain \
                  text; `drsg plugin list` shows what is installed",
@@ -837,6 +871,7 @@ fn merge(
     into.report.skipped += from.report.skipped;
     into.report.notes.extend(from.report.notes);
     into.report.collisions.extend(from.report.collisions);
+    into.report.unclaimed.extend(from.report.unclaimed);
     match into.report.handlers.iter_mut().find(|(n, _)| n == who) {
         Some((_, facts)) => *facts += kept,
         None => into.report.handlers.push((who.to_string(), kept)),

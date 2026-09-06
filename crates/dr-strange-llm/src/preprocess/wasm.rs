@@ -435,6 +435,8 @@ impl WasmPlugin {
                 version: String::new(),
                 extensions: Vec::new(),
                 logo: None,
+                build: None,
+                source: None,
             },
             limits,
             options,
@@ -442,6 +444,20 @@ impl WasmPlugin {
         };
         plugin.manifest = plugin.ask_describe()?;
         Ok(plugin)
+    }
+
+    /// Record which artifact this plugin was loaded from, as the short form of
+    /// the SHA-256 the store pinned at install and re-checked on the way here.
+    ///
+    /// The host fills this in rather than the component: a plugin cannot know
+    /// its own hash, and one that claimed to would be claiming something
+    /// nothing had verified. It reaches the graph through
+    /// [`Manifest::stamp`], so every fact says which build produced it.
+    pub fn with_build(mut self, sha256: &str, source: &str) -> Self {
+        const SHORT: usize = 8;
+        self.manifest.build = Some(sha256[..SHORT.min(sha256.len())].to_string());
+        self.manifest.source = Some(source.to_string());
+        self
     }
 
     /// What the component says it is, normalised so routing compares like with
@@ -466,6 +482,10 @@ impl WasmPlugin {
                     .filter(|e| !e.is_empty())
                     .collect(),
                 logo: m.logo.filter(|l| !l.trim().is_empty()),
+                // The component describes itself; the host says which build
+                // answered — see `with_build`.
+                build: None,
+                source: None,
             })
         })
     }
@@ -927,6 +947,8 @@ fn into_preprocessed(out: wit_plugin::Output, plugin: &str) -> Result<Preprocess
             prose_chars: out.report.prose_chars as usize,
             skipped: out.report.skipped as usize,
             collisions: Vec::new(),
+            // Routing is the host's: a plugin only ever sees what it claimed.
+            unclaimed: Vec::new(),
             notes: out.report.notes,
         },
     })

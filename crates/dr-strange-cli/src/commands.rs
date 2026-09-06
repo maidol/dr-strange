@@ -3051,6 +3051,12 @@ pub fn digest(db: &Database, args: &DigestArgs, out: &mut dyn Write) -> Result<(
             .collect();
         writeln!(out, "preprocessed by {}", ran.join(", "))?;
     }
+    // Kept before the drain below: printing and recording are two readers of
+    // one account, and the plane's copy is the one that survives the terminal.
+    let ingest_account = facts.report.clone();
+    // Which builds ran, copied into the plane's account rather than looked up
+    // later: the store is mutable and may by then describe a different build.
+    let ran_plugins = plugins.manifests();
     // The preprocess notes print here — before any provider is built — because
     // the one that matters most ("no installed plugin claims `.rs`") must not
     // be lost behind a model-call failure that happens later. Drained, so the
@@ -3169,6 +3175,9 @@ pub fn digest(db: &Database, args: &DigestArgs, out: &mut dyn Write) -> Result<(
         {
             record_sync_point(db, args.plane, Path::new(args.source))?;
         }
+        // What this ingest could and could not read, kept where a later reader
+        // will be: a miss in the graph is ambiguous until this says otherwise.
+        dr_strange_llm::record_ledger(db, args.plane, &ingest_account, &ran_plugins)?;
     } else {
         for n in result.nodes.iter().take(12) {
             writeln!(out, "  [{}] {} ({} props)", n.label, n.key, n.props.len())?;

@@ -1578,6 +1578,9 @@ fn digest_logic(
 ) -> AnyResult<Value> {
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    // Which plugin builds ran, filled by whichever routing branch loaded them
+    // — a text digest loads none, and records none.
+    let mut ran_plugins: Vec<dr_strange_llm::Manifest> = Vec::new();
     // Built only on the branch that routes: a text digest never needs the
     // plugin store, and must not fail because something in it is broken.
     let load_plugins = || -> AnyResult<dr_strange_llm::Plugins> {
@@ -1621,6 +1624,7 @@ fn digest_logic(
                 let host = dr_strange_llm::LocalFiles::new(p)
                     .map_err(|e| anyhow::anyhow!("reading {path}: {e}"))?;
                 let plugins = load_plugins()?;
+                ran_plugins = plugins.manifests();
                 dr_strange_llm::route_tree(&host, handler, &plugins)?
             } else {
                 let bytes =
@@ -1630,6 +1634,7 @@ fn digest_logic(
                 )
                 .map_err(|e| anyhow::anyhow!("reading {path}: {e}"))?;
                 let plugins = load_plugins()?;
+                ran_plugins = plugins.manifests();
                 dr_strange_llm::route_document(&name, &bytes, handler, &host, &plugins)
                     .map_err(|e| anyhow::anyhow!("reading {path}: {e}"))?
             }
@@ -1661,6 +1666,11 @@ fn digest_logic(
     );
     let source = req.source.unwrap_or_else(|| "mcp-digest".into());
     dr_strange_llm::stamp_run(&mut facts, &source, &run_id);
+
+    // Kept before `fold` merges the parser's account into the digest's: the
+    // plane's copy is the one a later reader has, and only this half knows
+    // what the *tree* could not be read.
+    let preprocess_account = facts.report.clone();
 
     // The §11 headline: an input that yields only facts is digested with **no
     // model call at all** — no provider constructed, no key read from the
@@ -1730,6 +1740,10 @@ fn digest_logic(
         let mut txn = p.write()?;
         let stats = result.apply(&p, &mut txn)?;
         txn.commit()?;
+        // What this ingest could and could not read, kept on the plane: the
+        // report above answers the caller who asked for it, and this answers
+        // every later reader who was not here.
+        dr_strange_llm::record_ledger(db, &req.plane, &preprocess_account, &ran_plugins)?;
         out["nodes_written"] = jval!(stats.written.nodes);
         out["edges_written"] = jval!(stats.written.edges);
         // Named, not just counted: an agent that proposed an entity the plane

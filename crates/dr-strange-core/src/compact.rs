@@ -115,6 +115,54 @@ pub fn candidates(name: &str, hits: &[NodeRecord]) -> String {
 /// clears when it finishes. Written by the digest side; read here.
 pub const REBUILDING_PROP: &str = "rebuilding_since";
 
+/// The property the digest writes with its account of what it read. Written by
+/// the digest side (`dr-strange-llm`, which depends on this crate and not the
+/// other way round); read here, which is why the property is the interface
+/// rather than a call.
+pub const LEDGER_PROP: &str = "ledger";
+
+/// What the digest could not read, stated wherever an answer is read — and
+/// only when there was something.
+///
+/// A graph says "nothing" the same way whether nothing is there or nothing was
+/// ever parsed, and only the second is a reason to go and look at the source.
+/// When the last ingest skipped files or met an extension no plugin claims,
+/// every miss in this plane is ambiguous in that way, and a reader deserves to
+/// know before concluding. When it read everything — the ordinary case — this
+/// is silent, on the same terms as [`rebuilding_note`]: a line that says
+/// "nothing unusual" on every answer is noise.
+fn ledger_note(props: &Properties) -> Option<String> {
+    let PropValue::Map(led) = &props.get(LEDGER_PROP)?.value else {
+        return None;
+    };
+    let skipped = match led.get("skipped").map(|d| &d.value) {
+        Some(PropValue::Int(n)) => *n,
+        _ => 0,
+    };
+    let unclaimed: Vec<String> = match led.get("unclaimed").map(|d| &d.value) {
+        Some(PropValue::List(items)) => items
+            .iter()
+            .filter_map(|v| v.as_text().map(|t| t.into_owned()))
+            .collect(),
+        _ => Vec::new(),
+    };
+    if skipped == 0 && unclaimed.is_empty() {
+        return None;
+    }
+    let mut what = Vec::new();
+    if skipped > 0 {
+        what.push(format!("{skipped} file(s) it could not read"));
+    }
+    if !unclaimed.is_empty() {
+        what.push(format!("{} that no plugin claims", unclaimed.join(", ")));
+    }
+    Some(format!(
+        "note: the ingest behind this plane left {} — a miss here may mean \
+         \"never parsed\" rather than \"not present\".\n",
+        what.join(", and ")
+    ))
+}
+
 /// A rebuild in flight, stated wherever an answer is read.
 ///
 /// A full resync drops the plane and refills it, so in between a query meets a
@@ -151,13 +199,20 @@ fn synced_note(plane: &PlaneHandle<'_>) -> Result<Option<String>> {
     if let Some(note) = rebuilding_note(&props) {
         return Ok(Some(note));
     }
-    Ok(props.get("synced_commit").and_then(|d| match &d.value {
+    // A plane can be both in sync and incomplete: the commit says *when* it
+    // was parsed, the ledger says what the parse could not read, and a reader
+    // weighing a miss needs the second more than the first.
+    let synced = props.get("synced_commit").and_then(|d| match &d.value {
         crate::PropValue::Str(commit) => Some(format!(
             "synced: commit {}\n",
             &commit[..12.min(commit.len())]
         )),
         _ => None,
-    }))
+    });
+    Ok(match (ledger_note(&props), synced) {
+        (Some(ledger), Some(synced)) => Some(format!("{synced}{ledger}")),
+        (ledger, synced) => ledger.or(synced),
+    })
 }
 
 /// What to say when a lenient lookup found nothing.
@@ -1491,6 +1546,70 @@ mod tests {
             out.contains("synced: commit abcdef012345"),
             "freshness is stated where the answer is read: {out}"
         );
+    }
+
+    fn write_ledger(db: &Database, skipped: i64, unclaimed: &[&str]) {
+        let mut led: std::collections::BTreeMap<String, PropDesc> = Default::default();
+        led.insert("skipped".into(), PropDesc::new(PropValue::Int(skipped)));
+        if !unclaimed.is_empty() {
+            led.insert(
+                "unclaimed".into(),
+                PropDesc::new(PropValue::List(
+                    unclaimed
+                        .iter()
+                        .map(|u| PropValue::Str((*u).into()))
+                        .collect(),
+                )),
+            );
+        }
+        let p = db.plane("code").unwrap();
+        let mut props = p.properties().unwrap();
+        props.insert(LEDGER_PROP.into(), PropDesc::new(PropValue::Map(led)));
+        p.set_properties(props).unwrap();
+    }
+
+    /// A graph says "nothing" the same way whether nothing is there or nothing
+    /// was parsed. When the ingest left something unread, every miss in the
+    /// plane is ambiguous that way and the answer says so.
+    #[test]
+    fn a_plane_whose_ingest_left_files_unread_says_so() {
+        let db = seeded();
+        write_ledger(&db, 12, &[".mod (1)"]);
+        let out = context(&db.plane("code").unwrap(), "m::api::go").unwrap();
+        assert!(out.contains("12 file(s) it could not read"), "{out}");
+        assert!(out.contains(".mod (1)"), "{out}");
+        assert!(out.contains("never parsed"), "{out}");
+    }
+
+    /// The ordinary case is silence: a line saying "nothing unusual" on every
+    /// answer is noise, and the codebase's other conditional notes agree.
+    #[test]
+    fn a_clean_ingest_says_nothing() {
+        let db = seeded();
+        write_ledger(&db, 0, &[]);
+        let out = context(&db.plane("code").unwrap(), "m::api::go").unwrap();
+        assert!(!out.contains("never parsed"), "{out}");
+        assert!(!out.contains("could not read"), "{out}");
+    }
+
+    /// A plane can be both in sync and incomplete; the two facts are different
+    /// and both are said.
+    #[test]
+    fn the_commit_and_the_ledger_both_speak() {
+        let db = seeded();
+        {
+            let p = db.plane("code").unwrap();
+            let mut props = p.properties().unwrap();
+            props.insert(
+                "synced_commit".into(),
+                PropDesc::new(PropValue::Str("abcdef0123456789".into())),
+            );
+            p.set_properties(props).unwrap();
+        }
+        write_ledger(&db, 3, &[]);
+        let out = context(&db.plane("code").unwrap(), "m::api::go").unwrap();
+        assert!(out.contains("synced: commit abcdef012345"), "{out}");
+        assert!(out.contains("3 file(s) it could not read"), "{out}");
     }
 
     fn mark_rebuilding(db: &Database, since: i64) {

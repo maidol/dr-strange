@@ -47,6 +47,8 @@ impl Preprocessor for Probe {
             version: "1".into(),
             extensions: vec!["rs".into()],
             logo: None,
+            build: None,
+            source: None,
         }
     }
 
@@ -226,6 +228,8 @@ fn a_cross_handler_collision_is_counted_not_fatal() {
                     _ => "bb".into(),
                 }],
                 logo: None,
+                build: None,
+                source: None,
             }
         }
         fn preprocess(&self, _: &Input<'_>, _: &dyn Host) -> Result<Preprocessed> {
@@ -346,6 +350,8 @@ impl Preprocessor for AaLang {
             version: "1".into(),
             extensions: vec!["aa".into()],
             logo: None,
+            build: None,
+            source: None,
         }
     }
 
@@ -732,6 +738,8 @@ impl Preprocessor for XLang {
             version: "1".into(),
             extensions: vec!["xx".into()],
             logo: None,
+            build: None,
+            source: None,
         }
     }
 
@@ -871,6 +879,8 @@ impl Preprocessor for FakeGit {
             version: "1".into(),
             extensions: Vec::new(),
             logo: None,
+            build: None,
+            source: None,
         }
     }
 
