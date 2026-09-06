@@ -4,6 +4,85 @@ All notable changes to Dr Strange are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.7.0] - 2026-09-06
+
+### Added
+
+- **A build manifest is read as a declaration, not as prose.**
+  `package.json`, `go.mod`, `requirements.txt`, `pyproject.toml`, `pom.xml`
+  and `build.gradle` were claimed by no plugin, so they fell to the document
+  reader — which needs a model, making a facts-only digest of any JS
+  repository, or a Rust one with a stray `go.mod`, a hard stop rather than a
+  thin answer. The host now routes those **filenames** (not extensions:
+  `package.json` is not "every `.json`") to whatever is installed under the
+  reserved name `deps`, the same statement it already makes sending a `.git`
+  directory to `git`. A list of such names, so a repository running two build
+  systems is read by both, and with nothing installed under a name its files
+  are read exactly as before. The reader itself ships as
+  [`deps@1.0.0`](https://github.com/wangyingsm/dr-strange-extension) and
+  keys each dependency the way the code plugins key an import, so a declared
+  `express` and an imported `express` are one node carrying the version the
+  manifest states. Two plugins naming the same `External` key now agree
+  rather than collide — that meeting is the point.
+- **Every fact says which build produced it, and the plane keeps the
+  account.** `_generated_by` carried the fact-format version alone, so two
+  releases of one parser stamped identically and a plane with no `Channel`
+  nodes might hold no channels or might predate the parser that could see
+  them. The artifact's hash rides on the mark now — `rust@2+c966ecba` — ten
+  bytes inside a property every node already has. The last whole-tree
+  ingest's account lands on the plane beside `synced_commit`: which handlers
+  ran and what each contributed, what was skipped, which extensions no plugin
+  claims. Answers say so when that ingest was incomplete, and stay silent
+  when it was not.
+- **`drsg snippet`, `drsg grep` and `drsg traverse`.** Three of the MCP
+  surface's verbs had no subcommand: reading a symbol's source, searching the
+  tree a plane was parsed from, and walking an edge could only be done by an
+  agent talking MCP, never from a prompt or a script. They call the same
+  functions the tools do. Both file-reading verbs find the tree the way the
+  tools do — the plane records where it was parsed from — with `--root` for a
+  plane that recorded none.
+- **An edge's endpoints are links.** `CALLS · 1421 → 883` named two nodes as
+  numbers you then had to find by hand. Each is now the link a property value
+  already gets: click to centre it, hover for the key it stands for.
+
+### Changed
+
+- **`impact` on a type sees what is typed by it.** The walk's edge set
+  predated the plugins having anything to say about types: on a type it saw
+  only `INSTANTIATES` — who built one — and never who takes it as a
+  parameter, returns it, or holds it in a field, then reported that fraction
+  with an exact count and no sign the question had been answered narrowly.
+  `USES_TYPE` joins the walk, and the MCP tool description says so.
+- **`snippet` reads a symbol to its end.** It read a fixed forty lines after
+  a declaration's first, because that was all a node recorded. The parsers
+  write `end_line` now, so it reads the declaration and stops — 22,738 lines
+  against 52,920 across `dr-strange-core`'s 1,323 symbols, with a median
+  symbol of eight. An explicit `lines` still wins, the cap still bounds a
+  long one, and a plane whose parser recorded no extent behaves exactly as
+  before.
+- **`context` says a call departs from waiting.** Plugins have written `go`,
+  `scheduled`, `unawaited`, `spawned` and `blocking` onto the CALLS edge for
+  releases, and the verb an agent actually reads dropped all of it. `[spawned]`
+  rides beside `call@25` now. Silent for an ordinary call: waiting is the
+  expectation.
+- **`context` says how its calls were bound.** Every plugin stamps
+  `_confidence` on the edges it resolves and no verb had ever shown it, so an
+  edge bound by matching a bare name against what is in scope read exactly
+  like one the source spelled out as a path — about a fifth are the former.
+  Said once in the footer, not as a marker on a quarter of the lines.
+
+### Fixed
+
+- **`snippet` no longer invites you into the next declaration.** It printed
+  "… continues; reads on" after reading a symbol to its end — true of the
+  file and false of the symbol. It says that now only when the answer really
+  was cut short.
+- **The hover box names a node the focus fade blanked.** Selecting a node
+  drops the labels of the far graph, and the drawer read the label the
+  reducer left behind — so hovering a node three hops out drew an empty chip,
+  when that is exactly the node whose name is being asked for. It reads the
+  key back off the graph, as the selection ring already read its colour.
+
 ## [2.6.0] - 2026-09-05
 
 ### Added
