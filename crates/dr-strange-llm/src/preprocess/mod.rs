@@ -606,6 +606,44 @@ fn stamp_provenance(out: &mut Preprocessed, mark: &str) {
     }
 }
 
+/// The manifest files, and the plugin name that reads each.
+///
+/// A build manifest is named, not extensioned: `package.json` is not "every
+/// `.json`", and claiming the extension would take every fixture and
+/// `tsconfig` in the tree away from the reader that handles them. The WIT
+/// `manifest` record cannot carry filenames either — a record's fields are
+/// its ABI, so adding one would stop every installed component from loading
+/// until all of them were rebuilt.
+///
+/// So the host dispatches on a shape it can see, to a plugin installed under
+/// a reserved name — the same statement `.git` → [`REPO_PLUGIN`] already
+/// makes, and the same one `--handler` makes by hand. A **list**, because one
+/// repository may run two build systems: a plugin registered here reads the
+/// files beside it, another registered later reads its own, and a name with
+/// nothing installed under it leaves those files exactly where they are
+/// today — read as prose, and said so in the notes. Nothing is guessed.
+const MANIFEST_PLUGINS: &[(&str, &[&str])] = &[(
+    "deps",
+    &[
+        "package.json",
+        "go.mod",
+        "requirements.txt",
+        "pyproject.toml",
+        "pom.xml",
+        "build.gradle",
+        "build.gradle.kts",
+    ],
+)];
+
+/// The plugin that claims this file by name, when one is installed.
+fn manifest_handler(registry: &[Box<dyn Preprocessor>], path: &str) -> Option<usize> {
+    let base = Path::new(path).file_name()?.to_str()?.to_ascii_lowercase();
+    let (name, _) = MANIFEST_PLUGINS
+        .iter()
+        .find(|(_, files)| files.contains(&base.as_str()))?;
+    registry.iter().position(|p| p.manifest().name == *name)
+}
+
 /// Extension of `name`, lowercased, without the dot. `""` when there is none.
 fn extension_of(name: &str) -> String {
     Path::new(name)
@@ -704,7 +742,15 @@ pub fn route_paths(
     // Bucket by handler index; `None` is the built-in reader's pile.
     let mut buckets: BTreeMap<Option<usize>, Vec<String>> = BTreeMap::new();
     for path in paths {
-        let idx = index_for(registry, &extension_of(&path), handler);
+        // A named manifest first: `pyproject.toml` is a dependency
+        // declaration before it is a `.toml`, and only the plugin that knows
+        // the format can say so. An explicit `--handler` still outranks
+        // everything, as it does for extensions.
+        let idx = match handler {
+            None => manifest_handler(registry, &path)
+                .or_else(|| index_for(registry, &extension_of(&path), handler)),
+            Some(_) => index_for(registry, &extension_of(&path), handler),
+        };
         buckets.entry(idx).or_default().push(path);
     }
 
@@ -849,6 +895,40 @@ fn merge(
         // collision here means a plugin bug. Keep the first and say so:
         // failing an entire ingest over it would be worse than reporting it.
         if let Some(owner) = owners.get(&node.key) {
+            // One exception, and it is what makes reading a build manifest
+            // worth anything: `External` is an *assertion* that the key names
+            // something outside the tree, so two handlers naming one foreign
+            // key are agreeing, not conflicting. The ts parser writes
+            // `express` because a file imports it; the manifest reader writes
+            // `express` because `package.json` declares it. That is one
+            // package, and the whole point is that they meet.
+            //
+            // Anything else is still a plugin bug: two parsers claiming one
+            // *declaration* have no authority ordering between them, and a
+            // key that carries its file path should not collide at all.
+            let foreign = |n: &DigestNode| n.extra_labels.iter().any(|l| l == "External");
+            if foreign(&node)
+                && let Some(prev) = into.nodes.iter_mut().find(|n| n.key == node.key)
+            {
+                if foreign(prev) {
+                    // Two stand-ins: keep the first, and take whatever the
+                    // second knew that the first did not.
+                    for (k, v) in node.props {
+                        prev.props.entry(k).or_insert(v);
+                    }
+                } else {
+                    // A stand-in met the tree's own declaration of the same
+                    // key. The declaration outranks it and keeps its label;
+                    // the stand-in has nothing to add but its assertion.
+                    let add: Vec<String> = node
+                        .extra_labels
+                        .into_iter()
+                        .filter(|l| l != "External" && !prev.extra_labels.contains(l))
+                        .collect();
+                    prev.extra_labels.extend(add);
+                }
+                continue;
+            }
             into.report
                 .collisions
                 .push(format!("{} (kept {owner}'s, dropped {who}'s)", node.key));

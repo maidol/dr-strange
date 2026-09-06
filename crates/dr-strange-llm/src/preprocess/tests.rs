@@ -1129,3 +1129,163 @@ fn a_key_owned_by_something_else_is_skipped_rather_than_stolen() {
     let held = plane.node_by_key("commit:b").unwrap().unwrap();
     assert_eq!(held.labels, vec!["Idea".to_string()], "untouched");
 }
+
+/// A build manifest is named, not extensioned. The host dispatches it to a
+/// plugin installed under a reserved name — the statement `.git` → `git`
+/// already makes — and leaves it exactly where it was when nothing is
+/// installed under that name. Nothing is guessed either way.
+mod manifests {
+    use super::*;
+
+    /// Claims nothing by extension: it is reached only by name.
+    struct Deps;
+
+    impl Preprocessor for Deps {
+        fn manifest(&self) -> Manifest {
+            Manifest {
+                name: "deps".into(),
+                version: "1".into(),
+                extensions: Vec::new(),
+                logo: None,
+                build: None,
+                source: None,
+            }
+        }
+
+        fn preprocess(&self, input: &Input<'_>, _host: &dyn Host) -> Result<Preprocessed> {
+            let mut out = Preprocessed::default();
+            let Input::Files { paths } = input else {
+                return Ok(out);
+            };
+            for path in *paths {
+                out.nodes.push(DigestNode {
+                    key: format!("deps::{path}"),
+                    label: "Manifest".into(),
+                    extra_labels: Vec::new(),
+                    props: Default::default(),
+                });
+            }
+            Ok(out)
+        }
+    }
+
+    fn tree(name: &str) -> Tree {
+        let t = Tree::new(name);
+        t.write("package.json", "{}")
+            .write("go.mod", "module m\n")
+            .write("pyproject.toml", "[project]\n")
+            .write("src/lib.rs", "pub fn only() {}");
+        t
+    }
+
+    #[test]
+    fn a_named_manifest_reaches_the_plugin_reserved_for_it() {
+        let t = tree("named");
+        let plugins = Plugins::from_handlers(vec![Box::new(Deps), Box::new(Probe)]);
+        let out = route_tree(&t.host(), None, &plugins).unwrap();
+        let keys: Vec<&str> = out.nodes.iter().map(|n| n.key.as_str()).collect();
+        assert!(keys.contains(&"deps::package.json"), "{keys:?}");
+        assert!(keys.contains(&"deps::go.mod"), "{keys:?}");
+        // A `.toml` by extension, a dependency declaration by name: the name
+        // wins, because only the plugin that knows the format can say so.
+        assert!(keys.contains(&"deps::pyproject.toml"), "{keys:?}");
+        // Everything else routes exactly as it did.
+        assert!(keys.contains(&"probe::src/lib.rs"), "{keys:?}");
+    }
+
+    #[test]
+    fn with_no_such_plugin_installed_a_manifest_is_read_as_before() {
+        let t = tree("absent");
+        let out = route_tree(&t.host(), None, &probe()).unwrap();
+        assert!(
+            out.nodes.iter().all(|n| n.key.starts_with("probe::")),
+            "{:?}",
+            out.nodes.iter().map(|n| &n.key).collect::<Vec<_>>()
+        );
+        // Read as prose, and the one extension nothing claims is named.
+        assert!(
+            out.report.unclaimed.iter().any(|u| u.starts_with(".mod")),
+            "{:?}",
+            out.report.unclaimed
+        );
+    }
+
+    /// Two handlers naming one *foreign* package is the join a manifest
+    /// exists to make, not a bug: `External` asserts the key names something
+    /// outside the tree, and two handlers asserting it agree. Two handlers
+    /// claiming one declaration still collide — the case the rule was
+    /// written for, and the one its own test still covers.
+    #[test]
+    fn two_handlers_naming_one_foreign_package_agree_rather_than_collide() {
+        /// Mints `express` twice over: as an import does, and as a manifest
+        /// does, the second knowing something the first did not.
+        struct Twice(&'static str, bool);
+        impl Preprocessor for Twice {
+            fn manifest(&self) -> Manifest {
+                Manifest {
+                    name: self.0.into(),
+                    version: "1".into(),
+                    extensions: vec![if self.0 == "importer" { "aa" } else { "bb" }.into()],
+                    logo: None,
+                    build: None,
+                    source: None,
+                }
+            }
+            fn preprocess(&self, _i: &Input<'_>, _h: &dyn Host) -> Result<Preprocessed> {
+                let mut props = dr_strange_core::Properties::new();
+                if self.1 {
+                    props.insert(
+                        "version".into(),
+                        dr_strange_core::PropDesc::new(dr_strange_core::PropValue::Str(
+                            "^4.18.2".into(),
+                        )),
+                    );
+                }
+                Ok(Preprocessed {
+                    nodes: vec![DigestNode {
+                        key: "express".into(),
+                        label: "Package".into(),
+                        extra_labels: vec!["External".into()],
+                        props,
+                    }],
+                    ..Default::default()
+                })
+            }
+        }
+
+        for (first, second) in [(false, true), (true, false)] {
+            let t = Tree::new(&format!("standin-{first}"));
+            t.write("a.aa", "x").write("b.bb", "y");
+            let plugins = Plugins::from_handlers(vec![
+                Box::new(Twice("importer", first)),
+                Box::new(Twice("deps", second)),
+            ]);
+            let out = route_tree(&t.host(), None, &plugins).unwrap();
+            let nodes: Vec<&DigestNode> = out.nodes.iter().filter(|n| n.key == "express").collect();
+            assert_eq!(nodes.len(), 1, "one package, one node");
+            assert!(
+                nodes[0].props.contains_key("version"),
+                "the richer node survives whichever arrived first"
+            );
+            assert!(
+                out.report.collisions.is_empty(),
+                "not a bug: {:?}",
+                out.report.collisions
+            );
+        }
+    }
+
+    /// An explicit `--handler` outranks the filename, as it outranks the
+    /// extension: the operator's statement is the most explicit one there is.
+    #[test]
+    fn an_explicit_handler_still_wins() {
+        let t = tree("explicit");
+        let plugins = Plugins::from_handlers(vec![Box::new(Deps), Box::new(Probe)]);
+        let out = route_tree(&t.host(), Some("probe"), &plugins).unwrap();
+        assert!(
+            out.nodes.iter().all(|n| n.key.starts_with("probe::")),
+            "{:?}",
+            out.nodes.iter().map(|n| &n.key).collect::<Vec<_>>()
+        );
+    }
+}
