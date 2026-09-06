@@ -429,6 +429,16 @@ pub fn context(plane: &PlaneHandle<'_>, name: &str) -> Result<String> {
                 if hop.node == node.id {
                     line.push_str("  (self)");
                 }
+                // Where control went. Every code plugin that can tell records
+                // it on the edge — `go` for a goroutine, `scheduled` /
+                // `unawaited` for a promise or coroutine left running,
+                // `spawned` / `blocking` for a Rust task — and a reader who
+                // cannot tell that call from a synchronous one is reading a
+                // different program, which is the whole reason it is written
+                // down.
+                if let Some(shape) = prop_str(&edge.properties, "concurrent") {
+                    line.push_str(&format!("  [{shape}]"));
+                }
                 // The unresolved ledger (P1): a boundary is announced, not
                 // hidden — the reason travels on the edge.
                 if other.labels.first().map(String::as_str) == Some("UnresolvedRef")
@@ -1610,6 +1620,37 @@ mod tests {
         let out = context(&db.plane("code").unwrap(), "m::api::go").unwrap();
         assert!(out.contains("synced: commit abcdef012345"), "{out}");
         assert!(out.contains("3 file(s) it could not read"), "{out}");
+    }
+
+    /// Every plugin that can tell writes where control went onto the CALLS
+    /// edge. It has to be visible in the verb an agent actually reads, or the
+    /// fact may as well not be recorded.
+    #[test]
+    fn a_call_that_departs_from_waiting_says_so_in_the_answer() {
+        let db = seeded();
+        {
+            let p = db.plane("code").unwrap();
+            let mut txn = p.write().unwrap();
+            let caller = p.node_by_key("m::api::run").unwrap().unwrap().id;
+            let callee = p.node_by_key("m::util::go").unwrap().unwrap().id;
+            let mut props = Properties::new();
+            props.insert("line".into(), PropDesc::new(PropValue::Int(45)));
+            props.insert(
+                "concurrent".into(),
+                PropDesc::described("how control departs", PropValue::Str("spawned".into())),
+            );
+            txn.create_edge(caller, callee, "CALLS", props).unwrap();
+            txn.commit().unwrap();
+        }
+        let out = context(&db.plane("code").unwrap(), "m::api::run").unwrap();
+        assert!(out.contains("call@45  [spawned]"), "{out}");
+        // The synchronous call beside it says nothing — waiting is the
+        // expectation, and a marker on every edge would be noise.
+        assert!(
+            out.contains("call@44\n") || out.contains("call@44 "),
+            "{out}"
+        );
+        assert!(!out.contains("call@44  ["), "{out}");
     }
 
     fn mark_rebuilding(db: &Database, since: i64) {
