@@ -48,7 +48,13 @@ fn prop_int(props: &Properties, key: &str) -> Option<i64> {
 fn site(props: &Properties) -> String {
     let file = prop_str(props, "file").or_else(|| prop_str(props, "path"));
     match (file, prop_int(props, "line")) {
-        (Some(f), Some(l)) => format!("{f}:{l}"),
+        // The extent where a parser recorded one: `src/api.rs:10-25` is where
+        // a reader learns a function is fifteen lines, or two hundred,
+        // without opening it. An end at or before the start says nothing new.
+        (Some(f), Some(l)) => match prop_int(props, "end_line") {
+            Some(end) if end > l => format!("{f}:{l}-{end}"),
+            _ => format!("{f}:{l}"),
+        },
         (Some(f), None) => f.to_string(),
         _ => String::new(),
     }
@@ -234,6 +240,26 @@ const CALLS_NOTE: &str = "note: recorded call edges only — calls the parser co
      (dynamic dispatch, untyped receivers) are absent, so this is a lower \
      bound.\n";
 
+/// The same footer, plus how the edges above were bound.
+///
+/// A plugin records `_confidence` on every call edge it resolves, and until
+/// now nothing said it: an edge bound by matching a bare name against what is
+/// in scope read exactly like one the source spelled out as a path. That
+/// difference is what a reader weighing a listing needs, and it is one
+/// sentence rather than a marker on a quarter of the lines — the ordinary
+/// case deserves no decoration.
+fn calls_note(shown: usize, by_name: usize) -> String {
+    if by_name == 0 {
+        return CALLS_NOTE.to_string();
+    }
+    format!(
+        "{}  Of the {shown} call(s) shown, {by_name} {} bound by matching a name \
+         against what is in scope rather than a path the source wrote.\n",
+        CALLS_NOTE.trim_end(),
+        if by_name == 1 { "was" } else { "were" },
+    )
+}
+
 /// Most entries printed per edge group before eliding with a count.
 const GROUP_CAP: usize = 20;
 
@@ -402,6 +428,10 @@ pub fn context(plane: &PlaneHandle<'_>, name: &str) -> Result<String> {
     use std::collections::BTreeMap;
     let mut groups: BTreeMap<(&'static str, String), Vec<String>> = BTreeMap::new();
     let mut had_calls = false;
+    // How the shown call edges were bound: everything, and the ones that rest
+    // on a name matched in scope. Counted over what is rendered, so the note
+    // agrees with the listing above it.
+    let (mut calls_shown, mut calls_by_name) = (0usize, 0usize);
     walk(
         plane,
         node.id,
@@ -423,6 +453,13 @@ pub fn context(plane: &PlaneHandle<'_>, name: &str) -> Result<String> {
             let mut line = one_line(&other);
             if edge.ty == "CALLS" {
                 had_calls = true;
+                calls_shown += 1;
+                // `none` is the unresolved ledger, which already announces
+                // itself with a reason below; `medium` is the one that looks
+                // exactly like certainty and is not.
+                if prop_str(&edge.properties, "_confidence") == Some("medium") {
+                    calls_by_name += 1;
+                }
                 if let Some(l) = prop_int(&edge.properties, "line") {
                     line.push_str(&format!("  call@{l}"));
                 }
@@ -485,7 +522,7 @@ pub fn context(plane: &PlaneHandle<'_>, name: &str) -> Result<String> {
             }
         }
         if had_calls {
-            buf.push_str(CALLS_NOTE);
+            buf.push_str(&calls_note(calls_shown, calls_by_name));
         }
         buf
     };
@@ -1227,7 +1264,7 @@ fn describe_record(_plane: &PlaneHandle<'_>, node: &NodeRecord) -> Result<String
         out.push_str(&format!("labels: {}\n", node.labels.join(", ")));
     }
     for (k, p) in &node.properties {
-        if k == "file" || k == "path" || k == "line" {
+        if k == "file" || k == "path" || k == "line" || k == "end_line" {
             continue; // already on the head line
         }
         if k.starts_with('_') && k != "_generated_by" {
@@ -1651,6 +1688,57 @@ mod tests {
             "{out}"
         );
         assert!(!out.contains("call@44  ["), "{out}");
+    }
+
+    /// A parser records how sure it was of every call it bound. Saying it
+    /// once beats a marker on a quarter of the lines, and beats silence:
+    /// an edge matched by name read exactly like one the source spelled out.
+    #[test]
+    fn the_note_says_how_the_calls_were_bound() {
+        let db = seeded();
+        {
+            let p = db.plane("code").unwrap();
+            let mut txn = p.write().unwrap();
+            let caller = p.node_by_key("m::api::run").unwrap().unwrap().id;
+            let callee = p.node_by_key("m::util::go").unwrap().unwrap().id;
+            let mut props = Properties::new();
+            props.insert("line".into(), PropDesc::new(PropValue::Int(46)));
+            props.insert(
+                "_confidence".into(),
+                PropDesc::new(PropValue::Str("medium".into())),
+            );
+            txn.create_edge(caller, callee, "CALLS", props).unwrap();
+            txn.commit().unwrap();
+        }
+        let out = context(&db.plane("code").unwrap(), "m::api::run").unwrap();
+        assert!(
+            out.contains("Of the 2 call(s) shown, 1 was bound by"),
+            "{out}"
+        );
+
+        // A listing whose every edge was certain says nothing extra.
+        let clean = context(&db.plane("code").unwrap(), "m::api::go").unwrap();
+        assert!(clean.contains("lower bound."), "{clean}");
+        assert!(!clean.contains("Of the"), "{clean}");
+    }
+
+    /// The extent belongs on the head line, where a reader learns a function
+    /// is fifteen lines or two hundred without opening it — and it is said
+    /// there instead of again in the property list.
+    #[test]
+    fn a_recorded_extent_shows_as_a_range() {
+        let db = seeded();
+        {
+            let p = db.plane("code").unwrap();
+            let mut txn = p.write().unwrap();
+            let id = p.node_by_key("m::api::go").unwrap().unwrap().id;
+            txn.set_prop(id, "end_line", PropDesc::new(PropValue::Int(25)))
+                .unwrap();
+            txn.commit().unwrap();
+        }
+        let out = describe(&db.plane("code").unwrap(), "m::api::go").unwrap();
+        assert!(out.contains("src/api.rs:10-25"), "{out}");
+        assert!(!out.contains("end_line:"), "said once, not twice: {out}");
     }
 
     fn mark_rebuilding(db: &Database, since: i64) {

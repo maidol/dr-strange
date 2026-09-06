@@ -1920,9 +1920,23 @@ fn snippet_logic(
     let (Some(root), Some(file), Some(line)) = (root, file, line) else {
         return Err(no_tree());
     };
+    // Where the declaration stops, when the parser recorded it. Without it
+    // this had to guess a fixed number of lines after the first, which on a
+    // short function spent most of the answer on whatever followed it and on
+    // a long one stopped in the middle.
+    let end_line = match node.properties.get("end_line").map(|d| &d.value) {
+        Some(dr_strange_core::PropValue::Int(l)) => Some(*l as usize),
+        _ => None,
+    };
     let text = std::fs::read_to_string(root.join(&file))
         .map_err(|e| anyhow::anyhow!("reading {file}: {e}"))?;
-    let want = req.lines.unwrap_or(40).clamp(1, SNIPPET_CAP);
+    // An explicit `lines` still wins; the extent is only the default, and a
+    // node whose parser records none keeps the old fixed guess.
+    let extent = end_line
+        .filter(|end| *end >= line)
+        .map(|end| end - line + 1)
+        .unwrap_or(40);
+    let want = req.lines.unwrap_or(extent).clamp(1, SNIPPET_CAP);
     let start = line.saturating_sub(1);
     let total = text.lines().count();
     let slice: Vec<&str> = text.lines().skip(start).take(want).collect();
@@ -3358,6 +3372,62 @@ mod snippet_tests {
             std::fs::write(dir.join("src/lib.rs"), format!("{body}\n")).unwrap();
         }
         (a, b)
+    }
+
+    /// A symbol that records where it ends, in a file long enough that the
+    /// old fixed guess would have run past it.
+    fn plane_with_extent(db: &Database, name: &str, root: &std::path::Path, end: i64) {
+        db.create_plane(name, Properties::new()).unwrap();
+        write_nodes_logic(
+            db,
+            from_value(jval!({"plane": name, "nodes": [
+                {"external_key": "f", "labels": ["Function"],
+                 "properties": {"file": "src/lib.rs", "line": 2, "end_line": end}}
+            ]}))
+            .unwrap(),
+            None,
+        )
+        .unwrap();
+        let plane = db.plane(name).unwrap();
+        let mut props = plane.properties().unwrap();
+        props.insert(
+            "synced_root".into(),
+            PropDesc::described(
+                "directory the facts were parsed from",
+                PropValue::Str(root.display().to_string()),
+            ),
+        );
+        plane.set_properties(props).unwrap();
+    }
+
+    /// A parser knows where a declaration stops, and until it recorded that
+    /// this read a fixed forty lines after the first — most of it whatever
+    /// happened to follow. The extent is now the default.
+    #[test]
+    fn a_symbol_is_read_to_its_recorded_end_not_a_fixed_guess() {
+        let dir = std::env::temp_dir().join(format!("drsg-extent-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        let body: String = (1..=60).map(|i| format!("line {i}\n")).collect();
+        std::fs::write(dir.join("src/lib.rs"), body).unwrap();
+
+        let db = Database::in_memory().unwrap();
+        plane_with_extent(&db, "p", &dir, 4);
+        let out = ask(&db, &dir, "p", "f", None).unwrap();
+        assert!(out.starts_with("src/lib.rs:2 (3 lines)"), "{out}");
+        assert!(out.contains("line 4"), "{out}");
+        assert!(!out.contains("line 5"), "read past the symbol: {out}");
+
+        // An explicit `lines` still wins over the extent.
+        let more = ask(&db, &dir, "p", "f", Some(10)).unwrap();
+        assert!(more.contains("line 11"), "{more}");
+
+        // A node whose parser records no extent keeps the old behaviour.
+        let plain = Database::in_memory().unwrap();
+        plane_with(&plain, "p", Some(&dir));
+        let out = ask(&plain, &dir, "p", "f", None).unwrap();
+        assert!(out.starts_with("src/lib.rs:1 (40 lines)"), "{out}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A plane whose facts were parsed from `root`, holding one symbol at
