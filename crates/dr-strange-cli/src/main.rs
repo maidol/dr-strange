@@ -202,6 +202,70 @@ enum Command {
         #[arg(long, default_value_t = 3)]
         depth: usize,
     },
+    /// Source text: a symbol read to its end, or a range of a file.
+    ///
+    /// A symbol gives its body from the declaration down — exactly the
+    /// declaration where the parser recorded where it stops, else a bounded
+    /// guess — and `path:line` / `path:start-end` gives a range of any file
+    /// in the tree the plane was parsed from, naming the symbol it opens in.
+    Snippet {
+        /// A symbol (fuzzy), or `path:line` / `path:start-end`.
+        name: String,
+        #[arg(long, default_value = "startup")]
+        plane: String,
+        /// Lines from the declaration down. Default: exactly the declaration.
+        #[arg(long)]
+        lines: Option<usize>,
+        /// The tree to read from, when the plane records none of its own.
+        #[arg(long)]
+        root: Option<PathBuf>,
+    },
+    /// Text search over the tree a plane was parsed from — each hit names the
+    /// symbol it falls inside, so the next call is `context` or `snippet` on
+    /// that key rather than opening the file.
+    Grep {
+        /// What to find. Literal text unless `--regex`.
+        pattern: String,
+        #[arg(long, default_value = "startup")]
+        plane: String,
+        /// Treat the pattern as a Rust regular expression.
+        #[arg(long)]
+        regex: bool,
+        /// Case-insensitive matching.
+        #[arg(long)]
+        ignore_case: bool,
+        /// Only under this directory or file, or with this extension (`.rs`).
+        #[arg(long)]
+        path: Option<String>,
+        /// Lines of surrounding source per hit (max 10).
+        #[arg(long)]
+        context: Option<usize>,
+        /// Max matching lines (default 50, max 200).
+        #[arg(long)]
+        max_results: Option<usize>,
+        /// The tree to search, when the plane records none of its own.
+        #[arg(long)]
+        root: Option<PathBuf>,
+    },
+    /// Walk edges from one node: the neighbours a hop (or several) away.
+    Traverse {
+        /// Where to start — an external key.
+        from: String,
+        #[arg(long, default_value = "startup")]
+        plane: String,
+        /// `out` (default), `in`, or `both`.
+        #[arg(long)]
+        direction: Option<String>,
+        /// Restrict to one edge type.
+        #[arg(long)]
+        edge_type: Option<String>,
+        /// Minimum hops (default 1).
+        #[arg(long)]
+        min: Option<u32>,
+        /// Maximum hops (default 1) — above 1 walks multi-hop.
+        #[arg(long)]
+        max: Option<u32>,
+    },
     /// Read one region closely: what is within a few hops of this symbol, by
     /// label and edge type, with the hubs that hold it together.
     Fathom {
@@ -690,6 +754,29 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+/// The tree a plane was parsed from, as it recorded at digest time.
+///
+/// `grep` searches a directory, and the right one is the plane's own — the
+/// same `synced_root` `snippet` consults. Read here rather than reusing the
+/// digest-side reader, which is behind that feature and this is not.
+fn plane_root(db: &dr_strange_core::Database, plane: &str) -> Option<PathBuf> {
+    let plane = db.plane(plane).ok()?;
+    let props = plane.properties().ok()?;
+    match &props.get("synced_root")?.value {
+        dr_strange_core::PropValue::Str(root) => Some(PathBuf::from(root)),
+        _ => None,
+    }
+}
+
+/// The text a reader's verb answers with. `snippet` and `grep` return a JSON
+/// string; anything else is rendered as it stands.
+fn as_text(v: &serde_json::Value) -> String {
+    match v {
+        serde_json::Value::String(s) => s.clone(),
+        other => other.to_string(),
+    }
+}
+
 fn run(cli: Cli, cfg: &config::Config, out: &mut dyn Write) -> Result<()> {
     match cli.command {
         #[cfg(feature = "digest")]
@@ -836,6 +923,95 @@ fn run(cli: Cli, cfg: &config::Config, out: &mut dyn Write) -> Result<()> {
                 "{}",
                 dr_strange_core::compact::impact(&p, &name, depth)?
             )?;
+            Ok(())
+        }
+        // `snippet`, `grep` and `traverse` are the MCP surface's, called here
+        // rather than reimplemented: two copies of a reader's verb would
+        // answer differently the first time one of them was fixed.
+        Command::Snippet {
+            name,
+            plane,
+            lines,
+            root,
+        } => {
+            let db = commands::open(&cli.db)?;
+            // `--root` is only the fallback: a plane that records the tree it
+            // was parsed from already knows better.
+            let rendered = dr_strange_mcp::snippet_logic(
+                &db,
+                root.as_deref(),
+                dr_strange_mcp::SnippetReq { plane, name, lines },
+            )?;
+            write!(out, "{}", as_text(&rendered))?;
+            Ok(())
+        }
+        Command::Grep {
+            pattern,
+            plane,
+            regex,
+            ignore_case,
+            path,
+            context,
+            max_results,
+            root,
+        } => {
+            let db = commands::open(&cli.db)?;
+            // The tree a plane was parsed from is the one to search; `--root`
+            // overrides, and the cwd is the last resort.
+            let root = match root {
+                Some(r) => r,
+                None => plane_root(&db, &plane).unwrap_or_else(|| PathBuf::from(".")),
+            };
+            let rendered = dr_strange_mcp::grep_logic(
+                &db,
+                &root,
+                dr_strange_mcp::GrepReq {
+                    pattern,
+                    regex: Some(regex),
+                    ignore_case: Some(ignore_case),
+                    path,
+                    context,
+                    max_results,
+                    plane: Some(plane),
+                },
+            )?;
+            write!(out, "{}", as_text(&rendered))?;
+            Ok(())
+        }
+        Command::Traverse {
+            from,
+            plane,
+            direction,
+            edge_type,
+            min,
+            max,
+        } => {
+            let db = commands::open(&cli.db)?;
+            let plane_name = plane.clone();
+            let rendered = dr_strange_mcp::traverse_logic(
+                &db,
+                dr_strange_mcp::Traverse {
+                    plane,
+                    from_id: None,
+                    from_key: Some(from),
+                    direction,
+                    edge_type,
+                    min,
+                    max,
+                },
+            )?;
+            // The walk answers with node ids, which is the right primitive
+            // for a program and nothing at all for a reader. Rendered as the
+            // nodes they are, the way `cypher` renders what it returns.
+            let plane = db.plane(&plane_name)?;
+            let mut rows = Vec::new();
+            for id in rendered.as_array().into_iter().flatten() {
+                let Some(id) = id.as_u64() else { continue };
+                if let Some(node) = plane.node(dr_strange_core::NodeId(id))? {
+                    rows.push((node, None));
+                }
+            }
+            write!(out, "{}", dr_strange_core::compact::records(&plane, &rows)?)?;
             Ok(())
         }
         Command::Fathom { name, plane, depth } => {
@@ -1230,6 +1406,105 @@ mod tests {
                 ));
             }
             _ => panic!("should parse as Serve(Watch)"),
+        }
+    }
+
+    /// The reader's verbs the MCP surface had and the CLI did not. Parsing is
+    /// the CLI's own half of them — the answering half is shared with MCP, so
+    /// it is tested there.
+    #[test]
+    fn the_readers_verbs_parse_the_way_their_tools_do() {
+        let cli = Cli::try_parse_from(["drsg", "snippet", "k::go", "--plane", "p"]).unwrap();
+        match cli.command {
+            Command::Snippet {
+                name,
+                plane,
+                lines,
+                root,
+            } => {
+                assert_eq!(name, "k::go");
+                assert_eq!(plane, "p");
+                // Unset: the declaration's own extent, not a fixed guess.
+                assert_eq!(lines, None);
+                assert_eq!(root, None);
+            }
+            _ => panic!("should parse as Snippet"),
+        }
+
+        // A file range is the same argument, as it is in the tool.
+        let range = Cli::try_parse_from(["drsg", "snippet", "src/lib.rs:3-9"]).unwrap();
+        assert!(
+            matches!(range.command, Command::Snippet { ref name, .. } if name == "src/lib.rs:3-9")
+        );
+
+        let g = Cli::try_parse_from([
+            "drsg",
+            "grep",
+            "fn run",
+            "--regex",
+            "--ignore-case",
+            "--path",
+            ".rs",
+            "--context",
+            "2",
+        ])
+        .unwrap();
+        match g.command {
+            Command::Grep {
+                pattern,
+                regex,
+                ignore_case,
+                path,
+                context,
+                max_results,
+                ..
+            } => {
+                assert_eq!(pattern, "fn run");
+                assert!(regex && ignore_case);
+                assert_eq!(path.as_deref(), Some(".rs"));
+                assert_eq!(context, Some(2));
+                assert_eq!(max_results, None);
+            }
+            _ => panic!("should parse as Grep"),
+        }
+        // The flags are opt-in: a plain grep is a literal, case-sensitive one.
+        let plain = Cli::try_parse_from(["drsg", "grep", "TODO"]).unwrap();
+        assert!(matches!(
+            plain.command,
+            Command::Grep {
+                regex: false,
+                ignore_case: false,
+                ..
+            }
+        ));
+
+        let tr = Cli::try_parse_from([
+            "drsg",
+            "traverse",
+            "k::go",
+            "--edge-type",
+            "CALLS",
+            "--max",
+            "3",
+        ])
+        .unwrap();
+        match tr.command {
+            Command::Traverse {
+                from,
+                edge_type,
+                min,
+                max,
+                direction,
+                ..
+            } => {
+                assert_eq!(from, "k::go");
+                assert_eq!(edge_type.as_deref(), Some("CALLS"));
+                assert_eq!(max, Some(3));
+                // Defaulted by the shared logic, not by the parser.
+                assert_eq!(min, None);
+                assert_eq!(direction, None);
+            }
+            _ => panic!("should parse as Traverse"),
         }
     }
 

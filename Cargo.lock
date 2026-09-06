@@ -1180,6 +1180,7 @@ dependencies = [
  "dr-strange-core",
  "dr-strange-llm",
  "dr-strange-log",
+ "dr-strange-mcp",
  "dr-strange-parser",
  "dr-strange-web",
  "libc",

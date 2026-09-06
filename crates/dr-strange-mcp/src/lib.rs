@@ -391,19 +391,19 @@ struct Digest {
 }
 
 #[derive(Deserialize, JsonSchema)]
-struct Traverse {
+pub struct Traverse {
     #[serde(default = "default_plane")]
-    plane: String,
+    pub plane: String,
     /// Start node id (or use `from_key`).
-    from_id: Option<u64>,
-    from_key: Option<String>,
+    pub from_id: Option<u64>,
+    pub from_key: Option<String>,
     /// `out` (default), `in`, or `both`.
-    direction: Option<String>,
+    pub direction: Option<String>,
     /// Restrict to an edge type.
-    edge_type: Option<String>,
+    pub edge_type: Option<String>,
     /// Min hops (default 1) and max hops (default 1) — >1 gives multi-hop.
-    min: Option<u32>,
-    max: Option<u32>,
+    pub min: Option<u32>,
+    pub max: Option<u32>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -674,34 +674,34 @@ struct SymbolReq {
 
 /// `grep`'s request: text over the attached source tree.
 #[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
-struct GrepReq {
+pub struct GrepReq {
     /// What to find. Literal text unless `regex` is set — then Rust regex
     /// syntax, so `foo|bar`, `^pub fn \w+`, `set_\w+\(` all work.
-    pattern: String,
+    pub pattern: String,
     /// Treat `pattern` as a regular expression (default false).
     #[serde(default)]
-    regex: Option<bool>,
+    pub regex: Option<bool>,
     /// Case-insensitive matching (default false).
     #[serde(default)]
-    ignore_case: Option<bool>,
+    pub ignore_case: Option<bool>,
     /// Only files under this directory or at this file (`crates/dr-strange-web`,
     /// `src/lib.rs`), or with this extension when it starts with a dot (`.rs`).
     /// Relative to the tree's root.
     #[serde(default)]
-    path: Option<String>,
+    pub path: Option<String>,
     /// Lines of surrounding source to show before and after each hit (default
     /// 0, capped at 10). Context lines carry `-` after the line number where
     /// hits carry `:`, as `rg -C` prints them.
     #[serde(default)]
-    context: Option<usize>,
+    pub context: Option<usize>,
     /// Max matching lines returned (default 50, capped at 200).
     #[serde(default)]
-    max_results: Option<usize>,
+    pub max_results: Option<usize>,
     /// The plane whose symbols the hits are placed in — each hit names the
     /// symbol it falls inside, the key `context`/`snippet` take next. Unset,
     /// the plane parsed from this tree (its `synced_root`) is used.
     #[serde(default)]
-    plane: Option<String>,
+    pub plane: Option<String>,
 }
 
 /// `trace`'s request: two symbols, fuzzy like everywhere else.
@@ -751,18 +751,18 @@ struct HistoryReq {
 
 /// `snippet`'s request: one symbol's source.
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-struct SnippetReq {
+pub struct SnippetReq {
     #[serde(default = "default_plane")]
-    plane: String,
+    pub plane: String,
     /// A symbol (fuzzy: an exact key, a `::name`/`.name` suffix, or a
     /// substring) — or a file range, `path:line` / `path:start-end`, relative
     /// to the tree's root, for the lines around a `grep` hit or the rest of a
     /// long body.
-    name: String,
+    pub name: String,
     /// Lines of source returned from the declaration down (default 40,
     /// capped at 400). The answer says how to read on when it stops short.
     #[serde(default)]
-    lines: Option<usize>,
+    pub lines: Option<usize>,
 }
 
 /// `search`'s request: free text and a plane.
@@ -1081,7 +1081,7 @@ fn get_node_logic(db: &Database, req: GetNode) -> AnyResult<Value> {
         .unwrap_or(Value::Null))
 }
 
-fn traverse_logic(db: &Database, req: Traverse) -> AnyResult<Value> {
+pub fn traverse_logic(db: &Database, req: Traverse) -> AnyResult<Value> {
     let p = db.plane(&req.plane)?;
     let from = match (req.from_id, &req.from_key) {
         (Some(id), _) => NodeId(id),
@@ -1835,9 +1835,27 @@ fn read_range(
     Ok(out)
 }
 
+/// `grep`'s body: the text search over `root`, with each hit placed in the
+/// symbol it falls inside.
+///
+/// Shared with the CLI rather than inlined in the tool, so the two surfaces
+/// cannot drift — the same reason `context` and the rest live in
+/// `dr_strange_core::compact` and are called from both.
+pub fn grep_logic(db: &Database, root: &std::path::Path, req: GrepReq) -> AnyResult<Value> {
+    // The plane the hits are placed in: the one asked for, else the one
+    // parsed from this very tree. None is fine — hits still come back, only
+    // without a symbol beside them.
+    let plane = match &req.plane {
+        Some(name) => Some(db.plane(name)?),
+        None => plane_for_root(db, root)?,
+    };
+    let symbols = plane.as_ref().map(SymbolIndex::from_plane).transpose()?;
+    Ok(Value::String(grep_tree(root, &req, symbols.as_ref())?))
+}
+
 /// `snippet`'s body. `fallback_root` is the tree the process was started with,
 /// used only when the plane does not record one of its own.
-fn snippet_logic(
+pub fn snippet_logic(
     db: &Database,
     fallback_root: Option<&std::path::Path>,
     req: SnippetReq,
@@ -1945,7 +1963,12 @@ fn snippet_logic(
         out.push_str(&format!("{:>5} | {l}\n", start + i + 1));
     }
     let shown_through = start + slice.len();
-    if shown_through < total {
+    // "Reads on" means *this symbol* has more, not that the file does. Once
+    // the parser records where a declaration ends, a complete one is complete
+    // — saying it continues would send a reader after the next declaration
+    // under the impression it was still in this one.
+    let complete = end_line.is_some_and(|end| shown_through >= end);
+    if shown_through < total && !complete {
         out.push_str(&format!(
             "… continues; snippet {file}:{}-{} reads on (or raise `lines`)\n",
             shown_through + 1,
@@ -2068,15 +2091,7 @@ impl DrStrange {
                      so run grep locally instead"
                 );
             };
-            // The plane the hits are placed in: the one asked for, else the
-            // one parsed from this very tree. None is fine — hits still come
-            // back, only without a symbol beside them.
-            let plane = match &req.plane {
-                Some(name) => Some(db.plane(name)?),
-                None => plane_for_root(db, &root)?,
-            };
-            let symbols = plane.as_ref().map(SymbolIndex::from_plane).transpose()?;
-            Ok(Value::String(grep_tree(&root, &req, symbols.as_ref())?))
+            grep_logic(db, &root, req)
         })
         .await
     }
@@ -3417,6 +3432,14 @@ mod snippet_tests {
         assert!(out.starts_with("src/lib.rs:2 (3 lines)"), "{out}");
         assert!(out.contains("line 4"), "{out}");
         assert!(!out.contains("line 5"), "read past the symbol: {out}");
+        // The file continues; this symbol does not. "Reads on" here would
+        // send a reader into the next declaration thinking it was still in
+        // this one.
+        assert!(!out.contains("continues"), "{out}");
+
+        // Cut short by an explicit `lines`, it does say so.
+        let cut = ask(&db, &dir, "p", "f", Some(2)).unwrap();
+        assert!(cut.contains("continues"), "{cut}");
 
         // An explicit `lines` still wins over the extent.
         let more = ask(&db, &dir, "p", "f", Some(10)).unwrap();

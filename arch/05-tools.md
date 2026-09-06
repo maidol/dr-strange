@@ -29,6 +29,9 @@ drsg get <id|@external-key> [--plane P]   # single record, with descriptions
 drsg query [--plane P] <plan-json>        # run a serialized plan
 drsg cypher '<stmt>' --plane P            # openCypher subset, compiled to a plan
 drsg context|describe|trace|impact|fathom <name> # agent verbs over a digested plane
+drsg snippet <name|path:a-b> [--root D]   # a symbol read to its end, or a range of a file
+drsg grep '<text>' [--regex] [--path P]   # text search over the tree a plane was parsed from
+drsg traverse <key> [--edge-type T]       # the neighbours a hop (or several) away
 drsg search '<query>' --plane P           # semantic top-k (embeds the query)
 drsg catalog [--plane P]                  # soft-schema view (labels, props, descriptions)
 drsg algo … / drsg hybrid …               # graph algorithms; fused retrieval
