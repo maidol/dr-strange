@@ -30,3 +30,7 @@ extensions/
 # Python bytecode from the memory layer's hooks and scripts.
 __pycache__/
 *.pyc
+
+# Install bundles built by scripts/pack.sh — regenerable from any checkout,
+# and a tarball in the history is a copy that can drift from its source.
+/dist/

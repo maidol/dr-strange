@@ -12,6 +12,7 @@
 - [MCP](./mcp.md)
 - [插件](./plugins.md)
 - [编码智能体](./coding-agent.md)
+- [智能体工具包](./drsg-agent-kit-guide.md)
 - [架构](./architecture.md)
 - [附录 A：JSON-RPC 接口清单](./appendix-a.md)
 - [附录 B：查询语言文法](./appendix-b.md)
