@@ -245,6 +245,7 @@ retain_commits = 20                         # 时间旅行可回溯的提交数�
 source_root = "/srv/myrepo"                 # grep/snippet 智能体工具读取的源码树（serve watch 会用 --dir 设置它）
 mount_root = "/srv/repos"                   # `drsg mount` 可以从哪一个目录下打开数据库（默认：你的主目录）；该目录内平面所记录的树也因此可被 grep/snippet 读取
 allowed_origins = ["https://app.example.com"]  # 额外允许的浏览器来源
+# 把 /mcp 放到域名后面：DRSG_ALLOWED_HOSTS=memory.example.com（环境变量；仅在设置了 token 时生效，见 MCP 一章）
 
 [server.tls]                                # 存在此节 ⇒ 以 HTTPS 提供服务
 cert = "/etc/drsg/cert.pem"                 # PEM 证书链

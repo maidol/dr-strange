@@ -335,7 +335,8 @@ network is usually the more privileged one, so every non-routable address is
 refused: loopback, RFC-1918 private space, link-local (`169.254.0.0/16`, where
 cloud instance metadata services answer credentials), and the rest. The check is
 made on the **resolved address**, not the hostname, and repeated at every
-redirect hop.
+redirect hop; an IPv6 address that carries an IPv4 one inside it (v4-mapped,
+6to4, Teredo, NAT64's `64:ff9b::/96`) is judged as that IPv4 address.
 
 `allow_private` re-permits specific CIDR blocks — `["10.0.0.0/8"]` to read an
 intranet wiki — and is the one deliberate exception to that. It is not a switch
