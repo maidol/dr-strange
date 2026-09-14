@@ -300,9 +300,11 @@ concept.
    access when no token is configured, and it keys off *allowed origin*, not
    *loopback*. Once an operator adds the LAN UI to `DRSG_ALLOWED_ORIGINS` — which
    requirement 1 forces — an unset `DRSG_TOKEN` means any LAN browser has
-   unauthenticated write access. Gate the fallback on a loopback bind.
+   unauthenticated write access. *Shipped* (§4.1): the fallback is gated on a
+   loopback bind, and a tokenless server refuses to bind anywhere else.
 3. **`DRSG_ALLOWED_ORIGINS` must name the ops UI origin**, or the dashboard
-   cannot call its own backend.
+   cannot call its own backend. The page the LAN UI loads carries no token
+   (§4.1); the browser asks for it and sends it as a bearer credential.
 
 **Accepted limits.** One process owns the database, so it is a single point of
 failure and a throughput ceiling for *writes* — `write_gate` serializes them,
