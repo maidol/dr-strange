@@ -3,7 +3,7 @@
 **Status**: shipped — `drsg-mcp` stdio (M4), streamable HTTP on `drsg serve`
 (ROADMAP §10), `digest` tool live, agent verbs landed (§11), stdio relays to a
 declared server when one is running ·
-last revised 2026-09-02
+last revised 2026-09-14
 
 **M4 landed** the `drsg-mcp` stdio server on the **official `rmcp` SDK**
 (resolving arch's hand-rolled-vs-SDK question toward the SDK: spec-correct
@@ -91,6 +91,10 @@ then narrow, then act:
   already runs as the user (stdio, the CLI — `local_files`), and on the
   shared `/mcp` only when it lies inside the attached tree. Nothing attached
   and no local files: nothing is read. `digest { path }` remains stdio-only.
+- **Every tool call ends.** The tool gate queues rather than rejects, but
+  under one per-call deadline covering the wait and the run
+  (`with_tool_deadline`; default 300 s; `DRSG_MCP_TOOL_DEADLINE_SECS`, `0`
+  disables). Past it the call is a *tool-level* error saying whether the
 - **The stdio binary bounds history like a served one.** `drsg-mcp` opens
   the database with `DEFAULT_RETAIN_COMMITS` (20; the web crate's constant
   is this one) unless `DRSG_RETAIN_COMMITS` says otherwise (`0` keeps every
@@ -113,8 +117,6 @@ then narrow, then act:
   effective user or writable by everyone is passed over: what it names
   receives the host's session and the `Authorization` it carries.
 - Optional read-only mode (`--read-only`) for exploration deployments.
-- Per-request deadlines map to executor cancellation (03 §8.6) so a runaway
-  traversal cannot hang the host.
 
 ## 4. Why the catalog matters here
 

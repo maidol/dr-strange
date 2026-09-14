@@ -143,6 +143,12 @@ names when the plane records none of its own):
 | `history` | the repository behind the code: where HEAD is, what the branches and tags point at, what was rebased, and the newest commits |
 | `wire` | what serves an HTTP path and what asks for it, matched across every language in the plane — and across the planes it attaches |
 
+`grep` and `snippet` open files only inside the tree they belong to — the
+directory the server watches, or the one a plane was digested from — and refuse
+a path that leaves it (`..`, an absolute path, a symlink out of the checkout);
+see [Chapter 8](./mcp.md) for how that differs between the stdio and the shared
+server.
+
 Every answer is compact one-fact-per-line text, sized for a model's context
 window rather than a terminal, and `context` keeps itself within a fixed
 budget by tightening its per-group caps and saying what it elided.
