@@ -68,6 +68,16 @@ txn.commit()?;
   changed more than it can see. Entities within the cap still collapse
   (create-then-delete cancels). A bulk load of a million nodes buffers 256
   tuples, not a million.
+- `commit()` returns `Ok` exactly when the KV commit is durable. Everything
+  it does afterwards — mirroring buffered events into the in-memory vector
+  and keyword registries, building the change-feed set — is applied in full,
+  one failure never skipping the rest, and can only log: an `Err` here would
+  make the caller take a committed write for a failed one. A vector-index
+  event that fails marks the registry *diverged*: it keeps serving (still
+  the better answer than none) but is never persisted at the current
+  sequence — `save_sidecars` withholds the `.hnsw` sidecar and removes the
+  stale one, `snapshot` embeds a fresh rebuild — so the next open rebuilds
+  from the KV, which is always the truth.
 
 ## 3. Reads and queries
 
