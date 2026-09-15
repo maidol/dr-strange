@@ -25,9 +25,12 @@ project or depend on it in place:
 ## Connecting and calling
 
 A client is constructed from a base URL and a token; the token defaults to the
-`DRSG_TOKEN` environment variable and rides each request as an
-`Authorization: Bearer` credential. Method names mirror the RPC method one to
-one, adapted to each language's convention:
+`DRSG_TOKEN` environment variable and rides each request — the WebSocket
+upgrade behind the change feed included — as an `Authorization: Bearer`
+credential, never in a URL. (The TypeScript client falls back to `?token=` on
+the socket where the standard `WebSocket` constructor cannot set headers — a
+browser window or worker, and Deno; Bun and Node send the header.) Method
+names mirror the RPC method one to one, adapted to each language's convention:
 
 | Language | Construct a client | Example call |
 |---|---|---|
