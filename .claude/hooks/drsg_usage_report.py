@@ -28,32 +28,7 @@ from pathlib import Path
 
 # Both the stdio server (`drsg`) and the watched one (`drsg-watch`) count: they
 # are the same graph reached two ways, and a session may have either attached.
-#
-# `drsg-events` does not. It is a local convention — cross-agent to-dos kept in
-# a memory plane — and its calls are bookkeeping, not questions put to a graph.
-# Counted in, it roughly doubled the figure for one repository, so a report read
-# as "is the graph being used" answered a different question than it looked like
-# it was answering. The lookahead rather than an allow-list keeps upstream's
-# meaning: any drsg server counts, except the one known not to be a graph.
-DIRECT_TOOL = re.compile(r"^mcp__drsg(?!-events)[\w-]*__(?P<verb>.+)$")
-# The router reaches another repository's graph with the same verbs under its
-# own name. Matching only the direct server is how this hub reported "the code
-# graph has not been asked anything yet" for a session that made six routed
-# calls -- and then printed the shell nudge on top of it. The same blind spot
-# was already fixed once in codegraph-usage.py (e95a820); this is the Stop hook
-# half of it.
-ROUTED_TOOL = re.compile(r"^mcp__codegraph__graph_(?P<verb>.+)$")
-
-
-def graph_verb(name: str) -> str | None:
-    """The verb of a graph tool call, or None for anything else.
-
-    Routed and direct calls share a bucket: `graph_context` and `context` are
-    the same question, and the line is a usage figure, not an audit of which
-    daemon answered.
-    """
-    match = DIRECT_TOOL.match(name) or ROUTED_TOOL.match(name)
-    return match.group("verb") if match else None
+TOOL_PREFIX = re.compile(r"^mcp__drsg[\w-]*__(?P<verb>.+)$")
 
 # Characters per token. A rough divisor for English prose and JSON alike; the
 # figure it produces is only ever shown with a `~`.
@@ -226,9 +201,10 @@ def scan(transcript: Path, since_line: int) -> tuple[Tally, Tally, int]:
                             for tally in tallies:
                                 tally.shell_reads += 1
                         continue
-                    verb = graph_verb(block.get("name") or "")
-                    if not verb:
+                    match = TOOL_PREFIX.match(block.get("name") or "")
+                    if not match:
                         continue
+                    verb = match.group("verb")
                     for tally in tallies:
                         tally.calls[verb] = tally.calls.get(verb, 0) + 1
                     if block.get("id"):

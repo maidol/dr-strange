@@ -12,7 +12,6 @@
 - [MCP](./mcp.md)
 - [Plugins](./plugins.md)
 - [Coding Agent](./coding-agent.md)
-- [The Agent Kit](./drsg-agent-kit-guide.md)
 - [Architecture](./architecture.md)
 - [Appendix A: JSON-RPC API List](./appendix-a.md)
 - [Appendix B: Query-Language Grammar](./appendix-b.md)

@@ -22,15 +22,3 @@ logs/
 # checked out here so the two can be worked on together. Its history is its
 # own: a plugin ships a fix without waiting for a database release.
 extensions/
-
-# The memory layer's per-project runtime dir (scripts/memory-layer): daemon
-# address, API token, recall telemetry. Machine-local, and it holds a secret.
-.drsg/
-
-# Python bytecode from the memory layer's hooks and scripts.
-__pycache__/
-*.pyc
-
-# Install bundles built by scripts/pack.sh — regenerable from any checkout,
-# and a tarball in the history is a copy that can drift from its source.
-/dist/
