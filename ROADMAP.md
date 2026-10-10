@@ -1137,6 +1137,41 @@ a tracked `.env` that a digest would have passed over.
 
 ---
 
+## 15. Edge properties a query can read — relationship variables in Cypher
+
+**Status.** TODO. An edge already carries the facts a reader most wants to
+filter on, and no query can reach any of them: `_resolved_by` / `_confidence` /
+`_ref` on a `CALLS` edge say how that call was bound, `role` on `USES_TYPE`
+says whether a type is a field, a parameter or a return, and the java plugin's
+Spring work (§11, issue #46) puts an injection point's evidence and an
+annotation's arguments there as well. Cypher refuses the syntax outright —
+*"relationship variables aren't supported (`[r:T]`); an edge can't be bound,
+returned or filtered on yet"* — so every one of those facts is visible to
+`context` and `get_node` and invisible to a query.
+
+**Scope.**
+
+- Bind a relationship (`MATCH (a)-[r:CALLS]->(b)`), return it, and project its
+  properties (`RETURN r._confidence`).
+- Filter on them (`WHERE r.role = "field"`), on a typed hop and an untyped one.
+- The plan IR gains the same, so `plane.query` and the five SDKs reach it with
+  the language rather than after it.
+
+**Why AI-native.** The stamps are how a plugin states the bounds of its own
+answer — written by the source, inferred from a receiver's type, or wired by a
+DI container. An agent asking *which of these calls are inferred rather than
+written* is asking a graph question, and today it has to read every edge
+through `context` to answer it.
+
+**Forks to settle.** Whether a bound edge becomes a first-class row value (a
+map carrying its endpoints) or only its properties are projectable; whether a
+relationship variable may repeat across a path, which openCypher forbids; and
+what a cross-variable predicate costs, since `WHERE` holds one pattern
+variable today — the same limit that keeps a name match between two bound
+nodes (`WHERE m.name = d.name`) out of reach.
+
+---
+
 ## Low priority (deferred — not first-class for now)
 
 These are real graph-DB table stakes but explicitly **not** a current priority.
