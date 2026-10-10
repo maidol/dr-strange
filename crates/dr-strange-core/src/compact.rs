@@ -809,13 +809,18 @@ fn render_path(plane: &PlaneHandle<'_>, path: &[crate::NodeId], out: &mut String
 
 /// `impact` — the blast radius: what reaches this symbol, breadth-first over
 /// INCOMING structural edges (CALLS, REFERENCES, INSTANTIATES, IMPORTS,
-/// EXTENDS, IMPLEMENTS, USES_TYPE), grouped by distance, counts always exact
-/// even when listings elide.
+/// EXTENDS, IMPLEMENTS, USES_TYPE, READS, WRITES, USES_COLUMN), grouped by
+/// distance, counts always exact even when listings elide.
 pub fn impact(plane: &PlaneHandle<'_>, name: &str, depth: usize) -> Result<String> {
     const LEVEL_CAP: usize = 20;
     // `USES_TYPE` is what makes this verb answerable *about a type*: without
     // it the walk saw only who constructed one, and reported a fraction of
-    // the radius as if it were the whole of it.
+    // the radius as if it were the whole of it. `READS` / `WRITES` /
+    // `USES_COLUMN` are the same statement about a table and a column, which
+    // is what "who would a schema change break" asks.
+    //
+    // Containment is deliberately absent — `CONTAINS` and `HAS_COLUMN` say a
+    // thing is *part of* another, not that it would break with it.
     const IMPACT_EDGES: &[&str] = &[
         "CALLS",
         "REFERENCES",
@@ -824,6 +829,9 @@ pub fn impact(plane: &PlaneHandle<'_>, name: &str, depth: usize) -> Result<Strin
         "EXTENDS",
         "IMPLEMENTS",
         "USES_TYPE",
+        "READS",
+        "WRITES",
+        "USES_COLUMN",
     ];
     let node = match resolve(plane, name)? {
         Resolved::One(n) => n,
@@ -2259,6 +2267,52 @@ mod tests {
             out.contains("[CALLS]") && out.contains("[REFERENCES]"),
             "{out}"
         );
+    }
+
+    /// What a schema change would break: a column is reached from the
+    /// statements that read it, and through them from the method each
+    /// implements. Containment is not reach — the table a column belongs to
+    /// does not break with it.
+    #[test]
+    fn impact_on_a_column_reaches_the_statements_that_use_it() {
+        let db = Database::in_memory().unwrap();
+        let p = db.create_plane("code", Properties::new()).unwrap();
+        let mut txn = p.write().unwrap();
+        let column = txn
+            .create_node_with_key("orders.total", &["Column"], Properties::new())
+            .unwrap();
+        let table = txn
+            .create_node_with_key("orders", &["Table"], Properties::new())
+            .unwrap();
+        let select = txn
+            .create_node_with_key("m.xml#byId", &["Statement"], Properties::new())
+            .unwrap();
+        let method = txn
+            .create_node_with_key("com.acme.M.byId", &["Method"], Properties::new())
+            .unwrap();
+        txn.create_edge(table, column, "HAS_COLUMN", Properties::new())
+            .unwrap();
+        txn.create_edge(select, column, "USES_COLUMN", Properties::new())
+            .unwrap();
+        txn.create_edge(select, table, "READS", Properties::new())
+            .unwrap();
+        txn.create_edge(select, method, "IMPLEMENTS", Properties::new())
+            .unwrap();
+        txn.commit().unwrap();
+        let plane = db.plane("code").unwrap();
+
+        let out = impact(&plane, "orders.total", 3).unwrap();
+        assert!(out.contains("m.xml#byId"), "the statement reads it: {out}");
+        assert!(out.contains("[USES_COLUMN]"), "{out}");
+        assert!(
+            !out.contains("[HAS_COLUMN]"),
+            "containment is not blast radius: {out}"
+        );
+
+        // And the table, through the statement that reads it.
+        let table_out = impact(&plane, "orders", 3).unwrap();
+        assert!(table_out.contains("[READS]"), "{table_out}");
+        assert!(table_out.contains("m.xml#byId"), "{table_out}");
     }
 
     #[test]
