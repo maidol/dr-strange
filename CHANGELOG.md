@@ -4,6 +4,42 @@ All notable changes to Dr Strange are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.17.1] - 2026-10-11
+
+### Security
+
+- **The plugin sandbox moves to wasmtime 48.0.5**, which closes seven
+  advisories published after 48.0.3 shipped in 2.17.0: wrongly typed
+  WebAssembly tag imports and missing rooting across `try_call`, each
+  corrupting the GC heap
+  ([RUSTSEC-2026-0325], [RUSTSEC-2026-0326]); an unvalidated async-lifted
+  callback result count overflowing the native stack ([RUSTSEC-2026-0327]);
+  WASI preview 0's `poll_oneoff` circumventing fuel accounting
+  ([RUSTSEC-2026-0321]); excessive host allocation for a guest without stdio
+  ([RUSTSEC-2026-0322]); and two more ([RUSTSEC-2026-0323],
+  [RUSTSEC-2026-0324]). drsg runs third-party parser plugins inside that
+  sandbox, so these are the class of bug it exists to contain. A patch release
+  of the same minor: no API and no minimum-Rust change.
+
+[RUSTSEC-2026-0321]: https://rustsec.org/advisories/RUSTSEC-2026-0321
+[RUSTSEC-2026-0322]: https://rustsec.org/advisories/RUSTSEC-2026-0322
+[RUSTSEC-2026-0323]: https://rustsec.org/advisories/RUSTSEC-2026-0323
+[RUSTSEC-2026-0324]: https://rustsec.org/advisories/RUSTSEC-2026-0324
+[RUSTSEC-2026-0325]: https://rustsec.org/advisories/RUSTSEC-2026-0325
+[RUSTSEC-2026-0326]: https://rustsec.org/advisories/RUSTSEC-2026-0326
+[RUSTSEC-2026-0327]: https://rustsec.org/advisories/RUSTSEC-2026-0327
+
+### Fixed
+
+- **`impact` reaches what a schema change would break.** The verb walks a fixed
+  set of incoming structural edges, and a table's and a column's were not in it:
+  `READS`, `WRITES` and `USES_COLUMN` were in the graph and invisible to the
+  question they answer, so `impact` on a column reported nothing affected while
+  the statements that read it sat one edge away. The same under-reporting
+  `USES_TYPE` was added to fix, for the facts the `xml` plugin's MyBatis reader
+  writes. Containment stays out: `HAS_COLUMN`, like `CONTAINS`, says a thing is
+  part of another, not that it breaks with it.
+
 ## [2.17.0] - 2026-09-30
 
 ### Security
