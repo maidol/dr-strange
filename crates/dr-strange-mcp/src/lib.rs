@@ -1166,6 +1166,10 @@ struct DetachReq {
 struct AttachmentsReq {
     #[serde(default = "default_plane")]
     plane: String,
+    /// Ask each attachment served elsewhere whether it answers now, rather
+    /// than listing it as recorded.
+    #[serde(default)]
+    probe: bool,
 }
 
 /// `fathom`'s request: one symbol and how wide a region around it.
@@ -2894,14 +2898,18 @@ impl DrStrange {
         be asked: the name, the plane it names on the far side, and where that \
         is. Says which local attachment names no plane on this instance, so a \
         cross-graph answer that came back empty can be told from one that was \
-        never going to be asked.")]
+        never going to be asked. Set `probe` to ask each one served \
+        elsewhere whether it answers now; without it they are listed as \
+        recorded, since contacting every URL waits on every URL.")]
     async fn attachments(
         &self,
         Parameters(req): Parameters<AttachmentsReq>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let remote = self.remote.clone();
         self.run("attachments", move |db| {
+            let probe = remote.as_deref().filter(|_| req.probe);
             Ok(Value::String(dr_strange_core::attach::attachments(
-                db, &req.plane,
+                db, &req.plane, probe,
             )?))
         })
         .await

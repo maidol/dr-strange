@@ -281,8 +281,24 @@ pub fn detach(db: &Database, plane: &str, name: &str) -> Result<String> {
     }
 }
 
+/// The cheapest question that proves an attachment answers: one row from the
+/// plane it names.
+///
+/// A plane that is not there is an error from the far side, so reaching it at
+/// all is the whole probe — and a plane of any size answers it in one row
+/// rather than with itself.
+fn reachable() -> LogicalPlan {
+    let mut plan = LogicalPlan::new(crate::compute::Source::ScanAll);
+    plan.push(crate::compute::plan::Step::Limit(1));
+    plan
+}
+
 /// What `plane` attaches, and whether each is there to be asked.
-pub fn attachments(db: &Database, plane: &str) -> Result<String> {
+///
+/// A remote attachment is listed as recorded unless `probe` is given: a
+/// listing that contacts every URL waits on every URL, and the reason a
+/// `wire` did not cross is already in that `wire`'s own answer.
+pub fn attachments(db: &Database, plane: &str, probe: Option<&dyn Remote>) -> Result<String> {
     let handle = db.plane(plane)?;
     let have = Attachments::of(&handle)?;
     if have.list().is_empty() && have.unreadable() == 0 {
@@ -300,7 +316,10 @@ pub fn attachments(db: &Database, plane: &str) -> Result<String> {
         .unwrap_or(0);
     let mut out = format!("plane '{plane}' attaches {}\n", have.list().len());
     for a in have.list() {
-        out.push_str(&row(a, width, &here));
+        match probe.filter(|_| !a.is_local()) {
+            Some(reader) => out.push_str(&asked(a, width, reader)),
+            None => out.push_str(&row(a, width, &here)),
+        }
     }
     let missing = have
         .list()
@@ -337,6 +356,27 @@ fn instead(now: &Attachment, was: Option<Attachment>, here: &[String]) -> String
         Some(was) => format!("  replaced\n{}", row(&was, was.name.chars().count(), here)),
         None => String::new(),
     }
+}
+
+/// One remote attachment as a line, having actually asked it something.
+fn asked(a: &Attachment, width: usize, reader: &dyn Remote) -> String {
+    let url = a.url.as_deref().unwrap_or("");
+    let said = match reader.nodes(a, &reachable()) {
+        Ok(_) => "answers".to_string(),
+        Err(why) => {
+            // This line already says where it is, and a reason that repeats
+            // the URL pushes the cause off the end of it.
+            let head = format!("{url}/rpc");
+            let terse = why
+                .strip_prefix(&head)
+                .map(|rest| rest.trim_start_matches([':', ' ']).to_string());
+            terse.unwrap_or(why)
+        }
+    };
+    format!(
+        "  {:width$}  \u{2192} plane '{}' at {url}   {said}\n",
+        a.name, a.plane
+    )
 }
 
 /// The planes on this instance, by name.
@@ -379,6 +419,73 @@ mod tests {
         let db = plane();
         db.create_plane("web", Properties::new()).unwrap();
         db
+    }
+
+    /// A reader that answers, and one that cannot.
+    struct Answers(bool);
+    impl Remote for Answers {
+        fn nodes(
+            &self,
+            at: &Attachment,
+            _: &LogicalPlan,
+        ) -> std::result::Result<Vec<NodeRecord>, String> {
+            match self.0 {
+                true => Ok(Vec::new()),
+                false => Err(format!(
+                    "{}/rpc: io: Connection refused",
+                    at.url.as_deref().unwrap_or_default()
+                )),
+            }
+        }
+    }
+
+    /// Listing contacts nothing by default, and says exactly that — a listing
+    /// that asked every URL would wait on every URL.
+    #[test]
+    fn a_listing_contacts_nothing_unless_asked() {
+        let db = plane();
+        attach(
+            &db,
+            "code",
+            Attachment::new("far", None, Some("http://h:1".into())),
+        )
+        .unwrap();
+        let out = attachments(&db, "code", None).unwrap();
+        assert!(out.contains("not contacted"), "{out}");
+
+        let out = attachments(&db, "code", Some(&Answers(true))).unwrap();
+        assert!(out.contains("   answers"), "{out}");
+        assert!(!out.contains("not contacted"), "{out}");
+    }
+
+    /// Probed and refused: the reason stands where "not contacted" was, with
+    /// the URL left to the part of the line that already names it.
+    #[test]
+    fn a_probe_that_fails_says_why_without_repeating_the_url() {
+        let db = plane();
+        attach(
+            &db,
+            "code",
+            Attachment::new("far", None, Some("http://h:1".into())),
+        )
+        .unwrap();
+        let out = attachments(&db, "code", Some(&Answers(false))).unwrap();
+        assert!(
+            out.contains("at http://h:1   io: Connection refused"),
+            "{out}"
+        );
+        assert_eq!(out.matches("http://h:1").count(), 1, "said twice: {out}");
+    }
+
+    /// A local attachment is never contacted, probe or not: it is on this
+    /// instance, and the listing already says whether that plane is here.
+    #[test]
+    fn a_probe_leaves_a_local_attachment_alone() {
+        let db = pair();
+        attach(&db, "code", Attachment::new("web", None, None)).unwrap();
+        let probed = attachments(&db, "code", Some(&Answers(false))).unwrap();
+        assert_eq!(probed, attachments(&db, "code", None).unwrap());
+        assert!(probed.contains("on this instance"), "{probed}");
     }
 
     /// A link points one way, so a pair on one instance is two records —
@@ -641,7 +748,7 @@ mod tests {
         )
         .unwrap();
         db.drop_plane(db.plane("web").unwrap().id()).unwrap();
-        let out = attachments(&db, "code").unwrap();
+        let out = attachments(&db, "code", None).unwrap();
         // The column is padded in characters, as every other listing here pads
         // it, so a wide glyph still sits a cell short.
         assert_eq!(
@@ -656,7 +763,7 @@ mod tests {
     #[test]
     fn a_plane_with_nothing_attached_says_what_to_do() {
         let db = plane();
-        let out = attachments(&db, "code").unwrap();
+        let out = attachments(&db, "code", None).unwrap();
         assert!(out.starts_with("plane 'code' attaches nothing"), "{out}");
     }
 
@@ -671,7 +778,7 @@ mod tests {
             );
         })
         .unwrap();
-        let out = attachments(&db, "code").unwrap();
+        let out = attachments(&db, "code", None).unwrap();
         assert!(out.contains("plane 'code' attaches 0"), "{out}");
         assert!(out.contains("ignored 1 entry(s)"), "{out}");
     }

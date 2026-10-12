@@ -261,6 +261,10 @@ enum Command {
     Attachments {
         #[arg(long, default_value = "startup")]
         plane: String,
+        /// Ask each attachment served elsewhere whether it answers now,
+        /// rather than listing it as recorded.
+        #[arg(long)]
+        probe: bool,
     },
     /// What serves an HTTP path, and what asks for it — matched across every
     /// language in the plane, computed now and never stored.
@@ -1243,7 +1247,10 @@ fn run_attach_verbs(
             },
         )?,
         Command::Detach { name, plane } => attach::detach(&db, &plane, &name)?,
-        Command::Attachments { plane } => attach::attachments(&db, &plane)?,
+        Command::Attachments { plane, probe } => {
+            let reader = dr_strange_web::attach::Reader::from_env(config::network(cfg)?);
+            attach::attachments(&db, &plane, probe.then_some(&reader as &dyn attach::Remote))?
+        }
         _ => unreachable!("every Command variant belongs to a dispatch group"),
     };
     write!(out, "{said}")?;
