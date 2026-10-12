@@ -513,3 +513,40 @@ struct json_object *drsg_plane_delete(drsg_client *c, const char *plane, drsg_er
     return rc == 0 ? result : NULL;
 }
 
+/* Record a plane this one may ask: one on this instance, or one another drsg serves. (access: admin) */
+struct json_object *drsg_plane_attach(drsg_client *c, const char *plane, const char *name, const drsg_plane_attach_opts *opts, drsg_error *err) {
+    struct json_object *p = json_object_new_object();
+    json_object_object_add(p, "plane", json_object_new_string(plane));
+    json_object_object_add(p, "name", json_object_new_string(name));
+    if (opts) {
+        if (opts->url) json_object_object_add(p, "url", json_object_new_string(opts->url));
+        if (opts->as) json_object_object_add(p, "as", json_object_new_string(opts->as));
+        if (opts->both) json_object_object_add(p, "both", json_object_new_boolean(*opts->both));
+    }
+    struct json_object *result = NULL;
+    int rc = drsg_call(c, "plane.attach", p, &result, err);
+    if (p) json_object_put(p);
+    return rc == 0 ? result : NULL;
+}
+
+/* Forget an attachment by the name it was made under (an absent name is a no-op). (access: admin) */
+struct json_object *drsg_plane_detach(drsg_client *c, const char *plane, const char *name, drsg_error *err) {
+    struct json_object *p = json_object_new_object();
+    json_object_object_add(p, "plane", json_object_new_string(plane));
+    json_object_object_add(p, "name", json_object_new_string(name));
+    struct json_object *result = NULL;
+    int rc = drsg_call(c, "plane.detach", p, &result, err);
+    if (p) json_object_put(p);
+    return rc == 0 ? result : NULL;
+}
+
+/* What a plane attaches, as recorded; nothing is contacted. (access: read) */
+struct json_object *drsg_plane_attachments(drsg_client *c, const char *plane, drsg_error *err) {
+    struct json_object *p = json_object_new_object();
+    json_object_object_add(p, "plane", json_object_new_string(plane));
+    struct json_object *result = NULL;
+    int rc = drsg_call(c, "plane.attachments", p, &result, err);
+    if (p) json_object_put(p);
+    return rc == 0 ? result : NULL;
+}
+

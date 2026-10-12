@@ -880,6 +880,47 @@ public class Drsg extends Client {
         }
     }
 
+    public record PlaneAttachParams(
+            String plane,
+            String name,
+            String url,
+            String as,
+            Boolean both) {
+
+        public static PlaneAttachParams of(String plane, String name) {
+            return new PlaneAttachParams(plane, name, null, null, null);
+        }
+
+        public PlaneAttachParams withUrl(String url) {
+            return new PlaneAttachParams(plane, name, url, as, both);
+        }
+
+        public PlaneAttachParams withAs(String as) {
+            return new PlaneAttachParams(plane, name, url, as, both);
+        }
+
+        public PlaneAttachParams withBoth(Boolean both) {
+            return new PlaneAttachParams(plane, name, url, as, both);
+        }
+    }
+
+    public record PlaneDetachParams(
+            String plane,
+            String name) {
+
+        public static PlaneDetachParams of(String plane, String name) {
+            return new PlaneDetachParams(plane, name);
+        }
+    }
+
+    public record PlaneAttachmentsParams(
+            String plane) {
+
+        public static PlaneAttachmentsParams of(String plane) {
+            return new PlaneAttachmentsParams(plane);
+        }
+    }
+
     /** This OpenRPC service description. (access: read) */
     public Map<String, Object> rpcDiscover() throws DrsgException {
         return call("rpc.discover", null, new TypeReference<Map<String, Object>>() {});
@@ -1058,6 +1099,21 @@ public class Drsg extends Client {
     /** Drop a plane and everything on it (the startup plane cannot be dropped). (access: admin) */
     public Deleted planeDelete(PlaneDeleteParams params) throws DrsgException {
         return call("plane.delete", params, new TypeReference<Deleted>() {});
+    }
+
+    /** Record a plane this one may ask: one on this instance, or one another drsg serves. (access: admin) */
+    public Map<String, Object> planeAttach(PlaneAttachParams params) throws DrsgException {
+        return call("plane.attach", params, new TypeReference<Map<String, Object>>() {});
+    }
+
+    /** Forget an attachment by the name it was made under (an absent name is a no-op). (access: admin) */
+    public Map<String, Object> planeDetach(PlaneDetachParams params) throws DrsgException {
+        return call("plane.detach", params, new TypeReference<Map<String, Object>>() {});
+    }
+
+    /** What a plane attaches, as recorded; nothing is contacted. (access: read) */
+    public Map<String, Object> planeAttachments(PlaneAttachmentsParams params) throws DrsgException {
+        return call("plane.attachments", params, new TypeReference<Map<String, Object>>() {});
     }
 
 }

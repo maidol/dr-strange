@@ -243,6 +243,9 @@ const METHODS: &[&str] = &[
     "plane.rename",
     "plane.set_props",
     "plane.delete",
+    "plane.attach",
+    "plane.detach",
+    "plane.attachments",
 ];
 
 /// Dispatch one method. Every arm declares the [`Access`] it requires via the
@@ -315,6 +318,11 @@ fn dispatch_method(
         "plane.rename" => guarded!(Access::Admin, methods::plane_rename(ctx, params)),
         "plane.set_props" => guarded!(Access::Admin, methods::plane_set_props(ctx, params)),
         "plane.delete" => guarded!(Access::Admin, methods::plane_delete(ctx, params)),
+        // Plane lifecycle, like the four above: an attachment is the plane's
+        // own property, and this is the gate that validates what goes in it.
+        "plane.attach" => guarded!(Access::Admin, methods::plane_attach(ctx, params)),
+        "plane.detach" => guarded!(Access::Admin, methods::plane_detach(ctx, params)),
+        "plane.attachments" => guarded!(Access::Read, methods::plane_attachments(ctx, params)),
         other => Err(RpcError::method_not_found(other)),
     }
 }
@@ -1216,6 +1224,23 @@ mod tests {
         assert_eq!(resp["result"]["nodes_written"], 0);
     }
 
+    /// Attaching is gated like the other plane-lifecycle writes: a caller with
+    /// no credential cannot record one, which is what makes an attachment URL
+    /// operator-named rather than caller-named.
+    #[test]
+    fn attach_is_gated_like_the_other_plane_writes() {
+        let db = seeded();
+        let token = SharedToken::new(Some("s3cret".into()));
+        const ATTACH: &str = r#"{"jsonrpc":"2.0","method":"plane.attach","params":{"plane":"startup","name":"web","url":"http://h:1"},"id":1}"#;
+
+        let denied = call_as(&db, &Auth::new(&token, native(None)), ATTACH).unwrap();
+        assert_eq!(err_code(&denied), -32001);
+
+        let ok = call_as(&db, &Auth::new(&token, native(Some("s3cret"))), ATTACH).unwrap();
+        assert!(ok.get("error").is_none(), "unexpected error: {ok}");
+        assert_eq!(ok["result"]["attached"]["url"], "http://h:1");
+    }
+
     #[test]
     fn reads_are_gated_when_a_token_is_configured() {
         let db = seeded();
@@ -1411,6 +1436,97 @@ mod tests {
                 .unwrap()
                 .iter()
                 .any(|p| p["name"] == "notes")
+        );
+    }
+
+    /// Attach, list, replace and detach over the RPC — the surface the six
+    /// SDKs generate from, which returns the record itself rather than the
+    /// line a terminal would print.
+    #[test]
+    fn plane_attach_records_and_detaches() {
+        let db = seeded();
+        call(
+            &db,
+            r#"{"jsonrpc":"2.0","method":"plane.create","params":{"name":"web"},"id":1}"#,
+        )
+        .unwrap();
+
+        let made = call(
+            &db,
+            r#"{"jsonrpc":"2.0","method":"plane.attach","params":{"plane":"startup","name":"web"},"id":2}"#,
+        )
+        .unwrap();
+        assert!(made.get("error").is_none(), "{made}");
+        assert_eq!(made["result"]["attached"]["name"], "web");
+        assert_eq!(made["result"]["attached"]["plane"], "web");
+        assert!(made["result"]["attached"]["url"].is_null(), "{made}");
+        assert!(made["result"]["replaced"].is_null(), "{made}");
+
+        let listed = call(
+            &db,
+            r#"{"jsonrpc":"2.0","method":"plane.attachments","params":{"plane":"startup"},"id":3}"#,
+        )
+        .unwrap();
+        assert_eq!(listed["result"]["attachments"].as_array().unwrap().len(), 1);
+        assert_eq!(listed["result"]["unreadable"], 0);
+
+        // Attaching the same name again replaces, and says what was there.
+        let again = call(
+            &db,
+            r#"{"jsonrpc":"2.0","method":"plane.attach","params":{"plane":"startup","name":"web","url":"http://h:1","as":"ui"},"id":4}"#,
+        )
+        .unwrap();
+        assert_eq!(again["result"]["attached"]["url"], "http://h:1");
+        assert_eq!(again["result"]["attached"]["plane"], "ui");
+        assert_eq!(again["result"]["replaced"]["plane"], "web");
+
+        let gone = call(
+            &db,
+            r#"{"jsonrpc":"2.0","method":"plane.detach","params":{"plane":"startup","name":"web"},"id":5}"#,
+        )
+        .unwrap();
+        assert_eq!(gone["result"]["detached"]["name"], "web");
+        // Absent is a clean no-op, as `plane.delete` is.
+        let twice = call(
+            &db,
+            r#"{"jsonrpc":"2.0","method":"plane.detach","params":{"plane":"startup","name":"web"},"id":6}"#,
+        )
+        .unwrap();
+        assert!(twice.get("error").is_none(), "{twice}");
+        assert!(twice["result"]["detached"].is_null(), "{twice}");
+    }
+
+    /// `both` records the pair in one call, and the reply names both sides.
+    #[test]
+    fn plane_attach_both_reports_each_side() {
+        let db = seeded();
+        call(
+            &db,
+            r#"{"jsonrpc":"2.0","method":"plane.create","params":{"name":"web"},"id":1}"#,
+        )
+        .unwrap();
+        let made = call(
+            &db,
+            r#"{"jsonrpc":"2.0","method":"plane.attach","params":{"plane":"startup","name":"web","both":true},"id":2}"#,
+        )
+        .unwrap();
+        assert_eq!(made["result"]["back"]["plane"], "web");
+        assert_eq!(made["result"]["back"]["attached"]["name"], "startup");
+
+        // A URL has no near side to write, and the refusal says where to run
+        // it. -32000, the code `core_err` gives every caller-fault core error.
+        let refused = call(
+            &db,
+            r#"{"jsonrpc":"2.0","method":"plane.attach","params":{"plane":"startup","name":"far","url":"http://h:1","both":true},"id":3}"#,
+        )
+        .unwrap();
+        assert_eq!(err_code(&refused), -32000);
+        assert!(
+            refused["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("run `attach` there"),
+            "{refused}"
         );
     }
 

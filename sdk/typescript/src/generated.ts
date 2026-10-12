@@ -258,4 +258,19 @@ export class Drsg extends Client {
   planeDelete(params: { plane: string }): Promise<Deleted> {
     return this._call("plane.delete", params) as Promise<Deleted>;
   }
+
+  /** Record a plane this one may ask: one on this instance, or one another drsg serves. (access: admin) */
+  planeAttach(params: { plane: string; name: string; url?: string; as?: string; both?: boolean }): Promise<Record<string, unknown>> {
+    return this._call("plane.attach", params) as Promise<Record<string, unknown>>;
+  }
+
+  /** Forget an attachment by the name it was made under (an absent name is a no-op). (access: admin) */
+  planeDetach(params: { plane: string; name: string }): Promise<Record<string, unknown>> {
+    return this._call("plane.detach", params) as Promise<Record<string, unknown>>;
+  }
+
+  /** What a plane attaches, as recorded; nothing is contacted. (access: read) */
+  planeAttachments(params: { plane: string }): Promise<Record<string, unknown>> {
+    return this._call("plane.attachments", params) as Promise<Record<string, unknown>>;
+  }
 }

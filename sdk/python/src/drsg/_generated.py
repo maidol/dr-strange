@@ -502,3 +502,35 @@ class Drsg(_Client):
         _p: dict = {}
         _p["plane"] = plane
         return self._call("plane.delete", _p)
+
+    def plane_attach(self, plane, name, url=None, as_=None, both=None) -> Any:
+        """Record a plane this one may ask: one on this instance, or one another drsg serves.
+
+        Access: admin."""
+        _p: dict = {}
+        _p["plane"] = plane
+        _p["name"] = name
+        if url is not None:
+            _p["url"] = url
+        if as_ is not None:
+            _p["as"] = as_
+        if both is not None:
+            _p["both"] = both
+        return self._call("plane.attach", _p)
+
+    def plane_detach(self, plane, name) -> Any:
+        """Forget an attachment by the name it was made under (an absent name is a no-op).
+
+        Access: admin."""
+        _p: dict = {}
+        _p["plane"] = plane
+        _p["name"] = name
+        return self._call("plane.detach", _p)
+
+    def plane_attachments(self, plane) -> Any:
+        """What a plane attaches, as recorded; nothing is contacted.
+
+        Access: read."""
+        _p: dict = {}
+        _p["plane"] = plane
+        return self._call("plane.attachments", _p)

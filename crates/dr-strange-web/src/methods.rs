@@ -2983,6 +2983,100 @@ pub fn plane_delete(ctx: &Ctx<'_>, p: Value) -> Result<Value, RpcError> {
     Ok(jval!({ "deleted": true, "id": id.0 }))
 }
 
+// ---- attachments ----------------------------------------------------------
+
+/// One attachment as a caller reads it — the shape the plane records, so the
+/// reply and the stored fact cannot describe different things.
+fn attachment_json(a: &dr_strange_core::attach::Attachment) -> Value {
+    json::value_to_json(&a.to_prop())
+}
+
+#[derive(Deserialize)]
+pub struct AttachPlane {
+    plane: String,
+    name: String,
+    #[serde(default)]
+    url: Option<String>,
+    #[serde(rename = "as", default)]
+    as_plane: Option<String>,
+    #[serde(default)]
+    both: bool,
+}
+
+/// `plane.attach` — record a plane this one may ask: one on this instance, or
+/// one another drsg serves (`url`).
+///
+/// Plane lifecycle, like `plane.create` and `plane.set_props`: the record is
+/// the plane's own property, and writing it through this rather than through
+/// `plane.set_props` is what validates it and keeps two concurrent attaches
+/// from losing each other.
+pub fn plane_attach(ctx: &Ctx<'_>, p: Value) -> Result<Value, RpcError> {
+    let req: AttachPlane = params(p)?;
+    let made = app(dr_strange_core::attach::record(
+        ctx.db,
+        &req.plane,
+        dr_strange_core::attach::Attach {
+            at: dr_strange_core::attach::Attachment::new(req.name, req.as_plane, req.url),
+            both: req.both,
+        },
+    ))?;
+    let back = made.back.map(|(at, was)| {
+        jval!({
+            "plane": made.at.plane,
+            "attached": attachment_json(&at),
+            "replaced": was.as_ref().map(attachment_json),
+        })
+    });
+    Ok(jval!({
+        "plane": req.plane,
+        "attached": attachment_json(&made.at),
+        "replaced": made.replaced.as_ref().map(attachment_json),
+        "back": back,
+    }))
+}
+
+#[derive(Deserialize)]
+pub struct DetachPlane {
+    plane: String,
+    name: String,
+}
+
+/// `plane.detach` — forget an attachment by the name it was made under.
+/// Reports whether one was there (an absent name is a clean no-op, as
+/// `plane.delete` is).
+pub fn plane_detach(ctx: &Ctx<'_>, p: Value) -> Result<Value, RpcError> {
+    let req: DetachPlane = params(p)?;
+    let handle = ctx.plane(&req.plane)?;
+    let gone = app(dr_strange_core::attach::Attachments::detach(
+        &handle, &req.name,
+    ))?;
+    Ok(jval!({
+        "plane": req.plane,
+        "detached": gone.as_ref().map(attachment_json),
+    }))
+}
+
+#[derive(Deserialize)]
+pub struct PlaneAttachments {
+    plane: String,
+}
+
+/// `plane.attachments` — what a plane attaches, as recorded.
+///
+/// Nothing is contacted: each record carries the URL it names, so a caller
+/// asks that drsg itself — with `plane.query`, the method an attachment is
+/// read over anyway — rather than having this server ask on its behalf.
+pub fn plane_attachments(ctx: &Ctx<'_>, p: Value) -> Result<Value, RpcError> {
+    let req: PlaneAttachments = params(p)?;
+    let handle = ctx.plane(&req.plane)?;
+    let have = app(dr_strange_core::attach::Attachments::of(&handle))?;
+    Ok(jval!({
+        "plane": req.plane,
+        "attachments": have.list().iter().map(attachment_json).collect::<Vec<_>>(),
+        "unreadable": have.unreadable(),
+    }))
+}
+
 #[cfg(test)]
 mod change_feed_tests {
     use super::*;

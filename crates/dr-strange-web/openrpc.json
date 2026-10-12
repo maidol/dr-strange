@@ -1839,6 +1839,101 @@
           "$ref": "#/components/schemas/Deleted"
         }
       }
+    },
+    {
+      "name": "plane.attach",
+      "summary": "Record a plane this one may ask: one on this instance, or one another drsg serves.",
+      "x-access": "admin",
+      "params": [
+        {
+          "name": "plane",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "name",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "url",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "as",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "both",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
+        }
+      ],
+      "result": {
+        "name": "attached",
+        "schema": {
+          "type": "object"
+        }
+      }
+    },
+    {
+      "name": "plane.detach",
+      "summary": "Forget an attachment by the name it was made under (an absent name is a no-op).",
+      "x-access": "admin",
+      "params": [
+        {
+          "name": "plane",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "name",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "result": {
+        "name": "detached",
+        "schema": {
+          "type": "object"
+        }
+      }
+    },
+    {
+      "name": "plane.attachments",
+      "summary": "What a plane attaches, as recorded; nothing is contacted.",
+      "x-access": "read",
+      "params": [
+        {
+          "name": "plane",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "result": {
+        "name": "attachments",
+        "schema": {
+          "type": "object"
+        }
+      }
     }
   ],
   "components": {

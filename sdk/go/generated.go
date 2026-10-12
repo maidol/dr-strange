@@ -370,6 +370,23 @@ type PlaneDeleteParams struct {
 	Plane string `json:"plane"`
 }
 
+type PlaneAttachParams struct {
+	Plane string  `json:"plane"`
+	Name  string  `json:"name"`
+	URL   *string `json:"url,omitempty"`
+	As    *string `json:"as,omitempty"`
+	Both  *bool   `json:"both,omitempty"`
+}
+
+type PlaneDetachParams struct {
+	Plane string `json:"plane"`
+	Name  string `json:"name"`
+}
+
+type PlaneAttachmentsParams struct {
+	Plane string `json:"plane"`
+}
+
 // RpcDiscover This OpenRPC service description. (access: read)
 func (c *Client) RpcDiscover(ctx context.Context) (map[string]any, error) {
 	var out map[string]any
@@ -619,5 +636,26 @@ func (c *Client) PlaneSetProps(ctx context.Context, p PlaneSetPropsParams) (map[
 func (c *Client) PlaneDelete(ctx context.Context, p PlaneDeleteParams) (*Deleted, error) {
 	var out *Deleted
 	err := c.call(ctx, "plane.delete", p, &out)
+	return out, err
+}
+
+// PlaneAttach Record a plane this one may ask: one on this instance, or one another drsg serves. (access: admin)
+func (c *Client) PlaneAttach(ctx context.Context, p PlaneAttachParams) (map[string]any, error) {
+	var out map[string]any
+	err := c.call(ctx, "plane.attach", p, &out)
+	return out, err
+}
+
+// PlaneDetach Forget an attachment by the name it was made under (an absent name is a no-op). (access: admin)
+func (c *Client) PlaneDetach(ctx context.Context, p PlaneDetachParams) (map[string]any, error) {
+	var out map[string]any
+	err := c.call(ctx, "plane.detach", p, &out)
+	return out, err
+}
+
+// PlaneAttachments What a plane attaches, as recorded; nothing is contacted. (access: read)
+func (c *Client) PlaneAttachments(ctx context.Context, p PlaneAttachmentsParams) (map[string]any, error) {
+	var out map[string]any
+	err := c.call(ctx, "plane.attachments", p, &out)
 	return out, err
 }

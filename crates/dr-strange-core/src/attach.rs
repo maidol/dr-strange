@@ -73,7 +73,9 @@ impl Attachment {
         self.url.is_none()
     }
 
-    fn to_prop(&self) -> PropValue {
+    /// The attachment as it is recorded — the one shape, so a surface that
+    /// sends it to a caller sends what the plane holds.
+    pub fn to_prop(&self) -> PropValue {
         let mut m = Properties::new();
         m.insert(
             "name".into(),
@@ -205,12 +207,22 @@ impl From<Attachment> for Attach {
     }
 }
 
+/// What one [`record`] call put on the plane.
+pub struct Recorded {
+    /// The attachment now recorded.
+    pub at: Attachment,
+    /// What it replaced, when it replaced something else.
+    pub replaced: Option<Attachment>,
+    /// The reverse entry and what it replaced, when `both` was asked.
+    pub back: Option<(Attachment, Option<Attachment>)>,
+}
+
 /// Record an attachment on `plane`, replacing one of the same name.
 ///
 /// A local attachment is verified: the plane it names must be on this
 /// instance, and the error names the ones that are. A URL is recorded as
 /// given — nothing is contacted until a verb asks it something.
-pub fn attach(db: &Database, plane: &str, req: impl Into<Attach>) -> Result<String> {
+pub fn record(db: &Database, plane: &str, req: impl Into<Attach>) -> Result<Recorded> {
     let Attach { at: a, both } = req.into();
     if both && !a.is_local() {
         return Err(Error::InvalidArgument(format!(
@@ -243,15 +255,32 @@ pub fn attach(db: &Database, plane: &str, req: impl Into<Attach>) -> Result<Stri
     }
     let handle = db.plane(plane)?;
     let replaced = Attachments::attach(&handle, a.clone())?;
+    let back = match both {
+        false => None,
+        true => {
+            let back = Attachment::new(plane, None, None);
+            let was = Attachments::attach(&db.plane(&a.plane)?, back.clone())?;
+            Some((back, was))
+        }
+    };
+    Ok(Recorded {
+        at: a,
+        replaced,
+        back,
+    })
+}
+
+/// [`record`], as a reader reads it.
+pub fn attach(db: &Database, plane: &str, req: impl Into<Attach>) -> Result<String> {
+    let made = record(db, plane, req)?;
+    let here = planes(db)?;
     let mut out = format!("attached on plane '{plane}'\n");
-    out.push_str(&row(&a, a.name.chars().count(), &here));
-    out.push_str(&instead(&a, replaced, &here));
-    if both {
-        let back = Attachment::new(plane, None, None);
-        let replaced = Attachments::attach(&db.plane(&a.plane)?, back.clone())?;
-        out.push_str(&format!("also on plane '{}'\n", a.plane));
+    out.push_str(&row(&made.at, made.at.name.chars().count(), &here));
+    out.push_str(&instead(&made.at, made.replaced, &here));
+    if let Some((back, was)) = made.back {
+        out.push_str(&format!("also on plane '{}'\n", made.at.plane));
         out.push_str(&row(&back, back.name.chars().count(), &here));
-        out.push_str(&instead(&back, replaced, &here));
+        out.push_str(&instead(&back, was, &here));
     }
     Ok(out)
 }
@@ -287,7 +316,7 @@ pub fn detach(db: &Database, plane: &str, name: &str) -> Result<String> {
 /// A plane that is not there is an error from the far side, so reaching it at
 /// all is the whole probe — and a plane of any size answers it in one row
 /// rather than with itself.
-fn reachable() -> LogicalPlan {
+pub fn reachable() -> LogicalPlan {
     let mut plan = LogicalPlan::new(crate::compute::Source::ScanAll);
     plan.push(crate::compute::plan::Step::Limit(1));
     plan
