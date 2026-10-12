@@ -1,7 +1,8 @@
 const std = @import("std");
 
-// The Zig client binds the C library (sdk/c): it @cImports drsg.h and compiles
-// the C sources directly, linking system libcurl + json-c via pkg-config.
+// The Zig client binds the C library (sdk/c): it imports the translation of
+// drsg.h and compiles the C sources directly, linking system libcurl + json-c
+// via pkg-config.
 fn wireC(mod: *std.Build.Module, b: *std.Build) void {
     mod.link_libc = true;
     mod.addIncludePath(b.path("../c/include"));
@@ -16,6 +17,22 @@ fn wireC(mod: *std.Build.Module, b: *std.Build) void {
     mod.linkSystemLibrary("libcurl", .{ .use_pkg_config = .force });
 }
 
+// `drsg.h` as a Zig module, for `@import("c")`.
+//
+// A build step rather than `@cImport`, which Zig removed in 0.17 — the same
+// translation either way, named in `src/c.h` instead of inline in the source
+// that uses it.
+fn translateC(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Module {
+    const translated = b.addTranslateC(.{
+        .root_source_file = b.path("src/c.h"),
+        .target = target,
+        .optimize = optimize,
+    });
+    translated.addIncludePath(b.path("../c/include"));
+    translated.addSystemIncludePath(.{ .cwd_relative = "/usr/include" });
+    return translated.createModule();
+}
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -25,6 +42,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    drsg_mod.addImport("c", translateC(b, target, optimize));
     wireC(drsg_mod, b);
 
     // e2e test (drives a real drsg serve; started by test/run.sh).

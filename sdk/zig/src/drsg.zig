@@ -6,10 +6,7 @@
 //! HTTP is libcurl and JSON is json-c, both linked from the C library.
 const std = @import("std");
 
-pub const c = @cImport({
-    @cInclude("stdlib.h");
-    @cInclude("drsg.h");
-});
+pub const c = @import("c");
 
 /// Error code for a missing/invalid credential.
 pub const AUTH_ERROR_CODE = c.DRSG_AUTH_ERROR_CODE;

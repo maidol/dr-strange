@@ -3,10 +3,12 @@
 A Zig client for a `drsg serve` JSON-RPC endpoint. It is a thin idiomatic
 binding over the **C client** (`sdk/c`), which is generated from the server's
 OpenRPC schema — so the typed method surface always matches the wire protocol.
-`build.zig` `@cImport`s `drsg.h`, compiles the C sources directly, and links
-system **libcurl** + **json-c** via `pkg-config`.
+`build.zig` translates `drsg.h` into a module, compiles the C sources directly,
+and links system **libcurl** + **json-c** via `pkg-config`.
 
-Built with **Zig 0.16**.
+Built and tested with **Zig 0.16 and 0.17**. The header is translated by a
+`b.addTranslateC` build step rather than `@cImport`, which 0.17 removed; the
+include list it reads is [`src/c.h`](src/c.h).
 
 ## Add to your build
 
