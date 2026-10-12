@@ -14,6 +14,7 @@ if the committed output has drifted from the schema.
 from __future__ import annotations
 
 import json
+import keyword
 import pathlib
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -45,6 +46,16 @@ def _method_name(rpc_name: str) -> str:
     return rpc_name.replace(".", "_")
 
 
+def _arg_name(param_name: str) -> str:
+    """The parameter as Python can spell it.
+
+    A wire name that is a Python keyword (`as`) is a syntax error as an
+    argument, so it takes the trailing underscore PEP 8 prescribes. The wire
+    name itself never changes — only the local binding.
+    """
+    return f"{param_name}_" if keyword.iskeyword(param_name) else param_name
+
+
 def _render_method(m: dict) -> str:
     name = _method_name(m["name"])
     params = m.get("params", [])
@@ -52,8 +63,8 @@ def _render_method(m: dict) -> str:
     optional = [p for p in params if not p.get("required")]
 
     args = ["self"]
-    args += [p["name"] for p in required]
-    args += [f"{p['name']}=None" for p in optional]
+    args += [_arg_name(p["name"]) for p in required]
+    args += [f"{_arg_name(p['name'])}=None" for p in optional]
     sig = ", ".join(args)
 
     summary = m.get("summary", "").strip()
@@ -65,10 +76,10 @@ def _render_method(m: dict) -> str:
     if required or optional:
         lines.append("        _p: dict = {}")
         for p in required:
-            lines.append(f'        _p["{p["name"]}"] = {p["name"]}')
+            lines.append(f'        _p["{p["name"]}"] = {_arg_name(p["name"])}')
         for p in optional:
-            lines.append(f"        if {p['name']} is not None:")
-            lines.append(f'            _p["{p["name"]}"] = {p["name"]}')
+            lines.append(f"        if {_arg_name(p['name'])} is not None:")
+            lines.append(f'            _p["{p["name"]}"] = {_arg_name(p["name"])}')
         lines.append(f'        return self._call("{m["name"]}", _p)')
     else:
         lines.append(f'        return self._call("{m["name"]}")')
