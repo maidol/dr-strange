@@ -35,6 +35,10 @@ drsg grep '<text>' [--regex] [--path P]   # text search over the tree a plane wa
 drsg traverse <key> [--edge-type T]       # the neighbours a hop (or several) away
 drsg search '<query>' --plane P           # semantic top-k (embeds the query)
 drsg history [--plane P] [--limit N]      # the repository behind a plane: HEAD, tips, rebases, newest commits
+drsg recall <name> --at <rev> [--vs R]    # the code as it was: a file, a range, a symbol's declaration then
+drsg wire <path|name> [--verb V]          # what serves an HTTP path and what asks for it (06-mcp.md §1)
+drsg attach <name> [--url U] [--as P] [--both]  # record a plane this one may ask (09-planes.md)
+drsg detach <name> / drsg attachments [--probe]  # forget one; list them, optionally asking each
 drsg queries [<id>] [--limit N]           # the Cypher queries that have run; `cypher --history <id>` reruns one
 drsg catalog [--plane P]                  # soft-schema view (labels, props, descriptions)
 drsg algo … / drsg hybrid …               # graph algorithms; fused retrieval

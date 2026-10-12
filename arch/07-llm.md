@@ -46,6 +46,20 @@ from the same file. Two readers would mean two vector spaces for one corpus.
   dropped and counted (`rejected`). Otherwise a document written to steer the
   model could mint a node `_generated_by` a parser, which the next watch fold
   would then own and delete.
+- **A route is a fact, stated in one vocabulary**: a parser cannot draw a call
+  edge to an HTTP handler — there is nothing between the two sides but a
+  string — so a plugin records what the *source states* and leaves the match to
+  a verb. On the symbol that already exists: `serves` for a declaration,
+  `requests` for a call, each `VERB /path/{}` with every variable segment
+  reduced to `{}`; `serves_as_written` / `requests_as_written` keep what the
+  source said. A wildcard pattern no client can ask for is left out and counted
+  in the plugin's own note rather than recorded as a route. The plugins learn
+  the three *shapes* a framework can write (an annotation carrying a path, a
+  registration call whose name is the verb, a client call with a path
+  argument), so a framework nobody listed still appears through the third. **Nothing is drawn into the
+  graph** — no `Route` node, no `SERVES` edge: a synthesised edge would freeze
+  a guess, while `wire` (06-mcp.md §1) computes the correspondence per call and
+  can say what it could not match.
 - **Preprocessing is local-only**: what makes parsing worth its cost is a
   plugin pulling the files *around* the one it was handed — and that pull is
   exactly what a shared server must not offer, since the only filesystem it

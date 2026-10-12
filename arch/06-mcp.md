@@ -31,8 +31,11 @@ then narrow, then act:
 
 | Tool | Purpose |
 |---|---|
-| `context` · `describe` · `search` · `grep` · `trace` · `impact` · `fathom` · `snippet` | the eight agent verbs over a digested code plane — one round trip each, compact one-fact-per-line text, ambiguity returns candidates, call listings state their lower bound. `context` is the primary verb; `grep` and `snippet` read the watched source tree |
+| `context` · `describe` · `search` · `grep` · `trace` · `impact` · `fathom` · `snippet` | eight of the eleven agent verbs over a digested code plane — one round trip each, compact one-fact-per-line text, ambiguity returns candidates, call listings state their lower bound. `context` is the primary verb; `grep` and `snippet` read the watched source tree |
 | `history` | the repository behind the plane: HEAD, branch and tag tips, reconstructed rebases, newest commits — over the `_git` plane a git checkout's digest writes beside the code one |
+| `recall` | the same code as it was at a revision, located by parsing its file as it was rather than by today's line numbers; `pattern` searches that tree, `vs` diffs a name from an older one |
+| `wire` | routes matched when asked: what `serves` an HTTP path and what `requests` it, across every language in the plane and across the planes it attaches. Computed per call, never stored — a synthesised edge would freeze a guess |
+| `attach` / `detach` / `attachments` | the planes a plane may ask (09-planes.md): one on this instance, or one another drsg serves over `plane.query`. Mutating, so they take the write capability; `attachments` names an unreachable one with the reason rather than skipping it |
 | `list_planes` | planes with names, descriptions, sizes — "which canvas?" |
 | `describe_plane` | per-plane catalog: labels, properties with **dominant descriptions**, edge-type connectivity, vector indexes, counts |
 | `get_node` | one record, properties **with descriptions**, adjacency summary (per-type counts, not the edges themselves) |

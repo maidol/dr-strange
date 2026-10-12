@@ -44,6 +44,17 @@ Plane {
 can carry a natural-language description of what this canvas *is*, which the
 MCP layer surfaces so an LLM can choose where to read and write.
 
+One property is read by the engine rather than only shown: **`attachments`**,
+the planes this one may ask (issues #42, #43). Each entry is a name, the plane
+it names on the far side, and a URL when that side is served by another drsg —
+and **no token**: attached graphs are one environment, so a caller presents the
+token it already holds, and nothing secret is written to a graph. The record
+carries no vocabulary of its own; what the question is, and what key the two
+sides match on, belongs to the verb asking it (`wire` matches `VERB /path/{}`
+— 06-mcp.md §1). It lives here rather than in a side table because a plane's
+own map is already durable, already readable by anything that reads a plane,
+and already the thing `plane.set_props` edits.
+
 - A **default plane** (`plane_id = 0`, name `"startup"`) exists from creation, so
   single-canvas users never think about planes at all.
 - Plane names are unique and interned; all keys carry the `u32` id, never the
@@ -56,6 +67,7 @@ MCP layer surfaces so an LLM can choose where to read and write.
 | `create_plane(name, props)` | new empty canvas | O(1) |
 | `drop_plane(id)` | delete the canvas and everything on it | prefix range-delete per table + drop of its vector index files |
 | `rename / set properties` ✅ (M5) | metadata update — `PlaneHandle::rename` / `set_properties` / `properties` (startup can't be renamed) | O(1) |
+| `attach / detach` ✅ | record or forget a plane this one may ask — `Attachments::attach` / `detach` under `update_properties`, so two concurrent attaches cannot lose each other. A local target is verified to exist; a URL is recorded as given and contacted by nothing until a verb asks it | O(attachments) |
 | `copy(selection, from, to)` | copy a subgraph into another plane: **new node/edge IDs**, `external_key`s carried along (they are the cross-plane identity thread) | O(selection) |
 | `move(selection, from, to)` | copy + delete; edges fully inside the selection move, edges crossing the selection boundary are dropped (reported to the caller) | O(selection) |
 | `merge(from…, to)` | v2, sits on `copy` + entity resolution (LLM layer proposes matches by external key / embedding similarity; core executes the copy plan) | — |
