@@ -28,6 +28,9 @@ or an external key.
 - **`plane.rename`** · admin — rename a plane. Params: `plane` string!, `to` string!.
 - **`plane.set_props`** · admin — replace a plane's property map. Params: `plane` string!, `properties` Properties!.
 - **`plane.delete`** · admin — drop a plane and its contents. Params: `plane` string!.
+- **`plane.attach`** · admin — record a plane this one may ask: one on this instance, or one another drsg serves (`url`). Params: `plane` string!, `name` string!, `url` string, `as` string, `both` boolean.
+- **`plane.detach`** · admin — forget an attachment by name (absent is a no-op). Params: `plane` string!, `name` string!.
+- **`plane.attachments`** · read — what a plane attaches, as recorded; nothing is contacted. Params: `plane` string!.
 
 ## Nodes and edges
 

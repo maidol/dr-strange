@@ -25,6 +25,9 @@
 - **`plane.rename`** · admin —— 重命名一个平面。参数：`plane` string!, `to` string!。
 - **`plane.set_props`** · admin —— 替换一个平面的属性映射。参数：`plane` string!, `properties` Properties!。
 - **`plane.delete`** · admin —— 删除一个平面及其内容。参数：`plane` string!。
+- **`plane.attach`** · admin —— 记录本平面可以询问的平面：本实例上的平面，或由另一个 drsg 提供服务的平面（`url`）。参数：`plane` string!, `name` string!, `url` string, `as` string, `both` boolean。
+- **`plane.detach`** · admin —— 按名称移除一个附着；名称不存在时为空操作。参数：`plane` string!, `name` string!。
+- **`plane.attachments`** · read —— 本平面记录的附着；不会联系任何一方。参数：`plane` string!。
 
 ## 节点与边
 
