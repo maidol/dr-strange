@@ -11,8 +11,8 @@
 //! an attached graph is part of the same environment, and the caller presents
 //! the token it already holds.
 
-use crate::api::PlaneHandle;
-use crate::error::Result;
+use crate::api::{Database, PlaneHandle};
+use crate::error::{Error, Result};
 use crate::types::{PropDesc, PropValue, Properties};
 
 /// The plane property an attachment list is recorded under.
@@ -163,6 +163,145 @@ impl Attachments {
     }
 }
 
+/// Record an attachment on `plane`, replacing one of the same name.
+///
+/// A local attachment is verified: the plane it names must be on this
+/// instance, and the error names the ones that are. A URL is recorded as
+/// given — nothing is contacted until a verb asks it something.
+pub fn attach(db: &Database, plane: &str, a: Attachment) -> Result<String> {
+    if a.name.trim().is_empty() {
+        return Err(Error::InvalidArgument("an attachment needs a name".into()));
+    }
+    if let Some(url) = a.url.as_deref().filter(|u| !is_http_url(u)) {
+        return Err(Error::InvalidArgument(format!(
+            "'{url}' is not a drsg URL — it reads `http://host:port`"
+        )));
+    }
+    let here = planes(db)?;
+    if a.is_local() {
+        if a.plane == plane {
+            return Err(Error::InvalidArgument(format!(
+                "plane '{plane}' cannot attach itself"
+            )));
+        }
+        if !here.iter().any(|p| p == &a.plane) {
+            return Err(Error::NotFound(format!(
+                "plane '{}' on this instance — it holds: {}",
+                a.plane,
+                here.join(", ")
+            )));
+        }
+    }
+    let handle = db.plane(plane)?;
+    let replaced = Attachments::attach(&handle, a.clone())?;
+    let mut out = format!("attached on plane '{plane}'\n");
+    out.push_str(&row(&a, a.name.chars().count(), &here));
+    if let Some(was) = replaced {
+        out.push_str("  replaced\n");
+        out.push_str(&row(&was, was.name.chars().count(), &here));
+    }
+    Ok(out)
+}
+
+/// Forget the attachment named `name` on `plane`.
+///
+/// An absent name is reported, not an error: it leaves the plane in the state
+/// the caller asked for.
+pub fn detach(db: &Database, plane: &str, name: &str) -> Result<String> {
+    let handle = db.plane(plane)?;
+    match Attachments::detach(&handle, name)? {
+        Some(gone) => Ok(format!(
+            "detached from plane '{plane}'\n{}",
+            row(&gone, gone.name.chars().count(), &planes(db)?)
+        )),
+        None => {
+            let have = Attachments::of(&handle)?;
+            let names: Vec<&str> = have.list().iter().map(|a| a.name.as_str()).collect();
+            Ok(match names.is_empty() {
+                true => format!("plane '{plane}' has nothing attached\n"),
+                false => format!(
+                    "plane '{plane}' has no attachment named '{name}' — attached: {}\n",
+                    names.join(", ")
+                ),
+            })
+        }
+    }
+}
+
+/// What `plane` attaches, and whether each is there to be asked.
+pub fn attachments(db: &Database, plane: &str) -> Result<String> {
+    let handle = db.plane(plane)?;
+    let have = Attachments::of(&handle)?;
+    if have.list().is_empty() && have.unreadable() == 0 {
+        return Ok(format!(
+            "plane '{plane}' attaches nothing — `attach <plane>` records one, \
+             and every verb that crosses graphs reads it\n"
+        ));
+    }
+    let here = planes(db)?;
+    let width = have
+        .list()
+        .iter()
+        .map(|a| a.name.chars().count())
+        .max()
+        .unwrap_or(0);
+    let mut out = format!("plane '{plane}' attaches {}\n", have.list().len());
+    for a in have.list() {
+        out.push_str(&row(a, width, &here));
+    }
+    let missing = have
+        .list()
+        .iter()
+        .filter(|a| a.is_local() && !here.iter().any(|p| p == &a.plane))
+        .count();
+    if missing > 0 {
+        out.push_str(&format!(
+            "{missing} attachment(s) name no plane on this instance — \
+             digest it, or detach it\n"
+        ));
+    }
+    if have.unreadable() > 0 {
+        out.push_str(&format!(
+            "ignored {} entry(s) under `{ATTACHMENTS}` that `attach` did not write\n",
+            have.unreadable()
+        ));
+    }
+    Ok(out)
+}
+
+/// Whether `url` names a drsg over HTTP: a scheme and a host, which is as much
+/// as this layer can judge without a URL parser.
+fn is_http_url(url: &str) -> bool {
+    url.strip_prefix("http://")
+        .or_else(|| url.strip_prefix("https://"))
+        .is_some_and(|host| !host.is_empty() && !host.starts_with('/'))
+}
+
+/// The planes on this instance, by name.
+fn planes(db: &Database) -> Result<Vec<String>> {
+    Ok(db.planes()?.into_iter().map(|(_, name)| name).collect())
+}
+
+/// One attachment as a line: where it is, and whether it is there to be asked.
+///
+/// `width` is in characters, as every other padded listing here counts it.
+fn row(a: &Attachment, width: usize, here: &[String]) -> String {
+    let mut line = match &a.url {
+        Some(url) => format!("  {:width$}  \u{2192} plane '{}' at {url}", a.name, a.plane),
+        None => format!(
+            "  {:width$}  \u{2192} plane '{}' on this instance",
+            a.name, a.plane
+        ),
+    };
+    match &a.url {
+        Some(_) => line.push_str("   not contacted"),
+        None if !here.iter().any(|p| p == &a.plane) => line.push_str("   no such plane here"),
+        None => {}
+    }
+    line.push('\n');
+    line
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -171,6 +310,12 @@ mod tests {
     fn plane() -> Database {
         let db = Database::in_memory().unwrap();
         db.create_plane("code", Properties::new()).unwrap();
+        db
+    }
+
+    fn pair() -> Database {
+        let db = plane();
+        db.create_plane("web", Properties::new()).unwrap();
         db
     }
 
@@ -283,5 +428,157 @@ mod tests {
         let have = Attachments::of(&p).unwrap();
         assert!(have.list().is_empty());
         assert_eq!(have.unreadable(), 0);
+    }
+    #[test]
+    fn a_local_attachment_names_a_plane_that_is_here() {
+        let db = pair();
+        let out = attach(&db, "code", Attachment::new("web", None, None)).unwrap();
+        assert_eq!(
+            out,
+            "attached on plane 'code'\n  web  \u{2192} plane 'web' on this instance\n"
+        );
+    }
+
+    #[test]
+    fn a_local_attachment_to_no_plane_names_the_ones_there_are() {
+        let db = pair();
+        let err = attach(&db, "code", Attachment::new("ui", None, None)).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("plane 'ui' on this instance"), "{msg}");
+        assert!(msg.contains("it holds: startup, code, web"), "{msg}");
+        assert!(
+            Attachments::of(&db.plane("code").unwrap())
+                .unwrap()
+                .list()
+                .is_empty(),
+            "a refused attach records nothing"
+        );
+    }
+
+    #[test]
+    fn a_plane_cannot_attach_itself() {
+        let db = pair();
+        let err = attach(
+            &db,
+            "code",
+            Attachment::new("self", Some("code".into()), None),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("cannot attach itself"), "{err}");
+    }
+
+    #[test]
+    fn a_remote_attachment_is_recorded_as_given_and_not_contacted() {
+        let db = plane();
+        let out = attach(
+            &db,
+            "code",
+            Attachment::new(
+                "web",
+                Some("ui".into()),
+                Some("http://127.0.0.1:36500".into()),
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            out,
+            "attached on plane 'code'\n  \
+             web  \u{2192} plane 'ui' at http://127.0.0.1:36500   not contacted\n"
+        );
+    }
+
+    #[test]
+    fn a_url_that_is_not_one_is_refused() {
+        let db = plane();
+        for bad in ["127.0.0.1:36500", "ftp://h", "http://", "http:///x"] {
+            let err = attach(&db, "code", Attachment::new("web", None, Some(bad.into())))
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("is not a drsg URL"), "{bad}: {err}");
+        }
+    }
+
+    #[test]
+    fn attaching_over_an_attachment_says_what_it_replaced() {
+        let db = pair();
+        attach(&db, "code", Attachment::new("web", None, None)).unwrap();
+        let out = attach(
+            &db,
+            "code",
+            Attachment::new("web", None, Some("http://h:1".into())),
+        )
+        .unwrap();
+        assert_eq!(
+            out,
+            "attached on plane 'code'\n  \
+             web  \u{2192} plane 'web' at http://h:1   not contacted\n  replaced\n  \
+             web  \u{2192} plane 'web' on this instance\n"
+        );
+    }
+
+    #[test]
+    fn a_listing_says_which_attachment_is_not_there_to_be_asked() {
+        let db = pair();
+        attach(&db, "code", Attachment::new("web", None, None)).unwrap();
+        attach(
+            &db,
+            "code",
+            Attachment::new("远端", Some("ui".into()), Some("http://h:1".into())),
+        )
+        .unwrap();
+        db.drop_plane(db.plane("web").unwrap().id()).unwrap();
+        let out = attachments(&db, "code").unwrap();
+        // The column is padded in characters, as every other listing here pads
+        // it, so a wide glyph still sits a cell short.
+        assert_eq!(
+            out,
+            "plane 'code' attaches 2\n  \
+             web  \u{2192} plane 'web' on this instance   no such plane here\n  \
+             远端   \u{2192} plane 'ui' at http://h:1   not contacted\n\
+             1 attachment(s) name no plane on this instance — digest it, or detach it\n"
+        );
+    }
+
+    #[test]
+    fn a_plane_with_nothing_attached_says_what_to_do() {
+        let db = plane();
+        let out = attachments(&db, "code").unwrap();
+        assert!(out.starts_with("plane 'code' attaches nothing"), "{out}");
+    }
+
+    #[test]
+    fn a_listing_counts_what_attach_did_not_write() {
+        let db = plane();
+        let p = db.plane("code").unwrap();
+        p.update_properties(|props| {
+            props.insert(
+                ATTACHMENTS.into(),
+                PropDesc::new(PropValue::List(vec![PropValue::Str("web".into())])),
+            );
+        })
+        .unwrap();
+        let out = attachments(&db, "code").unwrap();
+        assert!(out.contains("plane 'code' attaches 0"), "{out}");
+        assert!(out.contains("ignored 1 entry(s)"), "{out}");
+    }
+
+    #[test]
+    fn detaching_names_what_went_and_what_was_never_there() {
+        let db = pair();
+        attach(&db, "code", Attachment::new("web", None, None)).unwrap();
+        assert_eq!(
+            detach(&db, "code", "web").unwrap(),
+            "detached from plane 'code'\n  web  \u{2192} plane 'web' on this instance\n"
+        );
+        assert_eq!(
+            detach(&db, "code", "web").unwrap(),
+            "plane 'code' has nothing attached\n"
+        );
+        attach(&db, "code", Attachment::new("web", None, None)).unwrap();
+        assert_eq!(
+            detach(&db, "code", "ui").unwrap(),
+            "plane 'code' has no attachment named 'ui' — attached: web\n"
+        );
     }
 }

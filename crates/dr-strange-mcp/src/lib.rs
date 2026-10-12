@@ -1117,6 +1117,40 @@ struct WireReq {
     verb: Option<String>,
 }
 
+/// `attach`'s request: a plane to reach, and where it is.
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct AttachReq {
+    /// The plane the attachment is recorded on.
+    #[serde(default = "default_plane")]
+    plane: String,
+    /// The name to know it by, and the plane it names there unless `as` says
+    /// otherwise.
+    name: String,
+    /// Where the other drsg is served (`http://host:port`). Omit for a plane
+    /// on this instance.
+    #[serde(default)]
+    url: Option<String>,
+    /// What the plane is called on the far side, when it is not `name`.
+    #[serde(rename = "as", default)]
+    as_plane: Option<String>,
+}
+
+/// `detach`'s request: the name an attachment was made under.
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct DetachReq {
+    #[serde(default = "default_plane")]
+    plane: String,
+    /// The name it was attached under.
+    name: String,
+}
+
+/// `attachments`' request: one plane.
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct AttachmentsReq {
+    #[serde(default = "default_plane")]
+    plane: String,
+}
+
 /// `fathom`'s request: one symbol and how wide a region around it.
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct FathomReq {
@@ -2791,6 +2825,61 @@ impl DrStrange {
                 &plane,
                 &req.name,
                 req.depth.unwrap_or(3),
+            )?))
+        })
+        .await
+    }
+
+    #[tool(description = "Record a plane this one may ask: a plane on this \
+        instance (no `url`), or one served by another drsg (`url`). An \
+        attachment carries no question of its own — it is the one fact that \
+        lets a verb reach a second graph, and every verb that crosses graphs \
+        reads it, so a frontend and its backend, or a shared library and the \
+        repositories that depend on it, can be asked as one. Takes effect at \
+        once, on a running server. A local attachment is verified and the \
+        error names the planes there are; a `url` is recorded as given and \
+        nothing is contacted until a verb asks it something.")]
+    async fn attach(
+        &self,
+        Parameters(req): Parameters<AttachReq>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        self.run("attach", move |db| {
+            let a = dr_strange_core::attach::Attachment::new(req.name, req.as_plane, req.url);
+            Ok(Value::String(dr_strange_core::attach::attach(
+                db, &req.plane, a,
+            )?))
+        })
+        .await
+    }
+
+    #[tool(description = "Forget an attachment, by the name it was attached \
+        under. An absent name is reported rather than an error: it leaves the \
+        plane in the state asked for. Deletes nothing but the record — the \
+        plane it named is untouched.")]
+    async fn detach(
+        &self,
+        Parameters(req): Parameters<DetachReq>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        self.run("detach", move |db| {
+            Ok(Value::String(dr_strange_core::attach::detach(
+                db, &req.plane, &req.name,
+            )?))
+        })
+        .await
+    }
+
+    #[tool(description = "What a plane attaches, and whether each is there to \
+        be asked: the name, the plane it names on the far side, and where that \
+        is. Says which local attachment names no plane on this instance, so a \
+        cross-graph answer that came back empty can be told from one that was \
+        never going to be asked.")]
+    async fn attachments(
+        &self,
+        Parameters(req): Parameters<AttachmentsReq>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        self.run("attachments", move |db| {
+            Ok(Value::String(dr_strange_core::attach::attachments(
+                db, &req.plane,
             )?))
         })
         .await

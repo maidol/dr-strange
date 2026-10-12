@@ -249,6 +249,58 @@ async fn tools_answer_in_the_shape_the_question_asked_for() {
     client.cancel().await.unwrap();
 }
 
+/// Attaching on a **running** server, which is the point of the tool: a plane
+/// this one may ask, recorded and in force without a restart or a config file.
+#[tokio::test]
+async fn a_plane_is_attached_on_a_running_server() {
+    let addr = spawn_server();
+    wait_ready(addr).await;
+    let client = connect(addr, TOKEN).await.unwrap();
+
+    call(&client, "create_plane", json!({ "name": "ui" })).await;
+    let made = call(&client, "attach", json!({ "name": "ui" })).await;
+    assert_eq!(
+        made.as_str().unwrap(),
+        "attached on plane 'startup'\n  ui  \u{2192} plane 'ui' on this instance\n"
+    );
+
+    // A URL is recorded as given; nothing is contacted until a verb asks it.
+    let remote = call(
+        &client,
+        "attach",
+        json!({ "name": "front", "url": "http://127.0.0.1:1", "as": "web" }),
+    )
+    .await;
+    assert!(
+        remote
+            .as_str()
+            .unwrap()
+            .contains("front  \u{2192} plane 'web' at http://127.0.0.1:1   not contacted"),
+        "{remote}"
+    );
+
+    let listed = call(&client, "attachments", json!({})).await;
+    let text = listed.as_str().unwrap();
+    assert!(text.starts_with("plane 'startup' attaches 2"), "{text}");
+
+    // A local attachment is verified, and the refusal names what is there.
+    let refused = client
+        .call_tool(
+            CallToolRequestParams::new("attach".to_string())
+                .with_arguments(json!({ "name": "nope" }).as_object().unwrap().clone()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(refused.is_error, Some(true), "{refused:?}");
+    let why = &refused.content[0].as_text().unwrap().text;
+    assert!(why.contains("it holds: startup, ui"), "{why}");
+
+    let gone = call(&client, "detach", json!({ "name": "ui" })).await;
+    assert!(gone.as_str().unwrap().starts_with("detached"), "{gone}");
+
+    client.cancel().await.unwrap();
+}
+
 /// A valid token but a non-loopback `Host`: refused by the transport's
 /// DNS-rebinding guard, which defaults to `localhost`/`127.0.0.1`/`::1`.
 /// Pinned because it is the one way `/mcp` behaves differently from every

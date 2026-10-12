@@ -226,6 +226,38 @@ enum Command {
         #[arg(long, default_value_t = 3)]
         depth: usize,
     },
+    /// Record a plane this one may ask — a plane on this instance, or one
+    /// served by another drsg.
+    ///
+    /// An attachment carries no question of its own: it is the one fact that
+    /// lets a verb reach a second graph, and every verb that crosses graphs
+    /// reads it.
+    Attach {
+        /// The name to know it by. Also the plane it names there, unless
+        /// `--as` says otherwise.
+        name: String,
+        /// The plane the attachment is recorded on.
+        #[arg(long, default_value = "startup")]
+        plane: String,
+        /// Where the other drsg is served. Omit for a plane on this instance.
+        #[arg(long)]
+        url: Option<String>,
+        /// What the plane is called on the far side, when it is not `name`.
+        #[arg(long = "as")]
+        as_plane: Option<String>,
+    },
+    /// Forget an attachment. An absent name is reported, not an error.
+    Detach {
+        /// The name it was attached under.
+        name: String,
+        #[arg(long, default_value = "startup")]
+        plane: String,
+    },
+    /// What a plane attaches, and whether each is there to be asked.
+    Attachments {
+        #[arg(long, default_value = "startup")]
+        plane: String,
+    },
     /// What serves an HTTP path, and what asks for it — matched across every
     /// language in the plane, computed now and never stored.
     ///
@@ -1147,6 +1179,35 @@ fn run_agent_verbs(
                 out,
                 "{}",
                 dr_strange_core::compact::impact(&p, &name, depth)?
+            )?;
+            Ok(())
+        }
+        Command::Attach {
+            name,
+            plane,
+            url,
+            as_plane,
+        } => {
+            let db = commands::open(db_path, config::retain_commits(cfg))?;
+            let a = dr_strange_core::attach::Attachment::new(name, as_plane, url);
+            write!(out, "{}", dr_strange_core::attach::attach(&db, &plane, a)?)?;
+            Ok(())
+        }
+        Command::Detach { name, plane } => {
+            let db = commands::open(db_path, config::retain_commits(cfg))?;
+            write!(
+                out,
+                "{}",
+                dr_strange_core::attach::detach(&db, &plane, &name)?
+            )?;
+            Ok(())
+        }
+        Command::Attachments { plane } => {
+            let db = commands::open(db_path, config::retain_commits(cfg))?;
+            write!(
+                out,
+                "{}",
+                dr_strange_core::attach::attachments(&db, &plane)?
             )?;
             Ok(())
         }
