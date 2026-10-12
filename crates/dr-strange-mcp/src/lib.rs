@@ -2900,9 +2900,9 @@ impl DrStrange {
         Parameters(req): Parameters<WireReq>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         self.run("wire", move |db| {
-            let plane = db.plane(&req.plane)?;
             Ok(Value::String(dr_strange_core::compact::wire(
-                &plane,
+                db,
+                &req.plane,
                 &req.name,
                 req.verb.as_deref(),
             )?))

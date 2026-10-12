@@ -12,7 +12,8 @@
 //! ambiguous name returns the candidates instead of an answer, which is
 //! itself the useful reply ("which one did you mean") for one more call.
 
-use crate::api::PlaneHandle;
+use crate::api::{Database, PlaneHandle};
+use crate::attach::Attachments;
 use crate::compute::catalog::key_prefix;
 use crate::error::Result;
 use crate::types::{NodeRecord, PropValue, Properties};
@@ -1215,6 +1216,8 @@ struct Stated {
     verb: String,
     path: String,
     node: NodeRecord,
+    /// The attachment this was read through, or `None` for this plane.
+    from: Option<String>,
 }
 
 impl Stated {
@@ -1243,12 +1246,16 @@ fn prop_list<'a>(props: &'a Properties, key: &str) -> Vec<&'a str> {
     }
 }
 
-/// Every route the plane states, both sides, in one scan.
-fn stated(plane: &PlaneHandle<'_>) -> Result<(Vec<Stated>, Vec<Stated>)> {
-    let mut serves: Vec<Stated> = Vec::new();
-    let mut requests: Vec<Stated> = Vec::new();
+/// Every route one graph states, both sides, in one scan — appended to what
+/// the graphs before it stated, since a match is computed over all of them.
+fn stated_in(
+    plane: &PlaneHandle<'_>,
+    from: Option<&str>,
+    serves: &mut Vec<Stated>,
+    requests: &mut Vec<Stated>,
+) -> Result<()> {
     for n in plane.query().scan_all().nodes()? {
-        for (key, side) in [("serves", &mut serves), ("requests", &mut requests)] {
+        for (key, side) in [("serves", &mut *serves), ("requests", &mut *requests)] {
             for route in prop_list(&n.properties, key) {
                 // `VERB path` is the whole contract with the plugins that
                 // write it; anything else was not written by one.
@@ -1259,11 +1266,134 @@ fn stated(plane: &PlaneHandle<'_>) -> Result<(Vec<Stated>, Vec<Stated>)> {
                     verb: verb.to_string(),
                     path: path.to_string(),
                     node: n.clone(),
+                    from: from.map(str::to_string),
                 });
             }
         }
     }
-    Ok((serves, requests))
+    Ok(())
+}
+
+/// The graphs one `wire` call reads: this plane, and each attachment it could
+/// open — keyed by the name it was attached under, which is what a reader
+/// names to reach it again.
+struct Graphs<'a> {
+    name: String,
+    here: PlaneHandle<'a>,
+    attached: Vec<(String, PlaneHandle<'a>)>,
+    /// Attachments left unread, and why — a cross-graph answer that came back
+    /// empty must be distinguishable from one that was never asked.
+    missed: Vec<(String, String)>,
+}
+
+/// What a name resolved to across the graphs read.
+enum Across {
+    /// One key, held by one graph or by several.
+    Same(Vec<NodeRecord>),
+    /// Several different keys matched leniently; the caller lists them.
+    Several(Vec<NodeRecord>),
+    None,
+}
+
+impl<'a> Graphs<'a> {
+    fn open(db: &'a Database, plane: &str) -> Result<Self> {
+        let here = db.plane(plane)?;
+        let mut attached = Vec::new();
+        let mut missed = Vec::new();
+        for a in Attachments::of(&here)?.list() {
+            match &a.url {
+                // A plane on another drsg is reached over HTTP, which this
+                // layer cannot do: core holds no network client.
+                Some(url) => missed.push((a.name.clone(), format!("served at {url}"))),
+                None => match db.plane(&a.plane) {
+                    Ok(p) => attached.push((a.name.clone(), p)),
+                    Err(_) => missed.push((
+                        a.name.clone(),
+                        format!("no plane '{}' on this instance", a.plane),
+                    )),
+                },
+            }
+        }
+        Ok(Self {
+            name: plane.to_string(),
+            here,
+            attached,
+            missed,
+        })
+    }
+
+    /// Every graph read, this plane first.
+    fn all(&self) -> impl Iterator<Item = &PlaneHandle<'a>> {
+        std::iter::once(&self.here).chain(self.attached.iter().map(|(_, p)| p))
+    }
+
+    /// Which graphs this call read and which it did not — empty when no
+    /// attachment is in play, so a single-graph answer is unchanged.
+    fn note(&self) -> String {
+        if self.attached.is_empty() && self.missed.is_empty() {
+            return String::new();
+        }
+        let mut out = format!("across  {}", self.name);
+        for (name, _) in &self.attached {
+            out.push_str(&format!(", {name}"));
+        }
+        out.push('\n');
+        for (name, why) in &self.missed {
+            out.push_str(&format!("not read  {name} — {why}\n"));
+        }
+        out
+    }
+
+    /// The names of the attachments read.
+    fn read(&self) -> Vec<&str> {
+        self.attached.iter().map(|(n, _)| n.as_str()).collect()
+    }
+
+    /// Every route stated by this plane and the attachments read.
+    fn stated(&self) -> Result<(Vec<Stated>, Vec<Stated>)> {
+        let mut serves = Vec::new();
+        let mut requests = Vec::new();
+        stated_in(&self.here, None, &mut serves, &mut requests)?;
+        for (name, p) in &self.attached {
+            stated_in(p, Some(name), &mut serves, &mut requests)?;
+        }
+        Ok((serves, requests))
+    }
+
+    /// What `name` names across the graphs read.
+    ///
+    /// An exact key held by several graphs is **one** question asked of each,
+    /// not an ambiguity: the same string cannot be narrowed any further, and a
+    /// handler and the stand-in another repository holds for it are the same
+    /// key by construction. Only differing keys are candidates.
+    fn named(&self, name: &str) -> Result<Across> {
+        let mut exact = Vec::new();
+        for p in self.all() {
+            if let Some(n) = p.node_by_key(name)? {
+                exact.push(n);
+            }
+        }
+        if !exact.is_empty() {
+            return Ok(Across::Same(exact));
+        }
+        let mut hits: Vec<NodeRecord> = Vec::new();
+        for p in self.all() {
+            match resolve(p, name)? {
+                Resolved::One(n) => hits.push(n),
+                Resolved::Many(found) => hits.extend(found),
+                Resolved::None => {}
+            }
+        }
+        let keys: BTreeSet<&str> = hits
+            .iter()
+            .filter_map(|n| n.external_key.as_deref())
+            .collect();
+        Ok(match (hits.len(), keys.len()) {
+            (0, _) => Across::None,
+            (_, 0 | 1) => Across::Same(hits),
+            _ => Across::Several(hits),
+        })
+    }
 }
 
 /// Is this argument a path rather than a symbol name?
@@ -1345,20 +1475,26 @@ fn route_note(node: &NodeRecord, name: &str) -> Option<String> {
 /// request, and this can instead say what it matched, what it could not, and
 /// why.
 ///
+/// It reads this plane and every plane this one attaches, so the two halves
+/// may live in separate graphs — which is the ordinary case, a frontend and a
+/// service being separate repositories. Every row names the graph it came
+/// from, and an attachment left unread is reported rather than skipped.
+///
 /// `name` is a path (`/bridge/check`), or a symbol — a handler, to learn who
 /// asks for it, or a caller, to learn what serves what it asks for. `verb`
 /// narrows a path to one method.
-pub fn wire(plane: &PlaneHandle<'_>, name: &str, verb: Option<&str>) -> Result<String> {
-    let (serves, requests) = stated(plane)?;
+pub fn wire(db: &Database, plane: &str, name: &str, verb: Option<&str>) -> Result<String> {
+    let graphs = Graphs::open(db, plane)?;
+    let (serves, requests) = graphs.stated()?;
     if serves.is_empty() && requests.is_empty() {
-        return Ok(NO_ROUTES.to_string());
+        return Ok(format!("{}{NO_ROUTES}", graphs.note()));
     }
     let want = verb.map(|v| v.trim().to_uppercase());
-    let mut out = String::new();
-    if let Some(note) = synced_note(plane)? {
+    let mut out = graphs.note();
+    if let Some(note) = synced_note(&graphs.here)? {
         out.push_str(&note);
     }
-    let paths = match wire_paths(plane, name, &serves, &requests, &mut out)? {
+    let paths = match wire_paths(&graphs, name, &serves, &requests, &mut out)? {
         Some(paths) => paths,
         None => return Ok(out),
     };
@@ -1378,6 +1514,7 @@ pub fn wire(plane: &PlaneHandle<'_>, name: &str, verb: Option<&str>) -> Result<S
                     verb: s.verb.clone(),
                     path: s.path.clone(),
                     node: s.node.clone(),
+                    from: s.from.clone(),
                 })
                 .collect()
         };
@@ -1395,11 +1532,15 @@ pub fn wire(plane: &PlaneHandle<'_>, name: &str, verb: Option<&str>) -> Result<S
             Some(w) => format!(" with {w}"),
             None => String::new(),
         };
+        let read = match graphs.attached.is_empty() {
+            true => "this plane",
+            false => "the graphs read",
+        };
         if here_serves.is_empty() {
-            out.push_str(&format!("  nothing in this plane serves it{under}\n"));
+            out.push_str(&format!("  nothing in {read} serves it{under}\n"));
         }
         if here_requests.is_empty() {
-            out.push_str(&format!("  nothing in this plane asks for it{under}\n"));
+            out.push_str(&format!("  nothing in {read} asks for it{under}\n"));
         }
         for r in &here_requests {
             if here_serves.iter().any(|s| s.answers(r)) {
@@ -1429,7 +1570,7 @@ pub fn wire(plane: &PlaneHandle<'_>, name: &str, verb: Option<&str>) -> Result<S
 /// `None` when the answer is already written into `out` — an ambiguous name,
 /// a name nothing matches, or a symbol that states no route.
 fn wire_paths(
-    plane: &PlaneHandle<'_>,
+    graphs: &Graphs<'_>,
     name: &str,
     serves: &[Stated],
     requests: &[Stated],
@@ -1449,23 +1590,32 @@ fn wire_paths(
                 .collect(),
         ));
     }
-    let node = match resolve(plane, name)? {
-        Resolved::One(n) => n,
-        Resolved::Many(hits) => {
+    let nodes = match graphs.named(name)? {
+        Across::Same(nodes) => nodes,
+        Across::Several(hits) => {
             out.push_str(&candidates(name, &hits));
             return Ok(None);
         }
-        Resolved::None => {
-            out.push_str(&no_match(plane, name)?);
+        Across::None => {
+            out.push_str(&no_match(&graphs.here, name)?);
+            let read = graphs.read();
+            if !read.is_empty() {
+                out.push_str(&format!("nor in the attached: {}\n", read.join(", ")));
+            }
             return Ok(None);
         }
     };
-    out.push_str(&one_line(&node));
-    out.push('\n');
+    for n in &nodes {
+        out.push_str(&one_line(n));
+        out.push('\n');
+    }
+    // Filtering by id and not by key is what lets one key in several graphs
+    // gather all of their routes: a NodeId is unique across every plane.
+    let ids: BTreeSet<crate::NodeId> = nodes.iter().map(|n| n.id).collect();
     let mine: BTreeSet<String> = serves
         .iter()
         .chain(requests)
-        .filter(|s| s.node.id == node.id)
+        .filter(|s| ids.contains(&s.node.id))
         .map(|s| s.path.clone())
         .collect();
     if mine.is_empty() {
@@ -1480,6 +1630,9 @@ fn wire_paths(
 fn wire_rows(tag: &str, side: &[Stated], out: &mut String) {
     for s in side {
         out.push_str(&format!("  {tag}  {:<7} {}", s.verb, one_line(&s.node)));
+        if let Some(from) = &s.from {
+            out.push_str(&format!("  in {from}"));
+        }
         if s.verb == ANY_VERB {
             out.push_str("  [states no verb: every verb on this path]");
         }
@@ -2922,8 +3075,7 @@ mod tests {
     #[test]
     fn wire_matches_a_request_to_the_handler_that_serves_it() {
         let db = routed();
-        let plane = db.plane("code").unwrap();
-        let out = wire(&plane, "/bridge/check", None).unwrap();
+        let out = wire(&db, "code", "/bridge/check", None).unwrap();
         assert!(out.contains("path  /bridge/check/{}"), "{out}");
         assert!(
             out.contains("serves    GET     com.acme.BridgeController.check  Method"),
@@ -2949,13 +3101,12 @@ mod tests {
     #[test]
     fn wire_answers_from_either_end_of_a_route() {
         let db = routed();
-        let plane = db.plane("code").unwrap();
-        let from_handler = wire(&plane, "BridgeController.check", None).unwrap();
+        let from_handler = wire(&db, "code", "BridgeController.check", None).unwrap();
         assert!(
             from_handler.contains("requests  GET     web/src/api.check"),
             "{from_handler}"
         );
-        let from_caller = wire(&plane, "web/src/api.check", None).unwrap();
+        let from_caller = wire(&db, "code", "web/src/api.check", None).unwrap();
         assert!(
             from_caller.contains("serves    GET     com.acme.BridgeController.check"),
             "{from_caller}"
@@ -2967,8 +3118,7 @@ mod tests {
     #[test]
     fn wire_counts_what_it_could_not_match() {
         let db = routed();
-        let plane = db.plane("code").unwrap();
-        let orphan = wire(&plane, "/api/missing", None).unwrap();
+        let orphan = wire(&db, "code", "/api/missing", None).unwrap();
         assert!(
             orphan.contains("nothing in this plane serves it"),
             "{orphan}"
@@ -2977,7 +3127,7 @@ mod tests {
             orphan.contains("0 request(s) matched a declaration, 1 reached none"),
             "{orphan}"
         );
-        let dead = wire(&plane, "/api/dead", None).unwrap();
+        let dead = wire(&db, "code", "/api/dead", None).unwrap();
         assert!(dead.contains("nothing in this plane asks for it"), "{dead}");
         assert!(dead.contains("1 declaration(s) nothing asks for"), "{dead}");
     }
@@ -2986,14 +3136,13 @@ mod tests {
     #[test]
     fn wire_narrows_a_path_to_one_verb() {
         let db = routed();
-        let plane = db.plane("code").unwrap();
-        let get = wire(&plane, "/bridge/check", Some("get")).unwrap();
+        let get = wire(&db, "code", "/bridge/check", Some("get")).unwrap();
         assert!(get.contains("web/src/api.check"), "{get}");
         assert!(
             get.contains("web/src/page.load"),
             "a `*` request answers every verb: {get}"
         );
-        let post = wire(&plane, "/bridge/check", Some("POST")).unwrap();
+        let post = wire(&db, "code", "/bridge/check", Some("POST")).unwrap();
         assert!(!post.contains("web/src/api.check"), "{post}");
         assert!(post.contains("web/src/page.load"), "{post}");
         assert!(
@@ -3022,17 +3171,144 @@ mod tests {
         );
     }
 
+    /// The two halves in two planes, as they actually sit: a service
+    /// repository and a frontend repository, digested separately.
+    fn split() -> Database {
+        let db = Database::in_memory().unwrap();
+        let route = |plane: &str, key: &str, label: &str, file: &str, prop: &str, r: &str| {
+            let p = match db.plane(plane) {
+                Ok(p) => p,
+                Err(_) => db.create_plane(plane, Properties::new()).unwrap(),
+            };
+            let mut txn = p.write().unwrap();
+            let mut props = Properties::new();
+            props.insert("file".into(), PropDesc::new(PropValue::Str(file.into())));
+            props.insert("line".into(), PropDesc::new(PropValue::Int(7)));
+            props.insert(
+                prop.into(),
+                PropDesc::new(PropValue::List(vec![PropValue::Str(r.into())])),
+            );
+            txn.create_node_with_key(key, &[label], props).unwrap();
+            txn.commit().unwrap();
+        };
+        route(
+            "api",
+            "com.acme.Orders.one",
+            "Method",
+            "src/Orders.java",
+            "serves",
+            "GET /api/orders/{}",
+        );
+        route(
+            "web",
+            "web/src/client.loadOne",
+            "Function",
+            "src/client.ts",
+            "requests",
+            "GET /api/orders/{}",
+        );
+        db
+    }
+
+    /// The route the issue is about, with its halves in two graphs: attached,
+    /// `wire` matches them and every row names the graph it came from.
+    #[test]
+    fn wire_matches_across_an_attached_plane() {
+        let db = split();
+        let alone = wire(&db, "api", "/api/orders", None).unwrap();
+        assert!(
+            alone.contains("nothing in this plane asks for it"),
+            "{alone}"
+        );
+        assert!(!alone.contains("across"), "unattached, nothing is crossed");
+
+        crate::attach::attach(
+            &db,
+            "api",
+            crate::attach::Attachment::new("web", None, None),
+        )
+        .unwrap();
+        let out = wire(&db, "api", "/api/orders", None).unwrap();
+        assert!(out.starts_with("across  api, web\n"), "{out}");
+        assert!(
+            out.contains("serves    GET     com.acme.Orders.one  Method  src/Orders.java:7\n"),
+            "a row from this plane names no graph: {out}"
+        );
+        assert!(
+            out.contains(
+                "requests  GET     web/src/client.loadOne  Function  src/client.ts:7  in web\n"
+            ),
+            "{out}"
+        );
+        assert!(
+            out.contains("1 request(s) matched a declaration, 0 reached none"),
+            "{out}"
+        );
+    }
+
+    /// Either end asks the same question: the caller lives in the attached
+    /// graph, and naming it still finds what serves what it asks for.
+    #[test]
+    fn wire_resolves_a_symbol_the_attachment_holds() {
+        let db = split();
+        crate::attach::attach(
+            &db,
+            "api",
+            crate::attach::Attachment::new("web", None, None),
+        )
+        .unwrap();
+        let out = wire(&db, "api", "client.loadOne", None).unwrap();
+        assert!(out.contains("path  /api/orders/{}"), "{out}");
+        assert!(
+            out.contains("serves    GET     com.acme.Orders.one"),
+            "{out}"
+        );
+
+        let missing = wire(&db, "api", "nothing.at.all", None).unwrap();
+        assert!(missing.contains("no symbol matches"), "{missing}");
+        assert!(missing.contains("nor in the attached: web"), "{missing}");
+    }
+
+    /// An attachment it could not read is named, because an empty answer from
+    /// a graph that was never asked is not an answer.
+    #[test]
+    fn wire_names_the_attachment_it_could_not_read() {
+        let db = split();
+        crate::attach::attach(
+            &db,
+            "api",
+            crate::attach::Attachment::new("front", None, Some("http://127.0.0.1:1".into())),
+        )
+        .unwrap();
+        crate::attach::attach(
+            &db,
+            "api",
+            crate::attach::Attachment::new("web", None, None),
+        )
+        .unwrap();
+        db.drop_plane(db.plane("web").unwrap().id()).unwrap();
+        let out = wire(&db, "api", "/api/orders", None).unwrap();
+        assert_eq!(
+            out.lines().take(3).collect::<Vec<_>>(),
+            [
+                "across  api",
+                "not read  front — served at http://127.0.0.1:1",
+                "not read  web — no plane 'web' on this instance",
+            ],
+            "{out}"
+        );
+        assert!(out.contains("nothing in this plane asks for it"), "{out}");
+    }
+
     /// A symbol that states no route, and a plane where nothing does, each
     /// say so and name the next call.
     #[test]
     fn wire_says_when_there_is_nothing_to_match() {
         let db = routed();
-        let plane = db.plane("code").unwrap();
-        let out = wire(&plane, "BridgeController.helper", None).unwrap();
+        let out = wire(&db, "code", "BridgeController.helper", None).unwrap();
         assert!(out.contains("states no route"), "{out}");
         let bare = seeded();
-        let plane = bare.plane("code").unwrap();
-        let out = wire(&plane, "/anything", None).unwrap();
+        let out = wire(&bare, "code", "/anything", None).unwrap();
         assert!(out.contains("no routes recorded in this plane"), "{out}");
         assert!(out.contains("drsg plugin install"), "{out}");
     }

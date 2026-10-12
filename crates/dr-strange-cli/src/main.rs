@@ -1213,11 +1213,10 @@ fn run_agent_verbs(
         }
         Command::Wire { name, plane, verb } => {
             let db = commands::open(db_path, config::retain_commits(cfg))?;
-            let p = db.plane(&plane)?;
             write!(
                 out,
                 "{}",
-                dr_strange_core::compact::wire(&p, &name, verb.as_deref())?
+                dr_strange_core::compact::wire(&db, &plane, &name, verb.as_deref())?
             )?;
             Ok(())
         }
