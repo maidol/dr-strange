@@ -1184,6 +1184,283 @@ fn ranked(mut items: Vec<(String, usize)>, cap: usize) -> String {
 
 // ---- history (the git plane) ---------------------------------------------
 
+/// The verb a side states when it states none — matching every verb, and
+/// saying so.
+const ANY_VERB: &str = "*";
+
+/// What `wire` says when nothing in the plane recorded a route.
+const NO_ROUTES: &str = "no routes recorded in this plane: no symbol carries `serves` or \
+                         `requests`.\nthose are written by the language plugins — re-digest \
+                         with current plugins (`drsg plugin install`), or this tree declares \
+                         none\n";
+
+/// What `wire` says about a symbol that states no route of its own.
+const STATES_NO_ROUTE: &str = "this symbol states no route: no `serves`, no `requests`\n\
+                               context <key> shows what it does state; wire /<path> asks \
+                               about a path instead\n";
+
+/// How `wire` ends, because the answer is a computation rather than a record.
+const WIRE_NOTE: &str = "matched on verb + path, computed for this call and never stored; \
+                         `*` matches every verb\n";
+
+/// One route a symbol states: the verb, the comparable path, and the node.
+///
+/// Read from the `serves` and `requests` properties the language plugins
+/// write. Nothing here knows which plugin produced one, so a language that
+/// learns to state routes widens this verb without touching it.
+struct Stated {
+    verb: String,
+    path: String,
+    node: NodeRecord,
+}
+
+impl Stated {
+    /// Does this route answer that one? Equal paths, and verbs that are equal
+    /// or either one `*` — a side naming no verb matches every verb on the
+    /// path, and the reply says that it did.
+    fn answers(&self, other: &Stated) -> bool {
+        self.path == other.path
+            && (self.verb == other.verb || self.verb == ANY_VERB || other.verb == ANY_VERB)
+    }
+}
+
+/// The route strings one described property holds.
+fn prop_list<'a>(props: &'a Properties, key: &str) -> Vec<&'a str> {
+    match props.get(key).map(|d| &d.value) {
+        Some(PropValue::List(items)) => items
+            .iter()
+            .filter_map(|v| match v {
+                PropValue::Str(s) => Some(s.as_str()),
+                _ => None,
+            })
+            .collect(),
+        // One route need not have been written as a list of one.
+        Some(PropValue::Str(s)) => vec![s.as_str()],
+        _ => Vec::new(),
+    }
+}
+
+/// Every route the plane states, both sides, in one scan.
+fn stated(plane: &PlaneHandle<'_>) -> Result<(Vec<Stated>, Vec<Stated>)> {
+    let mut serves: Vec<Stated> = Vec::new();
+    let mut requests: Vec<Stated> = Vec::new();
+    for n in plane.query().scan_all().nodes()? {
+        for (key, side) in [("serves", &mut serves), ("requests", &mut requests)] {
+            for route in prop_list(&n.properties, key) {
+                // `VERB path` is the whole contract with the plugins that
+                // write it; anything else was not written by one.
+                let Some((verb, path)) = route.split_once(' ') else {
+                    continue;
+                };
+                side.push(Stated {
+                    verb: verb.to_string(),
+                    path: path.to_string(),
+                    node: n.clone(),
+                });
+            }
+        }
+    }
+    Ok((serves, requests))
+}
+
+/// Is this argument a path rather than a symbol name?
+fn is_path(name: &str) -> bool {
+    let n = name.trim();
+    n.starts_with('/') || n.starts_with("http://") || n.starts_with("https://")
+}
+
+/// A path *a person typed*, reduced to the form the plugins already wrote:
+/// origin and query dropped, duplicate separators collapsed, no trailing
+/// slash, and every variable segment `{}`.
+///
+/// The plugins' own copy of this lives in the extensions SDK
+/// (`dr_strange_ext::route`), which a wasm guest compiles and this crate
+/// cannot depend on. What the two share is the format — `VERB /a/{}/b` — and
+/// a test here pins this side against the strings that SDK's own tests
+/// assert.
+fn normalize_query(path: &str) -> String {
+    let mut rest = path.trim();
+    for scheme in ["http://", "https://"] {
+        if let Some(after) = rest.strip_prefix(scheme) {
+            rest = match after.find('/') {
+                Some(at) => &after[at..],
+                None => "/",
+            };
+            break;
+        }
+    }
+    for cut in ['?', '#'] {
+        if let Some(at) = rest.find(cut) {
+            rest = &rest[..at];
+        }
+    }
+    let mut out = String::with_capacity(rest.len() + 1);
+    out.push('/');
+    for segment in rest.split('/') {
+        if segment.is_empty() {
+            continue;
+        }
+        if out.len() > 1 {
+            out.push('/');
+        }
+        let variable = segment.starts_with('{')
+            || segment.starts_with(':')
+            || segment.starts_with("${")
+            || segment.starts_with('<')
+            || segment == "*"
+            || segment == "**"
+            || segment.contains("${")
+            || (segment.contains('{') && segment.contains('}'));
+        out.push_str(if variable { "{}" } else { segment });
+    }
+    out
+}
+
+/// `wire` — what serves a path, and what asks for it.
+///
+/// The two halves of an HTTP route are written by different plugins, in
+/// different languages, usually in different repositories, and they are
+/// matched **here, per call** rather than joined into an edge at digest
+/// time: a stored edge would freeze a guess about which handler answers a
+/// request, and this can instead say what it matched, what it could not, and
+/// why.
+///
+/// `name` is a path (`/bridge/check`), or a symbol — a handler, to learn who
+/// asks for it, or a caller, to learn what serves what it asks for. `verb`
+/// narrows a path to one method.
+pub fn wire(plane: &PlaneHandle<'_>, name: &str, verb: Option<&str>) -> Result<String> {
+    let (serves, requests) = stated(plane)?;
+    if serves.is_empty() && requests.is_empty() {
+        return Ok(NO_ROUTES.to_string());
+    }
+    let want = verb.map(|v| v.trim().to_uppercase());
+    let mut out = String::new();
+    if let Some(note) = synced_note(plane)? {
+        out.push_str(&note);
+    }
+    let paths = match wire_paths(plane, name, &serves, &requests, &mut out)? {
+        Some(paths) => paths,
+        None => return Ok(out),
+    };
+
+    let mut matched = 0usize;
+    let mut unanswered = 0usize;
+    let mut unasked = 0usize;
+    for path in &paths {
+        let on_path = |side: &[Stated]| -> Vec<Stated> {
+            side.iter()
+                .filter(|s| &s.path == path)
+                .filter(|s| {
+                    want.as_deref()
+                        .is_none_or(|w| s.verb == w || s.verb == ANY_VERB)
+                })
+                .map(|s| Stated {
+                    verb: s.verb.clone(),
+                    path: s.path.clone(),
+                    node: s.node.clone(),
+                })
+                .collect()
+        };
+        let here_serves = on_path(&serves);
+        let here_requests = on_path(&requests);
+        if here_serves.is_empty() && here_requests.is_empty() {
+            continue;
+        }
+        out.push_str(&format!("path  {path}\n"));
+        wire_rows("serves  ", &here_serves, &mut out);
+        wire_rows("requests", &here_requests, &mut out);
+        if here_serves.is_empty() {
+            out.push_str("  nothing in this plane serves it\n");
+        }
+        if here_requests.is_empty() {
+            out.push_str("  nothing in this plane asks for it\n");
+        }
+        for r in &here_requests {
+            if here_serves.iter().any(|s| s.answers(r)) {
+                matched += 1;
+            } else {
+                unanswered += 1;
+            }
+        }
+        for s in &here_serves {
+            if !here_requests.iter().any(|r| r.answers(s)) {
+                unasked += 1;
+            }
+        }
+    }
+    out.push_str(&format!(
+        "{} path(s); {matched} request(s) matched a declaration, {unanswered} reached none; \
+         {unasked} declaration(s) nothing asks for\n",
+        paths.len()
+    ));
+    out.push_str(WIRE_NOTE);
+    Ok(out)
+}
+
+/// The paths `wire` answers about: those on the path a caller named, or those
+/// the symbol it named states.
+///
+/// `None` when the answer is already written into `out` — an ambiguous name,
+/// a name nothing matches, or a symbol that states no route.
+fn wire_paths(
+    plane: &PlaneHandle<'_>,
+    name: &str,
+    serves: &[Stated],
+    requests: &[Stated],
+    out: &mut String,
+) -> Result<Option<BTreeSet<String>>> {
+    if is_path(name) {
+        let q = normalize_query(name);
+        let under = format!("{}/", q.trim_end_matches('/'));
+        // A prefix names everything under it, which is what a reader asking
+        // about `/api/orders` means when the declaration is `/api/orders/{}`.
+        return Ok(Some(
+            serves
+                .iter()
+                .chain(requests)
+                .filter(|s| s.path == q || s.path.starts_with(&under))
+                .map(|s| s.path.clone())
+                .collect(),
+        ));
+    }
+    let node = match resolve(plane, name)? {
+        Resolved::One(n) => n,
+        Resolved::Many(hits) => {
+            out.push_str(&candidates(name, &hits));
+            return Ok(None);
+        }
+        Resolved::None => {
+            out.push_str(&no_match(plane, name)?);
+            return Ok(None);
+        }
+    };
+    out.push_str(&one_line(&node));
+    out.push('\n');
+    let mine: BTreeSet<String> = serves
+        .iter()
+        .chain(requests)
+        .filter(|s| s.node.id == node.id)
+        .map(|s| s.path.clone())
+        .collect();
+    if mine.is_empty() {
+        out.push_str(STATES_NO_ROUTE);
+        return Ok(None);
+    }
+    Ok(Some(mine))
+}
+
+/// One side's rows under a path, each naming its verb and where it is
+/// written.
+fn wire_rows(tag: &str, side: &[Stated], out: &mut String) {
+    for s in side {
+        out.push_str(&format!("  {tag}  {:<7} {}", s.verb, one_line(&s.node)));
+        if s.verb == ANY_VERB {
+            out.push_str("  [states no verb: every verb on this path]");
+        }
+        out.push('\n');
+    }
+}
+
 /// The suffix a repository's history plane takes, beside the code plane it
 /// belongs to: `myrepo` and `myrepo_git`.
 ///
@@ -2534,5 +2811,210 @@ mod tests {
         assert!(out.contains("signature: fn go()"), "{out}");
         // file/line live on the head line only.
         assert_eq!(out.matches("src/api.rs").count(), 1, "{out}");
+    }
+
+    /// A plane holding both halves of one route, written by two different
+    /// language plugins the way they write them — the join `wire` computes.
+    fn routed() -> Database {
+        let db = Database::in_memory().unwrap();
+        let p = db.create_plane("code", Properties::new()).unwrap();
+        let mut txn = p.write().unwrap();
+        let mut node =
+            |key: &str, label: &str, file: &str, line: i64, prop: &str, routes: &[&str]| {
+                let mut props = Properties::new();
+                props.insert("file".into(), PropDesc::new(PropValue::Str(file.into())));
+                props.insert("line".into(), PropDesc::new(PropValue::Int(line)));
+                props.insert(
+                    prop.into(),
+                    PropDesc::described(
+                        "the routes this symbol states",
+                        PropValue::List(
+                            routes
+                                .iter()
+                                .map(|r| PropValue::Str((*r).to_string()))
+                                .collect(),
+                        ),
+                    ),
+                );
+                txn.create_node_with_key(key, &[label], props).unwrap()
+            };
+        node(
+            "com.acme.BridgeController.check",
+            "Method",
+            "src/main/java/com/acme/BridgeController.java",
+            42,
+            "serves",
+            &["GET /bridge/check/{}"],
+        );
+        node(
+            "web/src/api.check",
+            "Function",
+            "web/src/api.ts",
+            12,
+            "requests",
+            &["GET /bridge/check/{}"],
+        );
+        // A project-local wrapper names no verb, so it matches every verb on
+        // the path and must be told that it did.
+        node(
+            "web/src/page.load",
+            "Function",
+            "web/src/page.ts",
+            30,
+            "requests",
+            &["* /bridge/check/{}"],
+        );
+        // A request nothing serves, and a declaration nothing asks for.
+        node(
+            "web/src/api.orphan",
+            "Function",
+            "web/src/api.ts",
+            50,
+            "requests",
+            &["POST /api/missing"],
+        );
+        node(
+            "com.acme.DeadController.gone",
+            "Method",
+            "src/main/java/com/acme/DeadController.java",
+            7,
+            "serves",
+            &["DELETE /api/dead"],
+        );
+        // A symbol beside them that states nothing — what a routeless
+        // question must be answered about.
+        let mut plain = Properties::new();
+        plain.insert("line".into(), PropDesc::new(PropValue::Int(60)));
+        txn.create_node_with_key("com.acme.BridgeController.helper", &["Method"], plain)
+            .unwrap();
+        txn.commit().unwrap();
+        db
+    }
+
+    /// The two halves meet on `verb + path`, whichever language wrote them,
+    /// and the one that names no verb is matched and told so.
+    #[test]
+    fn wire_matches_a_request_to_the_handler_that_serves_it() {
+        let db = routed();
+        let plane = db.plane("code").unwrap();
+        let out = wire(&plane, "/bridge/check", None).unwrap();
+        assert!(out.contains("path  /bridge/check/{}"), "{out}");
+        assert!(
+            out.contains("serves    GET     com.acme.BridgeController.check  Method"),
+            "{out}"
+        );
+        assert!(
+            out.contains("requests  GET     web/src/api.check  Function"),
+            "{out}"
+        );
+        assert!(
+            out.contains("requests  *       web/src/page.load  Function  web/src/page.ts:30  [states no verb: every verb on this path]"),
+            "{out}"
+        );
+        assert!(
+            out.contains("1 path(s); 2 request(s) matched a declaration, 0 reached none"),
+            "{out}"
+        );
+        assert!(out.contains("never stored"), "{out}");
+    }
+
+    /// A handler is asked who calls it; a caller is asked what serves it.
+    /// Both are the same question put from the two ends.
+    #[test]
+    fn wire_answers_from_either_end_of_a_route() {
+        let db = routed();
+        let plane = db.plane("code").unwrap();
+        let from_handler = wire(&plane, "BridgeController.check", None).unwrap();
+        assert!(
+            from_handler.contains("requests  GET     web/src/api.check"),
+            "{from_handler}"
+        );
+        let from_caller = wire(&plane, "web/src/api.check", None).unwrap();
+        assert!(
+            from_caller.contains("serves    GET     com.acme.BridgeController.check"),
+            "{from_caller}"
+        );
+    }
+
+    /// What it could not match is part of the answer: a request reaching no
+    /// handler, and an endpoint nothing asks for.
+    #[test]
+    fn wire_counts_what_it_could_not_match() {
+        let db = routed();
+        let plane = db.plane("code").unwrap();
+        let orphan = wire(&plane, "/api/missing", None).unwrap();
+        assert!(
+            orphan.contains("nothing in this plane serves it"),
+            "{orphan}"
+        );
+        assert!(
+            orphan.contains("0 request(s) matched a declaration, 1 reached none"),
+            "{orphan}"
+        );
+        let dead = wire(&plane, "/api/dead", None).unwrap();
+        assert!(dead.contains("nothing in this plane asks for it"), "{dead}");
+        assert!(dead.contains("1 declaration(s) nothing asks for"), "{dead}");
+    }
+
+    /// A verb narrows a path, and a side that names no verb still answers.
+    #[test]
+    fn wire_narrows_a_path_to_one_verb() {
+        let db = routed();
+        let plane = db.plane("code").unwrap();
+        let get = wire(&plane, "/bridge/check", Some("get")).unwrap();
+        assert!(get.contains("web/src/api.check"), "{get}");
+        assert!(
+            get.contains("web/src/page.load"),
+            "a `*` request answers every verb: {get}"
+        );
+        let post = wire(&plane, "/bridge/check", Some("POST")).unwrap();
+        assert!(!post.contains("web/src/api.check"), "{post}");
+        assert!(post.contains("web/src/page.load"), "{post}");
+        assert!(post.contains("nothing in this plane serves it"), "{post}");
+    }
+
+    /// A symbol that states no route, and a plane where nothing does, each
+    /// say so and name the next call.
+    #[test]
+    fn wire_says_when_there_is_nothing_to_match() {
+        let db = routed();
+        let plane = db.plane("code").unwrap();
+        let out = wire(&plane, "BridgeController.helper", None).unwrap();
+        assert!(out.contains("states no route"), "{out}");
+        let bare = seeded();
+        let plane = bare.plane("code").unwrap();
+        let out = wire(&plane, "/anything", None).unwrap();
+        assert!(out.contains("no routes recorded in this plane"), "{out}");
+        assert!(out.contains("drsg plugin install"), "{out}");
+    }
+
+    /// The query form this crate computes is the form the plugins write.
+    ///
+    /// The two normalisers live in different repositories — this one for what
+    /// a person types, the extensions SDK's for what a parser reads — so the
+    /// cases its own tests assert are pinned here too. A drift between them
+    /// is a path that silently matches nothing.
+    #[test]
+    fn the_query_form_matches_what_the_plugins_write() {
+        for written in [
+            "/orders/{id}",
+            "/orders/{id:[0-9]+}",
+            "/orders/:id",
+            "/orders/${id}",
+            "/orders/<int:id>",
+            "/orders/*",
+        ] {
+            assert_eq!(normalize_query(written), "/orders/{}", "{written}");
+        }
+        assert_eq!(normalize_query("/files/report-${id}.pdf"), "/files/{}");
+        assert_eq!(normalize_query("/api//orders/"), "/api/orders");
+        assert_eq!(normalize_query("/api/orders?page=2"), "/api/orders");
+        assert_eq!(normalize_query("/api/orders#top"), "/api/orders");
+        assert_eq!(
+            normalize_query("https://api.example.com/v1/orders/{id}"),
+            "/v1/orders/{}"
+        );
+        assert_eq!(normalize_query("https://api.example.com"), "/");
+        assert_eq!(normalize_query("/"), "/");
     }
 }
