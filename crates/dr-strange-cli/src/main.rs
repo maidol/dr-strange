@@ -1216,7 +1216,15 @@ fn run_agent_verbs(
             write!(
                 out,
                 "{}",
-                dr_strange_core::compact::wire(&db, &plane, &name, verb.as_deref())?
+                dr_strange_core::compact::wire(
+                    &db,
+                    dr_strange_core::compact::Wire {
+                        plane: &plane,
+                        name: &name,
+                        verb: verb.as_deref(),
+                        remote: None,
+                    },
+                )?
             )?;
             Ok(())
         }

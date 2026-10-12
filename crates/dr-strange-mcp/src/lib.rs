@@ -2902,9 +2902,12 @@ impl DrStrange {
         self.run("wire", move |db| {
             Ok(Value::String(dr_strange_core::compact::wire(
                 db,
-                &req.plane,
-                &req.name,
-                req.verb.as_deref(),
+                dr_strange_core::compact::Wire {
+                    plane: &req.plane,
+                    name: &req.name,
+                    verb: req.verb.as_deref(),
+                    remote: None,
+                },
             )?))
         })
         .await

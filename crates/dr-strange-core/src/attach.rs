@@ -12,8 +12,9 @@
 //! the token it already holds.
 
 use crate::api::{Database, PlaneHandle};
+use crate::compute::LogicalPlan;
 use crate::error::{Error, Result};
-use crate::types::{PropDesc, PropValue, Properties};
+use crate::types::{NodeRecord, PropDesc, PropValue, Properties};
 
 /// The plane property an attachment list is recorded under.
 pub const ATTACHMENTS: &str = "attachments";
@@ -21,6 +22,24 @@ pub const ATTACHMENTS: &str = "attachments";
 /// What the property means, for anything that reads a plane's own map.
 const WHAT_IT_IS: &str = "the planes this one may ask — a name, the plane it \
                           names there, and a URL when it is served elsewhere";
+
+/// A reader for planes on other drsg instances.
+///
+/// Core opens no sockets — a storage engine has no business doing so — so the
+/// surface that can supplies this. A verb hands it one attachment and the plan
+/// to run there, and folds the nodes it gets back; an `Err` is reported as an
+/// attachment that could not be read, never swallowed.
+pub trait Remote {
+    /// The nodes `plan` selects from `at`'s plane, or why not.
+    ///
+    /// The `Err` is shown to a reader, so it names the failure and never
+    /// carries the remote's reply body.
+    fn nodes(
+        &self,
+        at: &Attachment,
+        plan: &LogicalPlan,
+    ) -> std::result::Result<Vec<NodeRecord>, String>;
+}
 
 /// One plane this plane may ask a question of.
 #[derive(Debug, Clone, PartialEq, Eq)]
