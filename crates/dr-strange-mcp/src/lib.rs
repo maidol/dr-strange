@@ -1146,6 +1146,10 @@ struct AttachReq {
     /// What the plane is called on the far side, when it is not `name`.
     #[serde(rename = "as", default)]
     as_plane: Option<String>,
+    /// Also record the way back, so either plane can ask the other. Only for
+    /// a plane on this instance.
+    #[serde(default)]
+    both: bool,
 }
 
 /// `detach`'s request: the name an attachment was made under.
@@ -2851,13 +2855,18 @@ impl DrStrange {
         repositories that depend on it, can be asked as one. Takes effect at \
         once, on a running server. A local attachment is verified and the \
         error names the planes there are; a `url` is recorded as given and \
-        nothing is contacted until a verb asks it something.")]
+        nothing is contacted until a verb asks it something. The link points \
+        one way — set `both` to record the way back too, so either plane can \
+        ask the other.")]
     async fn attach(
         &self,
         Parameters(req): Parameters<AttachReq>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         self.run("attach", move |db| {
-            let a = dr_strange_core::attach::Attachment::new(req.name, req.as_plane, req.url);
+            let a = dr_strange_core::attach::Attach {
+                at: dr_strange_core::attach::Attachment::new(req.name, req.as_plane, req.url),
+                both: req.both,
+            };
             Ok(Value::String(dr_strange_core::attach::attach(
                 db, &req.plane, a,
             )?))

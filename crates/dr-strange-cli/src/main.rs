@@ -245,6 +245,10 @@ enum Command {
         /// What the plane is called on the far side, when it is not `name`.
         #[arg(long = "as")]
         as_plane: Option<String>,
+        /// Also record the way back, so either plane can ask the other.
+        /// Only for a plane on this instance.
+        #[arg(long)]
+        both: bool,
     },
     /// Forget an attachment. An absent name is reported, not an error.
     Detach {
@@ -1182,34 +1186,8 @@ fn run_agent_verbs(
             )?;
             Ok(())
         }
-        Command::Attach {
-            name,
-            plane,
-            url,
-            as_plane,
-        } => {
-            let db = commands::open(db_path, config::retain_commits(cfg))?;
-            let a = dr_strange_core::attach::Attachment::new(name, as_plane, url);
-            write!(out, "{}", dr_strange_core::attach::attach(&db, &plane, a)?)?;
-            Ok(())
-        }
-        Command::Detach { name, plane } => {
-            let db = commands::open(db_path, config::retain_commits(cfg))?;
-            write!(
-                out,
-                "{}",
-                dr_strange_core::attach::detach(&db, &plane, &name)?
-            )?;
-            Ok(())
-        }
-        Command::Attachments { plane } => {
-            let db = commands::open(db_path, config::retain_commits(cfg))?;
-            write!(
-                out,
-                "{}",
-                dr_strange_core::attach::attachments(&db, &plane)?
-            )?;
-            Ok(())
+        at @ (Command::Attach { .. } | Command::Detach { .. } | Command::Attachments { .. }) => {
+            run_attach_verbs(at, db_path, cfg, out)
         }
         Command::Wire { name, plane, verb } => {
             let db = commands::open(db_path, config::retain_commits(cfg))?;
@@ -1237,6 +1215,39 @@ fn run_agent_verbs(
         // answer differently the first time one of them was fixed.
         other => run_tree_verbs(other, db_path, cfg, verbose, out),
     }
+}
+
+/// The verbs that record and read what a plane attaches, rather than reading
+/// the graph itself.
+fn run_attach_verbs(
+    cmd: Command,
+    db_path: &Path,
+    cfg: &config::Config,
+    out: &mut dyn Write,
+) -> Result<()> {
+    use dr_strange_core::attach;
+    let db = commands::open(db_path, config::retain_commits(cfg))?;
+    let said = match cmd {
+        Command::Attach {
+            name,
+            plane,
+            url,
+            as_plane,
+            both,
+        } => attach::attach(
+            &db,
+            &plane,
+            attach::Attach {
+                at: attach::Attachment::new(name, as_plane, url),
+                both,
+            },
+        )?,
+        Command::Detach { name, plane } => attach::detach(&db, &plane, &name)?,
+        Command::Attachments { plane } => attach::attachments(&db, &plane)?,
+        _ => unreachable!("every Command variant belongs to a dispatch group"),
+    };
+    write!(out, "{said}")?;
+    Ok(())
 }
 
 /// The verbs that read the source tree a plane was parsed from, rather

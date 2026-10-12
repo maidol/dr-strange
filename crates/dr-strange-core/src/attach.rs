@@ -34,8 +34,10 @@ const WHAT_IT_IS: &str = "the planes this one may ask — a name, the plane it \
 pub trait Remote: Send + Sync {
     /// The nodes `plan` selects from `at`'s plane, or why not.
     ///
-    /// The `Err` is shown to a reader, so it names the failure and never
-    /// carries the remote's reply body.
+    /// The `Err` is shown to a reader, so it names the failure. A body is
+    /// reported by shape, and quoted only where it is a drsg's own structured
+    /// error — the far side saying `not found: plane 'ui'` is the answer an
+    /// operator needs.
     fn nodes(
         &self,
         at: &Attachment,
@@ -184,12 +186,38 @@ impl Attachments {
     }
 }
 
+/// What one `attach` call records.
+pub struct Attach {
+    /// The attachment to record.
+    pub at: Attachment,
+    /// Also record the way back, so either plane can ask the other.
+    ///
+    /// Only for a plane on this instance: the reverse entry belongs on the far
+    /// side's own property map, and a URL attachment is read over an RPC that
+    /// reads.
+    pub both: bool,
+}
+
+impl From<Attachment> for Attach {
+    /// This attachment alone, which is what a bare [`Attachment`] asks for.
+    fn from(at: Attachment) -> Self {
+        Self { at, both: false }
+    }
+}
+
 /// Record an attachment on `plane`, replacing one of the same name.
 ///
 /// A local attachment is verified: the plane it names must be on this
 /// instance, and the error names the ones that are. A URL is recorded as
 /// given — nothing is contacted until a verb asks it something.
-pub fn attach(db: &Database, plane: &str, a: Attachment) -> Result<String> {
+pub fn attach(db: &Database, plane: &str, req: impl Into<Attach>) -> Result<String> {
+    let Attach { at: a, both } = req.into();
+    if both && !a.is_local() {
+        return Err(Error::InvalidArgument(format!(
+            "the way back to '{plane}' belongs on '{}', which this instance does not hold — run `attach` there",
+            a.plane
+        )));
+    }
     if a.name.trim().is_empty() {
         return Err(Error::InvalidArgument("an attachment needs a name".into()));
     }
@@ -217,9 +245,13 @@ pub fn attach(db: &Database, plane: &str, a: Attachment) -> Result<String> {
     let replaced = Attachments::attach(&handle, a.clone())?;
     let mut out = format!("attached on plane '{plane}'\n");
     out.push_str(&row(&a, a.name.chars().count(), &here));
-    if let Some(was) = replaced {
-        out.push_str("  replaced\n");
-        out.push_str(&row(&was, was.name.chars().count(), &here));
+    out.push_str(&instead(&a, replaced, &here));
+    if both {
+        let back = Attachment::new(plane, None, None);
+        let replaced = Attachments::attach(&db.plane(&a.plane)?, back.clone())?;
+        out.push_str(&format!("also on plane '{}'\n", a.plane));
+        out.push_str(&row(&back, back.name.chars().count(), &here));
+        out.push_str(&instead(&back, replaced, &here));
     }
     Ok(out)
 }
@@ -298,6 +330,15 @@ fn is_http_url(url: &str) -> bool {
         .is_some_and(|host| !host.is_empty() && !host.starts_with('/'))
 }
 
+/// What this attachment replaced, when that was something else. A record
+/// replaced by an identical one is not news.
+fn instead(now: &Attachment, was: Option<Attachment>, here: &[String]) -> String {
+    match was.filter(|was| was != now) {
+        Some(was) => format!("  replaced\n{}", row(&was, was.name.chars().count(), here)),
+        None => String::new(),
+    }
+}
+
 /// The planes on this instance, by name.
 fn planes(db: &Database) -> Result<Vec<String>> {
     Ok(db.planes()?.into_iter().map(|(_, name)| name).collect())
@@ -338,6 +379,57 @@ mod tests {
         let db = plane();
         db.create_plane("web", Properties::new()).unwrap();
         db
+    }
+
+    /// A link points one way, so a pair on one instance is two records —
+    /// and `--both` makes them in one call rather than asking the operator to
+    /// remember the direction.
+    #[test]
+    fn both_records_the_way_back() {
+        let db = pair();
+        let out = attach(
+            &db,
+            "code",
+            Attach {
+                at: Attachment::new("web", None, None),
+                both: true,
+            },
+        )
+        .unwrap();
+        assert!(out.contains("attached on plane 'code'"), "{out}");
+        assert!(out.contains("also on plane 'web'"), "{out}");
+
+        let there = Attachments::of(&db.plane("web").unwrap()).unwrap();
+        assert_eq!(there.list().len(), 1);
+        assert_eq!(there.list()[0], Attachment::new("code", None, None));
+        // And each side names exactly the other.
+        let here = Attachments::of(&db.plane("code").unwrap()).unwrap();
+        assert_eq!(here.list()[0].plane, "web");
+    }
+
+    /// The far side's property map is not this instance's to write, and
+    /// `plane.query` reads. Saying so beats recording half a pair.
+    #[test]
+    fn both_is_refused_for_a_plane_elsewhere() {
+        let db = pair();
+        let err = attach(
+            &db,
+            "code",
+            Attach {
+                at: Attachment::new("web", None, Some("http://h:1".into())),
+                both: true,
+            },
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("run `attach` there"), "{err}");
+        // Nothing was recorded on either side.
+        assert!(
+            Attachments::of(&db.plane("code").unwrap())
+                .unwrap()
+                .list()
+                .is_empty()
+        );
     }
 
     #[test]
