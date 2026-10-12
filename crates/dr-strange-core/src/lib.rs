@@ -10,6 +10,7 @@
 
 pub mod api;
 pub use api::cache;
+pub mod attach;
 #[cfg(feature = "json")]
 pub mod compact;
 pub mod compute;
