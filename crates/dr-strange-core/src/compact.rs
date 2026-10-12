@@ -543,6 +543,9 @@ pub fn context(plane: &PlaneHandle<'_>, name: &str) -> Result<String> {
     if let Some(note) = synced_note(plane)? {
         out.push_str(&note);
     }
+    if let Some(note) = route_note(&node, name) {
+        out.push_str(&note);
+    }
 
     // Group every edge by (direction, type). CONTAINS-in is rendered as the
     // parent ("contained by"); CALLS carry their call-site lines.
@@ -1316,6 +1319,23 @@ fn normalize_query(path: &str) -> String {
     out
 }
 
+/// The next call for a symbol that states an HTTP route.
+///
+/// [`describe_record`] already shows the `serves` / `requests` properties;
+/// who is on the *other* side of one is a match across the whole plane, so
+/// [`context`] names the verb that computes it rather than guessing here.
+fn route_note(node: &NodeRecord, name: &str) -> Option<String> {
+    if prop_list(&node.properties, "serves").is_empty()
+        && prop_list(&node.properties, "requests").is_empty()
+    {
+        return None;
+    }
+    let key = node.external_key.as_deref().unwrap_or(name);
+    Some(format!(
+        "note: states an HTTP route — `wire {key}` names what is on the other side of it\n"
+    ))
+}
+
 /// `wire` — what serves a path, and what asks for it.
 ///
 /// The two halves of an HTTP route are written by different plugins, in
@@ -1369,11 +1389,17 @@ pub fn wire(plane: &PlaneHandle<'_>, name: &str, verb: Option<&str>) -> Result<S
         out.push_str(&format!("path  {path}\n"));
         wire_rows("serves  ", &here_serves, &mut out);
         wire_rows("requests", &here_requests, &mut out);
+        // With a verb named, "nothing" means nothing *under that verb* — a
+        // declaration this call filtered out is not a declaration missing.
+        let under = match want.as_deref() {
+            Some(w) => format!(" with {w}"),
+            None => String::new(),
+        };
         if here_serves.is_empty() {
-            out.push_str("  nothing in this plane serves it\n");
+            out.push_str(&format!("  nothing in this plane serves it{under}\n"));
         }
         if here_requests.is_empty() {
-            out.push_str("  nothing in this plane asks for it\n");
+            out.push_str(&format!("  nothing in this plane asks for it{under}\n"));
         }
         for r in &here_requests {
             if here_serves.iter().any(|s| s.answers(r)) {
@@ -2970,7 +2996,30 @@ mod tests {
         let post = wire(&plane, "/bridge/check", Some("POST")).unwrap();
         assert!(!post.contains("web/src/api.check"), "{post}");
         assert!(post.contains("web/src/page.load"), "{post}");
-        assert!(post.contains("nothing in this plane serves it"), "{post}");
+        assert!(
+            post.contains("nothing in this plane serves it with POST"),
+            "a declaration this call filtered out is not one missing: {post}"
+        );
+    }
+
+    /// `context` shows the route properties it holds and names the verb that
+    /// matches them, because the other side is a question about the plane
+    /// rather than a fact about this symbol.
+    #[test]
+    fn context_names_wire_for_a_symbol_that_states_a_route() {
+        let db = routed();
+        let plane = db.plane("code").unwrap();
+        let out = context(&plane, "com.acme.BridgeController.check").unwrap();
+        assert!(out.contains("serves"), "{out}");
+        assert!(
+            out.contains("`wire com.acme.BridgeController.check` names what is on the other side"),
+            "{out}"
+        );
+        let plain = context(&plane, "BridgeController.helper").unwrap();
+        assert!(
+            !plain.contains("states an HTTP route"),
+            "a symbol stating none is told nothing: {plain}"
+        );
     }
 
     /// A symbol that states no route, and a plane where nothing does, each
