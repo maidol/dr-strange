@@ -16,7 +16,7 @@
 use serde_json::{Value, json};
 
 use crate::error::{Error, Result};
-use crate::types::{NodeRecord, PropDesc, PropValue, Properties};
+use crate::types::{NodeId, NodeRecord, PlaneId, PropDesc, PropValue, Properties};
 
 fn invalid(msg: impl Into<String>) -> Error {
     Error::InvalidArgument(msg.into())
@@ -89,6 +89,51 @@ pub fn json_to_properties(v: &Value) -> Result<Properties> {
         props.insert(k.clone(), json_to_propdesc(val)?);
     }
     Ok(props)
+}
+
+/// A node read back from [`node_to_json`] or [`node_to_json_lean`].
+///
+/// The inverse of what every read surface writes, so a reply a drsg sent can
+/// be folded back into records — reading an attached plane over the RPC is the
+/// case this exists for. The JSON carries no plane id, so `plane` is the one
+/// the caller means. A property the lean shape replaced with
+/// [`vector_marker`] is dropped rather than read back as that marker's text:
+/// the floats did not travel, and a node with no embedding is the truth.
+pub fn json_to_node(v: &Value, plane: PlaneId) -> Result<NodeRecord> {
+    let Value::Object(o) = v else {
+        return Err(invalid("a node must be a JSON object"));
+    };
+    let id = o
+        .get("id")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| invalid("a node needs an integer `id`"))?;
+    let labels = match o.get("labels") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Array(a)) => a
+            .iter()
+            .map(|l| {
+                l.as_str()
+                    .map(str::to_string)
+                    .ok_or_else(|| invalid("a label must be a string"))
+            })
+            .collect::<Result<_>>()?,
+        Some(_) => return Err(invalid("`labels` must be an array of strings")),
+    };
+    let mut properties = match o.get("properties") {
+        None | Some(Value::Null) => Properties::new(),
+        Some(props) => json_to_properties(props)?,
+    };
+    properties.retain(|_, p| !matches!(&p.value, PropValue::Str(s) if is_vector_marker(s)));
+    Ok(NodeRecord {
+        id: NodeId(id),
+        plane,
+        external_key: o
+            .get("external_key")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        labels,
+        properties,
+    })
 }
 
 fn json_to_f32_vec(v: &Value) -> Result<Vec<f32>> {
@@ -229,6 +274,13 @@ pub fn vector_marker(dims: usize) -> Value {
     json!(format!("$vector({dims} dims, omitted)"))
 }
 
+/// Whether `s` is a [`vector_marker`] — a vector that was left out, not text.
+pub fn is_vector_marker(s: &str) -> bool {
+    s.strip_prefix("$vector(")
+        .and_then(|rest| rest.strip_suffix(" dims, omitted)"))
+        .is_some_and(|dims| dims.parse::<usize>().is_ok())
+}
+
 /// [`value_to_json`] with a vector as its marker — for a *projected* column,
 /// which is as able to be an embedding as a property is: `RETURN m.embedding`
 /// asks for one by name.
@@ -303,6 +355,88 @@ mod tests {
             full["rows"][0][1]["$vector"].as_array().unwrap().len(),
             1024
         );
+    }
+
+    /// A node written for a reader reads back as the node it was — which is
+    /// what lets a reply from another drsg be folded in as records.
+    #[test]
+    fn a_node_round_trips_through_its_json() {
+        let mut properties = Properties::new();
+        properties.insert("file".into(), PropDesc::new(PropValue::Str("a.ts".into())));
+        properties.insert("line".into(), PropDesc::new(PropValue::Int(7)));
+        properties.insert(
+            "serves".into(),
+            PropDesc::described(
+                "routes declared here",
+                PropValue::List(vec![PropValue::Str("GET /x/{}".into())]),
+            ),
+        );
+        let node = NodeRecord {
+            id: NodeId(42),
+            plane: PlaneId(3),
+            external_key: Some("web/src/api.check".into()),
+            labels: vec!["Function".into()],
+            properties,
+        };
+        let back = json_to_node(&node_to_json(&node), PlaneId(3)).unwrap();
+        assert_eq!(back, node);
+        // And the lean shape, which is what the agent surfaces send.
+        let back = json_to_node(&node_to_json_lean(&node), PlaneId(3)).unwrap();
+        assert_eq!(back, node);
+    }
+
+    /// An omitted vector comes back as no property at all: the floats did not
+    /// travel, and reading the marker's text back as a string would be a lie.
+    #[test]
+    fn an_omitted_vector_does_not_read_back_as_text() {
+        let mut properties = Properties::new();
+        properties.insert(
+            "embedding".into(),
+            PropDesc::new(PropValue::Vector(vec![0.25; 8])),
+        );
+        properties.insert("key".into(), PropDesc::new(PropValue::Str("m::run".into())));
+        let node = NodeRecord {
+            id: NodeId(1),
+            plane: PlaneId::STARTUP,
+            external_key: None,
+            labels: vec![],
+            properties,
+        };
+        let back = json_to_node(&node_to_json_lean(&node), PlaneId::STARTUP).unwrap();
+        assert!(!back.properties.contains_key("embedding"));
+        assert_eq!(
+            back.properties["key"].value,
+            PropValue::Str("m::run".into())
+        );
+        // Asked for whole, the floats are there and survive the trip.
+        let back = json_to_node(&node_to_json(&node), PlaneId::STARTUP).unwrap();
+        assert_eq!(
+            back.properties["embedding"].value,
+            PropValue::Vector(vec![0.25; 8])
+        );
+
+        assert!(is_vector_marker("$vector(1024 dims, omitted)"));
+        assert!(!is_vector_marker("$vector(lots dims, omitted)"));
+        assert!(!is_vector_marker("a string about $vector(8 dims, omitted)"));
+    }
+
+    /// A node with nothing but an id is a node; anything shaped wrong is not.
+    #[test]
+    fn a_node_needs_an_id_and_nothing_else() {
+        let bare = json_to_node(&json!({"id": 9}), PlaneId(1)).unwrap();
+        assert_eq!(bare.id, NodeId(9));
+        assert!(bare.labels.is_empty() && bare.properties.is_empty());
+        for bad in [
+            json!({}),
+            json!({"id": "9"}),
+            json!({"id": 1, "labels": "F"}),
+            json!([]),
+        ] {
+            assert!(
+                json_to_node(&bad, PlaneId(1)).is_err(),
+                "{bad} read as a node"
+            );
+        }
     }
 
     #[test]
