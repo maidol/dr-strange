@@ -8,6 +8,7 @@ use std::io::IsTerminal;
 use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
@@ -19,6 +20,7 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{get, post};
+use dr_strange_core::attach::Remote;
 use dr_strange_core::{ChangeSet, Database, PlaneId, ReplicatedBatch};
 use dr_strange_mcp::DrStrange;
 use dr_strange_parser::Vocab;
@@ -562,12 +564,24 @@ fn mcp_router(
     let tools = Arc::new(tokio::sync::Semaphore::new(mcp_tool_concurrency(
         max_concurrent,
     )));
+    // Direct, and spelled out so it stays that way: this server does not route
+    // on its callers' behalf, and a proxied request is not a guarded one — the
+    // guard pinning each read to the address its attachment names is what
+    // protects the server's network position (issue #37, and `fetch::protect`).
+    // An attached drsg is a peer in the same environment, which is what
+    // `no_proxy` exists to say.
+    let remote: Arc<dyn Remote> = Arc::new(crate::attach::Reader::new(
+        crate::fetch::Network::direct(),
+        state.bootstrap_token.clone(),
+    ));
     let mut sessions = LocalSessionManager::default();
     sessions.session_config.keep_alive = Some(MCP_SESSION_IDLE);
     sessions.session_config.init_timeout = Some(MCP_SESSION_INIT);
     let service = StreamableHttpService::new(
         move || {
-            let mut svc = DrStrange::with_digest(db.clone(), digest).with_tool_gate(tools.clone());
+            let mut svc = DrStrange::with_digest(db.clone(), digest)
+                .with_tool_gate(tools.clone())
+                .with_remote(remote.clone());
             if let Some(root) = &source_root {
                 svc = svc.with_source_root(root.clone());
             }

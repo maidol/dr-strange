@@ -1213,6 +1213,10 @@ fn run_agent_verbs(
         }
         Command::Wire { name, plane, verb } => {
             let db = commands::open(db_path, config::retain_commits(cfg))?;
+            // The operator attached these planes themselves, so reading one is
+            // proxied like their other commands — the same reading
+            // `serve --follow` takes of the primary it was pointed at.
+            let remote = dr_strange_web::attach::Reader::from_env(config::network(cfg)?);
             write!(
                 out,
                 "{}",
@@ -1222,7 +1226,7 @@ fn run_agent_verbs(
                         plane: &plane,
                         name: &name,
                         verb: verb.as_deref(),
-                        remote: None,
+                        remote: Some(&remote),
                     },
                 )?
             )?;

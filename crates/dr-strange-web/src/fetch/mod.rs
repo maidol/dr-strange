@@ -63,7 +63,7 @@ impl<'a> Route<'a> {
 /// approve the proxy's own address — usually loopback, which it refuses — and
 /// would never see the address it exists to judge. The caller picks which of
 /// the two it is getting rather than believing it has both.
-fn protect(
+pub(crate) fn protect(
     b: ureq::config::ConfigBuilder<ureq::typestate::AgentScope>,
     url: &Url,
     route: Route<'_>,

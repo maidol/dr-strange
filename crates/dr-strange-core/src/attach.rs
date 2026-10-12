@@ -25,11 +25,13 @@ const WHAT_IT_IS: &str = "the planes this one may ask — a name, the plane it \
 
 /// A reader for planes on other drsg instances.
 ///
+/// `Send + Sync`: one reader is shared by every thread a server answers on.
+///
 /// Core opens no sockets — a storage engine has no business doing so — so the
 /// surface that can supplies this. A verb hands it one attachment and the plan
 /// to run there, and folds the nodes it gets back; an `Err` is reported as an
 /// attachment that could not be read, never swallowed.
-pub trait Remote {
+pub trait Remote: Send + Sync {
     /// The nodes `plan` selects from `at`'s plane, or why not.
     ///
     /// The `Err` is shown to a reader, so it names the failure and never

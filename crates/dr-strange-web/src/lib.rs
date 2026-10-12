@@ -10,6 +10,7 @@
 //! a minimal dashboard; the WebGL graph-plot views (arch/08 §2.2) land next.
 
 mod assets;
+pub mod attach;
 mod auth;
 pub mod fetch;
 // The client half of raw-WAL replication (arch/01 §9) needs

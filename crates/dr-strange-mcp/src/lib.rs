@@ -30,6 +30,7 @@ use std::time::Duration;
 use tokio::sync::Semaphore;
 
 use anyhow::Result as AnyResult;
+use dr_strange_core::attach::Remote;
 use dr_strange_core::{
     Database, Dir, HybridWeights, LogicalPlan, LouvainOptions, Metric, NodeId, PageRankOptions,
     PlaneHandle, PropDesc, PropValue, Properties, ShortestPathOptions, json,
@@ -67,6 +68,10 @@ pub struct DrStrange {
     /// Longest one tool call may take, queue included — see
     /// [`DrStrange::with_tool_deadline`]. `None` waits and runs without limit.
     deadline: Option<Duration>,
+    /// How `wire` reads a plane another drsg serves — see
+    /// [`DrStrange::with_remote`]. `None` leaves those attachments unread and
+    /// named as such, which is any host holding no network client.
+    remote: Option<Arc<dyn Remote>>,
 }
 
 /// How the host reaches an embedding provider. Only the *names* live here; the
@@ -249,6 +254,7 @@ impl DrStrange {
             source_root: None,
             parsers: default_parsers(),
             deadline: tool_deadline_from_env(),
+            remote: None,
         }
     }
 
@@ -304,6 +310,13 @@ impl DrStrange {
     /// Locate `recall`'s symbols with `parsers` instead of the default plugin store.
     pub fn with_parsers(mut self, parsers: Arc<dyn Parsers>) -> Self {
         self.parsers = parsers;
+        self
+    }
+
+    /// Read attachments that name a URL with `remote`, rather than reporting
+    /// them unread.
+    pub fn with_remote(mut self, remote: Arc<dyn Remote>) -> Self {
+        self.remote = Some(remote);
         self
     }
 
@@ -2899,6 +2912,7 @@ impl DrStrange {
         &self,
         Parameters(req): Parameters<WireReq>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let remote = self.remote.clone();
         self.run("wire", move |db| {
             Ok(Value::String(dr_strange_core::compact::wire(
                 db,
@@ -2906,7 +2920,7 @@ impl DrStrange {
                     plane: &req.plane,
                     name: &req.name,
                     verb: req.verb.as_deref(),
-                    remote: None,
+                    remote: remote.as_deref(),
                 },
             )?))
         })

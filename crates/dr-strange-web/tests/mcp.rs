@@ -301,6 +301,259 @@ async fn a_plane_is_attached_on_a_running_server() {
     client.cancel().await.unwrap();
 }
 
+/// One route as a language plugin writes it: the symbol, which side of the
+/// boundary it is on (`serves` or `requests`), and the route itself.
+struct States {
+    key: &'static str,
+    side: &'static str,
+    route: &'static str,
+    file: &'static str,
+}
+
+/// A second real server, holding `plane` with the routes `states` names —
+/// the other repository, on its own drsg, which is the case issue #42 is
+/// about. Gated by the same `DRSG_TOKEN`: attached graphs are one
+/// environment, so the asking server presents the token it already holds.
+fn spawn_stating(plane: &'static str, states: &'static [States]) -> SocketAddr {
+    set_token_once();
+    let addr = free_addr();
+    let db = Database::in_memory().unwrap();
+    let handle = db.create_plane(plane, Properties::new()).unwrap();
+    let mut txn = handle.write().unwrap();
+    for s in states {
+        let mut props = Properties::new();
+        props.insert(
+            "file".into(),
+            dr_strange_core::PropDesc::new(dr_strange_core::PropValue::Str(s.file.into())),
+        );
+        props.insert(
+            "line".into(),
+            dr_strange_core::PropDesc::new(dr_strange_core::PropValue::Int(3)),
+        );
+        props.insert(
+            s.side.into(),
+            dr_strange_core::PropDesc::new(dr_strange_core::PropValue::List(vec![
+                dr_strange_core::PropValue::Str(s.route.into()),
+            ])),
+        );
+        txn.create_node_with_key(s.key, &["Function"], props)
+            .unwrap();
+    }
+    txn.commit().unwrap();
+
+    std::thread::spawn(move || {
+        let opts = dr_strange_web::ServeOptions {
+            addr,
+            ..Default::default()
+        };
+        dr_strange_web::serve(db, None, opts).unwrap();
+    });
+    addr
+}
+
+/// Two drsg instances, one attached to the other — the case issue #42 opens
+/// with: the frontend repository and the backend repository are not one
+/// graph, and the hop between them has to cross a network.
+///
+/// Nothing new carries the question: it travels as a serialized plan over
+/// `plane.query`, a read method this server has answered for releases. And
+/// nothing is reached that the attachment did not name — the address guard
+/// stays on, re-permitted for exactly that host.
+#[tokio::test]
+async fn wire_reaches_a_plane_another_server_serves() {
+    let far = spawn_stating(
+        "web",
+        &[
+            States {
+                key: "web/src/client.loadOne",
+                side: "requests",
+                route: "GET /api/orders/{}",
+                file: "src/client.ts",
+            },
+            // On the far side and on no path asked about: a federated answer
+            // that pulled a whole plane back would show this.
+            States {
+                key: "web/src/other.ping",
+                side: "requests",
+                route: "GET /health",
+                file: "src/other.ts",
+            },
+        ],
+    );
+    let here = spawn_stating(
+        "api",
+        &[States {
+            key: "app.orders.one",
+            side: "serves",
+            route: "GET /api/orders/{}",
+            file: "api/orders.py",
+        }],
+    );
+    wait_ready(far).await;
+    wait_ready(here).await;
+    let client = connect(here, TOKEN).await.unwrap();
+
+    call(
+        &client,
+        "attach",
+        json!({ "plane": "api", "name": "front", "url": format!("http://{far}"), "as": "web" }),
+    )
+    .await;
+
+    let wired = call(
+        &client,
+        "wire",
+        json!({ "plane": "api", "name": "/api/orders" }),
+    )
+    .await;
+    let text = wired.as_str().expect("wire answers with text");
+    assert!(text.starts_with("across  api, front"), "{text}");
+    assert!(
+        text.contains("serves") && text.contains("app.orders.one"),
+        "the local handler: {text}"
+    );
+    // The row from the other server, named by the attachment it came through.
+    assert!(
+        text.contains("web/src/client.loadOne") && text.contains("in front"),
+        "the remote caller: {text}"
+    );
+    assert!(
+        text.contains("1 request(s) matched a declaration, 0 reached none"),
+        "{text}"
+    );
+    // Asked for routes, the far plane answered with routes — `/health` is on
+    // it and is not on the path asked about, so it is not in this answer.
+    assert!(!text.contains("other.ping"), "{text}");
+
+    client.cancel().await.unwrap();
+}
+
+/// An attachment that cannot be read is named with the reason, never skipped
+/// and never fatal: the local answer still stands, and the reader is told
+/// exactly which graph is missing from it.
+#[tokio::test]
+async fn wire_names_an_attachment_it_could_not_reach() {
+    let addr = spawn_stating(
+        "api",
+        &[States {
+            key: "app.orders.one",
+            side: "serves",
+            route: "GET /api/orders/{}",
+            file: "api/orders.py",
+        }],
+    );
+    wait_ready(addr).await;
+    let client = connect(addr, TOKEN).await.unwrap();
+
+    call(
+        &client,
+        "attach",
+        json!({ "plane": "api", "name": "front", "url": "http://127.0.0.1:1", "as": "web" }),
+    )
+    .await;
+    let wired = call(
+        &client,
+        "wire",
+        json!({ "plane": "api", "name": "/api/orders" }),
+    )
+    .await;
+    let text = wired.as_str().unwrap();
+    assert!(text.contains("not read  front"), "{text}");
+    assert!(
+        text.contains("http://127.0.0.1:1/rpc"),
+        "the url it tried: {text}"
+    );
+    // The local side is still answered.
+    assert!(text.contains("app.orders.one"), "{text}");
+
+    client.cancel().await.unwrap();
+}
+
+/// Read one HTTP request off `stream`: its headers, then as many body bytes
+/// as `Content-Length` promised.
+fn drain_request(stream: &mut std::net::TcpStream) {
+    let mut buf = Vec::new();
+    let mut byte = [0u8; 1];
+    let mut want = None;
+    while let Ok(1) = std::io::Read::read(stream, &mut byte) {
+        buf.push(byte[0]);
+        if want.is_none() && buf.ends_with(b"\r\n\r\n") {
+            let head = String::from_utf8_lossy(&buf).to_lowercase();
+            let len = head
+                .split("content-length:")
+                .nth(1)
+                .and_then(|r| r.split("\r\n").next())
+                .and_then(|v| v.trim().parse::<usize>().ok())
+                .unwrap_or(0);
+            want = Some(buf.len() + len);
+        }
+        if want.is_some_and(|w| buf.len() >= w) {
+            return;
+        }
+    }
+}
+
+/// The address guard is load-bearing, not decoration: an attachment is read
+/// from the address it names and from no other.
+///
+/// Re-permitting that one host is what lets a peer on loopback be attached at
+/// all — so the question is whether anything else still gets refused. Here the
+/// named host answers with a redirect somewhere else on loopback, which is the
+/// classic way an SSRF escalates (a metadata service is one `Location` away),
+/// and the resolver refuses the hop rather than following it.
+#[tokio::test]
+async fn an_attachment_is_read_from_the_address_it_names_and_no_other() {
+    let addr = spawn_stating(
+        "api",
+        &[States {
+            key: "app.orders.one",
+            side: "serves",
+            route: "GET /api/orders/{}",
+            file: "api/orders.py",
+        }],
+    );
+    // A host that answers the attachment's URL and points somewhere else.
+    let elsewhere = TcpListener::bind("127.0.0.1:0").unwrap();
+    let redirector = elsewhere.local_addr().unwrap();
+    std::thread::spawn(move || {
+        for mut stream in elsewhere.incoming().take(1).flatten() {
+            // Drained first: replying to a POST whose body is still being
+            // written closes the socket under the writer, and the client
+            // reports that broken pipe instead of the redirect.
+            drain_request(&mut stream);
+            let _ = std::io::Write::write_all(
+                &mut stream,
+                b"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.2:9/rpc\r\nContent-Length: 0\r\n\r\n",
+            );
+        }
+    });
+    wait_ready(addr).await;
+    let client = connect(addr, TOKEN).await.unwrap();
+
+    call(
+        &client,
+        "attach",
+        json!({ "plane": "api", "name": "front", "url": format!("http://{redirector}"), "as": "web" }),
+    )
+    .await;
+    let wired = call(
+        &client,
+        "wire",
+        json!({ "plane": "api", "name": "/api/orders" }),
+    )
+    .await;
+    let text = wired.as_str().unwrap();
+    assert!(text.contains("not read  front"), "{text}");
+    assert!(
+        text.contains("refusing to connect to 127.0.0.2"),
+        "the hop off the named address: {text}"
+    );
+    // And the local side still answers.
+    assert!(text.contains("app.orders.one"), "{text}");
+
+    client.cancel().await.unwrap();
+}
+
 /// A valid token but a non-loopback `Host`: refused by the transport's
 /// DNS-rebinding guard, which defaults to `localhost`/`127.0.0.1`/`::1`.
 /// Pinned because it is the one way `/mcp` behaves differently from every
