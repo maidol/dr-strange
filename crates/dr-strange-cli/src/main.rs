@@ -226,6 +226,20 @@ enum Command {
         #[arg(long, default_value_t = 3)]
         depth: usize,
     },
+    /// What serves an HTTP path, and what asks for it — matched across every
+    /// language in the plane, computed now and never stored.
+    ///
+    /// Give a path (`/bridge/check`) for both sides of it, a handler to learn
+    /// who calls it, or the function making a call to learn what serves it.
+    Wire {
+        /// A path, a handler, or the function making a call.
+        name: String,
+        #[arg(long, default_value = "startup")]
+        plane: String,
+        /// Narrow a path to one method — `GET`, `post`.
+        #[arg(long)]
+        verb: Option<String>,
+    },
     /// Source text: a symbol read to its end, or a range of a file.
     ///
     /// A symbol gives its body from the declaration down — exactly the
@@ -1133,6 +1147,16 @@ fn run_agent_verbs(
                 out,
                 "{}",
                 dr_strange_core::compact::impact(&p, &name, depth)?
+            )?;
+            Ok(())
+        }
+        Command::Wire { name, plane, verb } => {
+            let db = commands::open(db_path, config::retain_commits(cfg))?;
+            let p = db.plane(&plane)?;
+            write!(
+                out,
+                "{}",
+                dr_strange_core::compact::wire(&p, &name, verb.as_deref())?
             )?;
             Ok(())
         }

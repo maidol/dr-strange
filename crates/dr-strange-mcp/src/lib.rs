@@ -1104,6 +1104,19 @@ struct ImpactReq {
     depth: Option<usize>,
 }
 
+/// `wire`'s request: a path or a symbol, and optionally one verb.
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct WireReq {
+    #[serde(default = "default_plane")]
+    plane: String,
+    /// A path (`/bridge/check`), a handler, or the function making a call.
+    name: String,
+    /// Narrow a path to one method — `GET`, `post`. A side that states no
+    /// verb still answers, because it matches every one.
+    #[serde(default)]
+    verb: Option<String>,
+}
+
 /// `fathom`'s request: one symbol and how wide a region around it.
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct FathomReq {
@@ -2778,6 +2791,31 @@ impl DrStrange {
                 &plane,
                 &req.name,
                 req.depth.unwrap_or(3),
+            )?))
+        })
+        .await
+    }
+
+    #[tool(description = "What serves an HTTP path, and what asks for it: \
+        routes matched across every language in the plane. Give a path \
+        (`/bridge/check`) for both sides of it, a handler to learn who calls \
+        it, or the function making a call to learn what serves it. \
+        Declarations and requests are read from the `serves` and `requests` \
+        properties the language plugins write, so the match knows no \
+        language; it is computed per call and never stored, and the answer \
+        says what it could not match — a request reaching no handler, and an \
+        endpoint nothing asks for. A side that states no verb is `*` and \
+        matches every verb on the path, and the reply says so.")]
+    async fn wire(
+        &self,
+        Parameters(req): Parameters<WireReq>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        self.run("wire", move |db| {
+            let plane = db.plane(&req.plane)?;
+            Ok(Value::String(dr_strange_core::compact::wire(
+                &plane,
+                &req.name,
+                req.verb.as_deref(),
             )?))
         })
         .await

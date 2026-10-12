@@ -240,6 +240,12 @@ async fn tools_answer_in_the_shape_the_question_asked_for() {
         "depth defaults to 2: {text}"
     );
 
+    // `wire` is reachable and says what it found, which here is nothing: this
+    // plane holds one Person and no plugin that states routes.
+    let routes = call(&client, "wire", json!({ "name": "/bridge/check" })).await;
+    let text = routes.as_str().expect("wire answers with text");
+    assert!(text.contains("no routes recorded in this plane"), "{text}");
+
     client.cancel().await.unwrap();
 }
 
