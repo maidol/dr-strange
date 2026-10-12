@@ -36,6 +36,10 @@ access, and the CLI for offline operations.
 | `traverse <key> --plane [--edge-type]` | the neighbours a hop (or several) away |
 | `history --plane [--limit]` | the repository behind a plane: HEAD, branch and tag tips, rebases, newest commits |
 | `recall <name> --at <rev> --plane [--vs <rev>] [--pattern]` | code as it was at a revision: a file, a range, a directory or a symbol; a search of that tree; or a diff from an older revision |
+| `wire <path \| name> --plane [--verb]` | what serves an HTTP path and what asks for it, across every language in the plane and across the planes it attaches |
+| `attach <name> --plane [--url] [--as] [--both]` | record a plane this one may ask: one here, or one another drsg serves |
+| `detach <name> --plane` | forget an attachment (an absent name is reported, not an error) |
+| `attachments --plane [--probe]` | what a plane attaches; `--probe` asks each remote one whether it answers now |
 | `queries [<id>] [--limit]` | the Cypher queries that have run; `cypher --history <id>` runs one again |
 | `vectorize --plane` | embed a plane's nodes for similarity search |
 | `plugin install \| list \| remove` | manage preprocessor plugins (sandboxed wasm parsers) |

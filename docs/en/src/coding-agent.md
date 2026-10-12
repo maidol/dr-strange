@@ -124,7 +124,7 @@ open files, read, infer who calls what, repeat. A digested plane has already
 done that work, once, with a parser — so structural questions become **one
 round trip** instead of a search-and-read loop.
 
-Nine verbs carry the workload, identical over MCP
+Eleven verbs carry the workload, identical over MCP
 ([Chapter 8](./mcp.md)) and the CLI ([Chapter 7](./embedded-cli.md); `grep`,
 `snippet` and `recall` read the tree the plane was parsed from, which `--root`
 names when the plane records none of its own):
@@ -140,6 +140,8 @@ names when the plane records none of its own):
 | `fathom` | what kind of place a symbol sits in: the region within a few hops, by label and edge type, with its hubs |
 | `snippet` | a symbol's source text, or a range of a file (`path:start-end`) — the `sed -n` an agent no longer needs |
 | `recall` | the code as it was at a commit — a file, a symbol's declaration then, a search of that tree, or a diff between two revisions — the `git show` and `git log -p` an agent no longer needs |
+| `history` | the repository behind the code: where HEAD is, what the branches and tags point at, what was rebased, and the newest commits |
+| `wire` | what serves an HTTP path and what asks for it, matched across every language in the plane — and across the planes it attaches |
 
 Every answer is compact one-fact-per-line text, sized for a model's context
 window rather than a terminal, and `context` keeps itself within a fixed
@@ -160,6 +162,52 @@ like before the refactor" is one call rather than a checkout. A symbol is
 located by parsing its file as it was at that commit, not by today's line
 numbers, and a symbol the commit did not declare is reported as absent, with
 what its file did declare.
+
+## Routes: where the graph stops being one repository
+
+A call edge needs a callee the parser can see. An HTTP request has none: a page
+calls `/api/v1/orders/42` and the handler is a controller in another language,
+often in another repository, with nothing between them but a string. Such a
+graph holds both files and no connection.
+
+Each language states its routes in its own way — an annotation carrying a path
+(`@GetMapping`, `@app.get`, `#[get]`), a registration call whose name is the
+verb (`app.get('/x', h)`, `r.GET`, `http.HandleFunc`), or a client call with a
+path argument. The plugins record all three in one vocabulary, on the symbol
+that already exists: **`serves`** for a declaration, **`requests`** for a call,
+each a `VERB /path/{}` with every variable segment reduced to `{}`. The Go,
+Java, Python, Rust and TypeScript plugins write them today.
+
+Nothing new is drawn in the graph. No `Route` node, no `SERVES` edge — a
+synthesised edge would freeze a guess, and a path assembled at runtime is a
+guess. `wire` computes the correspondence per call and reports what it could
+not match: a request reaching no declaration, a declaration nothing asks for
+(a dead endpoint, useful in itself), and a prefix the source never states. A
+side that writes no verb matches every verb on the path **and says so**.
+
+`attach` is the second half. Frontend and backend are separate repositories,
+so they are separate planes, and an attachment records the one fact that joins
+them — *this plane may ask that one*. It carries no vocabulary of its own:
+what the question is, and what key the two sides match on, belongs to the verb
+asking it — so any verb that needs to cross graphs reads the same record.
+
+```console
+$ drsg attach fe --plane be --both     # two planes on this drsg, both ways
+$ drsg attach front --plane be --url http://127.0.0.1:36500 --as fe
+$ drsg attachments --plane be --probe  # does each one answer right now?
+```
+
+A plane on this drsg is read directly. One another drsg serves is read over
+`plane.query`, the read method every drsg already serves — so crossing
+instances adds no protocol and no SDK method, and an attachment that cannot be
+reached is named with the reason rather than skipped. Every row names the graph
+it came from, so an answer spanning two repositories still says where each
+fact lives.
+
+> **Two senses of "attached".** A plane whose *source tree* is synced is also
+> called attached (`serve watch`, `synced_root`). That is the tree behind one
+> plane; an attachment here is another plane this one may ask. The two are
+> unrelated.
 
 ## Honesty is the load-bearing feature
 

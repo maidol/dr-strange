@@ -241,6 +241,10 @@ wait, it does not turn it away.
 | `snippet` | read | a symbol's source text, or a range of a file (`path:start-end`); says which symbol a range opens in and how to read on |
 | `history` | read | a repository's history at a glance — where HEAD is, what the branches and tags point at, what was rebased, and the newest commits; reads the `_git` plane a digest of a git checkout writes |
 | `recall` | read | code as it was at a git revision — a file, a line range, a directory, or a symbol's declaration then, found by parsing its file as it was; `pattern` searches that tree and `vs` diffs a name from an older revision; the revision resolves over the `_git` plane |
+| `wire` | read | what serves an HTTP path and what asks for it — routes matched across every language in the plane, and across the planes it attaches; computed per call, never stored |
+| `attach` | write | record a plane this one may ask: one on this instance, or one another drsg serves (`url`); `both` records the way back |
+| `detach` | write | forget an attachment by the name it was made under |
+| `attachments` | read | what a plane attaches; `probe` asks each one served elsewhere whether it answers now |
 | `traverse` | read | neighborhood expansion from a node (1+ hops) |
 | `query` | read | run a serialized logical plan |
 | `cypher` | read / write | run an openCypher-subset statement — the escape hatch for what no verb anticipated |
