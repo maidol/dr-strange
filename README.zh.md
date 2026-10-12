@@ -70,7 +70,7 @@ JSON-RPC 2.0 接口、浏览器控制台以及 WebSocket 变更流，并配有�
 | **变更流** | 订阅某个平面并实时接收其变更 |
 | **代码图化** | 沙箱化的 wasm 解析器插件将代码仓库转化为已解析的调用图——官方支持 8 种语言，并提供社区解析器 SDK |
 | **提交同步监视** | `serve watch` 将每次提交折叠进平面，结果与全量重新消化收敛一致 |
-| **智能体工具** | `context` · `search` · `describe` · `grep` · `trace` · `impact` · `fathom` · `snippet`——每个问题一次往返 |
+| **智能体工具** | `context` · `search` · `describe` · `grep` · `trace` · `impact` · `fathom` · `snippet` · `history` · `recall` · `wire`——每个问题一次往返 |
 | **备份 / 恢复** | 一致且保留 id 的全库快照 |
 | **接口** | Web 控制台、六种语言 SDK、命令行工具，以及提供智能体工具的 MCP 服务器 |
 
@@ -188,10 +188,10 @@ $ drsg --db codes.drsg context 'WriteTxn::delete_node' --plane myrepo
 仅面向 Claude Code）。它与 drsg 二进制并排安装、按自己的节奏发布——drsg 本身保持
 客户端中立，且不依赖其中任何一部分。
 
-八个动词回答智能体的问题，每个都在一次往返内完成，输出均为紧凑的每行一条事实的
-文本。八个动词全部是 `drsg serve` 上的 MCP 工具，也全部是 CLI 子命令
+十一个动词回答智能体的问题，每个都在一次往返内完成，输出均为紧凑的每行一条事实的
+文本。十一个动词全部是 `drsg serve` 上的 MCP 工具，也全部是 CLI 子命令
 （`grep` 与 `snippet` 读取平面被解析自的那棵源码树；平面若未记录，则由 `--root`
-指明）。
+指明；`recall` 读取仓库自己的对象库）。
 
 | 动词 | 它回答的问题 |
 |---|---|
@@ -204,6 +204,8 @@ $ drsg --db codes.drsg context 'WriteTxn::delete_node' --plane myrepo
 | `fathom` | 一个符号身处怎样的地方：几跳之内的区域，按标签与边类型计数，并给出枢纽 |
 | `snippet` | 一个符号的源码文本，或文件的某个行区间（`path:start-end`）——智能体不再需要的那条 `sed -n` |
 | `history` | 代码背后的仓库：HEAD、分支、标签、变基与最新的提交 |
+| `recall` | 同一份代码当时的样子：一个文件、一个目录、某个符号那时的声明、在旧树上的一次检索，或自某个较旧修订以来的变化 |
+| `wire` | 什么在提供某个 HTTP 路径、什么在请求它——跨平面内的每种语言匹配，也跨它所附着的平面 |
 
 两条纪律贯穿整套工具。歧义的名字从不猜测：回答是一份候选清单，由调用方挑选。
 调用清单是一个明示的下界：解析器无法解析的调用会连同原因保留为 `UnresolvedRef`
@@ -219,6 +221,38 @@ $ drsg --db codes.drsg context 'WriteTxn::delete_node' --plane myrepo
 会逐个提交地把它保持在最新状态，因此 `drsg init` 会一次性建好两个 plane；
 `drsg history`（以及同名的 MCP 工具）把它读回来。`--no-git` 可关闭整个阶段，
 `digest` 与 `serve watch` 皆然。
+
+**路由，以及路由另一端的仓库。** 一个页面调用 `/api/v1/orders/42`；一个控制器
+声明 `@GetMapping("/api/v1/orders/{id}")`；图里同时有这两个文件，却没有任何连接。
+Go、Java、Python、Rust 与 TypeScript 插件会记录一个符号所声明的路由——声明记为
+`serves`，调用记为 `requests`——统一为一套词汇 `GET /api/v1/orders/{}`，无论它由
+哪个框架写成。`wire` 在被询问时才计算这一对应关系，不做任何存储，并说明它无法
+匹配的部分：到不了任何处理器的请求、没有任何人请求的端点、源码中从未声明的前缀。
+
+前端与后端通常是不同的仓库，因此也是不同的平面——`drsg attach` 记录把它们连起来
+的那一条事实，即*本平面可以询问那个平面*。它自身不携带任何问题；每个跨图的动词
+都会读取它。本实例上的一对平面用 `drsg attach fe --plane be --both`，它会在同一次
+调用里把返程也记下来；由另一个 drsg 提供服务的平面则给出它的服务地址。
+
+```console
+$ drsg attach front --plane be --url http://127.0.0.1:36500 --as fe
+$ drsg wire /api/v1/orders/{} --plane be
+across  be, front
+path  /api/v1/orders/{}
+  serves    GET     app.orders.one  Function  api/app/orders.py:7-8
+  serves    GET     com.acme.Orders.one  Method  backend/src/main/java/com/acme/Orders.java:7
+  serves    GET     web/src/routes/orders.one  Function  node/src/routes/orders.ts:1  in front
+  requests  GET     web/src/client.loadOne  Function  node/src/client.ts:3  in front
+1 path(s); 1 request(s) matched a declaration, 0 reached none; 0 declaration(s) nothing asks for
+matched on verb + path, computed for this call and never stored; `*` matches every verb
+```
+
+位于另一个 drsg 上的附着通过 `plane.query` 读取——那是每个 drsg 早已提供的读取
+方法——因此跨实例既不新增协议，也不新增 SDK 方法。联系不上的附着会连同原因一起
+列出，而不是被跳过；`drsg attachments --probe` 会逐个询问它们现在是否应答。
+`attach`、`detach` 与 `attachments` 既是 CLI 子命令也是 MCP 工具——因此智能体可以
+在一次会话内把两个仓库连起来——并且作为平面生命周期的一部分，在 JSON-RPC 服务上
+还有 `plane.attach`/`plane.detach`/`plane.attachments`。
 
 **插件。** `drsg plugin install` 可以安装任何解析器插件——官方插件的名字、本地
 `.wasm` 文件或 URL——安装时验证其为合法组件并固定其 SHA-256，之后每次加载都会

@@ -82,7 +82,7 @@ agent's long-term memory, Dr Strange aims to be the single store for all of it.
 | **Change feed** | subscribe to a plane and receive mutations live |
 | **Code digestion** | sandboxed wasm parser plugins turn a repository into a resolved call graph — 8 official languages, an SDK for community parsers |
 | **Commit-synced watch** | `serve watch` folds every commit into the plane, convergent with a full re-digest |
-| **Agent tools** | `context` · `search` · `describe` · `grep` · `trace` · `impact` · `fathom` · `snippet` — one round trip each |
+| **Agent tools** | `context` · `search` · `describe` · `grep` · `trace` · `impact` · `fathom` · `snippet` · `history` · `recall` · `wire` — one round trip each |
 | **Backup / restore** | consistent, id-faithful whole-database snapshots |
 | **Read-only replicas** | `serve --follow` mirrors a running server for read-scaling across a cluster |
 | **Interfaces** | a web UI, six language SDKs, a CLI, and an MCP server speaking the agent verbs |
@@ -253,10 +253,11 @@ Once per repository, then again whenever the server is gone. Pinning `addr`
 and `token` under `[server]` in `drsg.toml` keeps the endpoint byte-identical
 across restarts even if the recorded port is taken by then.
 
-Eight verbs answer an agent's questions, one round trip each, as compact
-one-fact-per-line text. All eight are MCP tools on `drsg serve`, and all
-eight are CLI subcommands (`grep` and `snippet` read the tree the plane was
-parsed from, which `--root` names when the plane records none of its own).
+Eleven verbs answer an agent's questions, one round trip each, as compact
+one-fact-per-line text. All eleven are MCP tools on `drsg serve`, and all
+eleven are CLI subcommands (`grep` and `snippet` read the tree the plane was
+parsed from, which `--root` names when the plane records none of its own;
+`recall` reads the repository's own object store).
 
 | Verb | The question it answers |
 |---|---|
@@ -269,6 +270,8 @@ parsed from, which `--root` names when the plane records none of its own).
 | `fathom` | what kind of place a symbol sits in: the region within a few hops, by label and edge type, with its hubs |
 | `snippet` | a symbol's source text, or a range of a file (`path:start-end`) — the `sed -n` an agent no longer needs |
 | `history` | the repository behind the code: HEAD, branches, tags, rebases and the newest commits |
+| `recall` | the same code as it was: a file, a directory, a symbol's declaration then, a search of the old tree, or what changed since an older revision |
+| `wire` | what serves an HTTP path and what asks for it — matched across every language in the plane, and across the planes it attaches |
 
 Two disciplines run through every tool. An ambiguous name is never
 guessed at: the reply is a list of candidates to pick from. And a call
@@ -302,6 +305,44 @@ commits (newest 15 of 429):
 ```
 
 `--no-git` turns the whole stage off, on `digest` and on `serve watch` alike.
+
+**Routes, and the repositories on the other side of them.** A page calls
+`/api/v1/orders/42`; a controller declares `@GetMapping("/api/v1/orders/{id}")`;
+the graph holds both files and no connection between them. The Go, Java,
+Python, Rust and TypeScript plugins record the routes a symbol states —
+`serves` for a declaration, `requests` for a call — in one vocabulary,
+`GET /api/v1/orders/{}`, whatever framework wrote it. `wire` computes the
+correspondence when it is asked, stores nothing, and says what it could not
+match: a request that reaches no handler, an endpoint nothing asks for, a
+prefix the source never states.
+
+Frontend and backend are usually different repositories, so they are different
+planes — and `drsg attach` records the one fact that joins them, *this plane may
+ask that one*. It carries no question of its own; every verb that crosses
+graphs reads it. For a pair of planes on one drsg,
+`drsg attach fe --plane be --both` records the way back in the same call; a
+plane another drsg serves takes the URL it is served at.
+
+```console
+$ drsg attach front --plane be --url http://127.0.0.1:36500 --as fe
+$ drsg wire /api/v1/orders/{} --plane be
+across  be, front
+path  /api/v1/orders/{}
+  serves    GET     app.orders.one  Function  api/app/orders.py:7-8
+  serves    GET     com.acme.Orders.one  Method  backend/src/main/java/com/acme/Orders.java:7
+  serves    GET     web/src/routes/orders.one  Function  node/src/routes/orders.ts:1  in front
+  requests  GET     web/src/client.loadOne  Function  node/src/client.ts:3  in front
+1 path(s); 1 request(s) matched a declaration, 0 reached none; 0 declaration(s) nothing asks for
+matched on verb + path, computed for this call and never stored; `*` matches every verb
+```
+
+An attachment on another drsg is read over `plane.query`, the read method every
+drsg already serves, so crossing instances adds no protocol and no new SDK
+method. One that cannot be reached is named with the reason rather than skipped,
+and `drsg attachments --probe` asks each one whether it answers now. `attach`,
+`detach` and `attachments` are CLI subcommands and MCP tools — so an agent can
+wire two repositories together inside one session — and, as plane lifecycle,
+`plane.attach`/`plane.detach`/`plane.attachments` on the JSON-RPC surface.
 
 **Plugins.** `drsg plugin install` installs any parser plugin — an official
 plugin's name, a local `.wasm` file, or a URL — validating it as a component
