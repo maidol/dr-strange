@@ -4,6 +4,69 @@ All notable changes to Dr Strange are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.18.0] - 2026-10-13
+
+### Added
+
+- **`wire`, an agent verb that matches an HTTP route to the code on both sides
+  of it.** A page calls `/api/v1/orders/42`; a controller declares
+  `@GetMapping("/api/v1/orders/{id}")`; the graph held both files and no
+  connection between them, because a call edge needs a callee the parser can see
+  and an HTTP request has nothing between its two sides but a string. The
+  language plugins now record what the source *states* — `serves` for a
+  declaration, `requests` for a call, each a `VERB /path/{}` with every variable
+  segment reduced to `{}` — and `wire` computes the correspondence per call.
+  Nothing is drawn into the graph: no `Route` node, no `SERVES` edge, because a
+  synthesised edge would freeze a guess while a verb asked on demand can report
+  what it could not match — a request reaching no declaration, a declaration
+  nothing asks for (a dead endpoint, useful in itself), and a side that states no
+  verb, which matches every verb on the path and says so. Give it a path for both
+  sides of it, a handler to learn who asks, or the function making a call to learn
+  what serves it. MCP tool and `drsg wire` alike. From issue #42.
+- **`attach`, which lets a verb cross from one plane to another.** A frontend and
+  the service it calls are separate repositories, so they are separate planes,
+  and an attachment records the one fact that joins them: *this plane may ask that
+  one*. It is a single plane property — a name, the plane it names on the far
+  side, and a URL when another drsg serves it — and carries **no token**, because
+  attached graphs belong to one environment and a caller presents the token it
+  already holds, so nothing secret is written into a graph. It carries no
+  vocabulary of its own either: what the question is, and what key the two sides
+  match on, belongs to the verb asking it. `attach` / `detach` / `attachments`
+  are CLI subcommands and MCP tools, so an agent can wire two repositories
+  together inside one session; `--both` records the way back for a local pair,
+  and `attachments --probe` asks each remote one whether it answers now.
+- **`wire` crosses drsg instances over the RPC that already existed.** A plane
+  another drsg serves is read with `plane.query`, the question travelling as a
+  serialized `LogicalPlan` — so federation added no protocol method and no SDK
+  regeneration. One plan serves both sides of the boundary, so a remote graph is
+  asked exactly what a local scan reads and the two cannot drift, and a plane of
+  any size answers with its routes rather than with itself. An attachment that
+  cannot be reached is named with the reason rather than skipped, and every row
+  names the graph it came from. The address guard stays on, re-permitted for
+  exactly the host the attachment names: a hostname is resolved once, so neither
+  a later answer to that name nor a redirect can move the request to an address
+  the operator did not name.
+- **`plane.attach`, `plane.detach` and `plane.attachments` on the JSON-RPC
+  surface**, with the six SDKs regenerated. Plane lifecycle, beside
+  `plane.create` and `plane.set_props`: the record is the plane's own property,
+  and going through these rather than `plane.set_props` is what validates it and
+  keeps two concurrent attaches from losing each other. They return the record
+  itself, not the line a terminal prints.
+
+### Fixed
+
+- **A node id means nothing across two drsg instances.** `wire`'s symbol match
+  keyed rows by bare `NodeId`, which is unique within one database and arbitrary
+  across two — so a row read over the wire could match a local symbol by
+  coincidence. The identity is now the pair of graph and id throughout.
+- **The Python SDK's generator emitted a keyword as a parameter name.** The
+  OpenRPC param `as` became `def plane_attach(self, …, as=None)`, a syntax error
+  that stopped the module importing. The generator now gives any Python keyword
+  the trailing underscore PEP 8 prescribes, leaving the wire name untouched.
+- **The Zig SDK builds on Zig 0.17**, which removed `@cImport`. `drsg.h` is
+  translated by a `b.addTranslateC` build step instead; 0.16 and 0.17 both build
+  and pass the e2e suite.
+
 ## [2.17.1] - 2026-10-11
 
 ### Security
