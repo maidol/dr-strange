@@ -1172,6 +1172,77 @@ nodes (`WHERE m.name = d.name`) out of reach.
 
 ---
 
+## 16. Routes across repositories — the hop a call graph cannot draw  *(shipped)*
+
+**Status.** ✅ Shipped (2026-10-13), from issue #42. A page calls
+`/api/v1/orders/42` and the handler is a controller in another language, often
+in another repository, with nothing between them but a string — so the graph
+held both files and no connection. `wire` matches the two sides when asked,
+over MCP and as `drsg wire`: a path for both sides of it, a handler for who
+asks, or the function making a call for what serves it.
+
+- **A route is a fact, in one vocabulary.** The plugins record what the source
+  states on the symbol that already exists — `serves` for a declaration,
+  `requests` for a call, each `VERB /path/{}` with every variable segment
+  reduced to `{}`, and `serves_as_written` / `requests_as_written` keeping what
+  was written. Shipped in the Go, Java, Python, Rust and TypeScript plugins,
+  with the convention itself in `dr_strange_ext::route` so a community parser
+  states routes the same way.
+- **Three shapes, not N frameworks.** An annotation carrying a path, a
+  registration call whose name is the verb, and a client call with a path
+  argument. The third needs no framework table at all — a path-shaped literal
+  passed to *any* call is a route reference whatever the callee is named, which
+  is the only way a project-local `request('/x')` wrapper is ever visible.
+- **Nothing is drawn.** No `Route` node, no `SERVES` edge: a synthesised edge
+  would freeze a guess, while a verb that matches on demand can say what it
+  could not match — a request reaching no declaration, a declaration nothing
+  asks for, a side that states no verb and so matches every verb on the path.
+- **`attach` joins the graphs** (issue #43's half). An attachment is one plane
+  property — a name, the plane it names there, and a URL when another drsg
+  serves it — and **no token**: attached graphs are one environment, so a
+  caller presents the token it already holds. `attach` / `detach` /
+  `attachments` are CLI subcommands, MCP tools (so an agent wires two
+  repositories together inside one session), and `plane.attach` / `plane.detach`
+  / `plane.attachments` on the RPC, as plane lifecycle beside `plane.create`.
+- **Crossing instances adds no protocol.** A plane another drsg serves is read
+  over `plane.query`, the read method every drsg already serves, with the
+  question travelling as a serialized `LogicalPlan` — so no RPC method and no
+  SDK regeneration was needed for the federation itself. One plan serves both
+  sides of the boundary, so a remote graph is asked exactly what a local scan
+  reads and the two cannot drift.
+
+**Fork settled — why the address guard stays on.** `dr-strange-web`'s fetch
+guard refuses loopback and private addresses, which is exactly where a peer
+drsg lives, and `serve --follow` sets the precedent of switching it off for
+operator-named infrastructure. Instead each read re-permits exactly the host
+its attachment names (resolving a hostname once, so no later answer to that
+name can move the request), which costs nothing and still refuses a redirect
+off that address — the way this class of thing escalates.
+
+**Follow-ups.** A prefix the source does not state (an env var, a base
+assembled at runtime) produces a route that matches nothing, counted as a
+request reaching no declaration — honest, but it does not distinguish
+*unresolvable* from *genuinely absent*; the plan's `route_unresolved` is
+unbuilt. The walk is not federated: `impact` reads `plane.neighbors` directly,
+so a cross-repository answer is rows naming each plane and its entry point,
+with `impact` run locally for the inside radius. And the known misses are
+listed with the plugins — chi's `Route(path, fn)` prefix, gorilla's
+`.Methods("GET")`, actix's `scope(…).service(h)`, a group handed to another
+function, `@FeignClient`-style declarative clients, Spring servlet context
+paths and gateway rewrites, and a literal segment where the declaration has a
+variable.
+
+**Still open for #43.** The second key vocabulary — a Maven coordinate at build
+level (`Manifest --DEPENDS_ON--> External("com.acme:common-base-v2")` against
+the manifest that declares it) and a qualified symbol at code level (the same
+`External` key, referenced on one side and declared on the other) — and an
+`impact --across` that fans out over the attachments. The attachment layer
+above is what both need, and neither changes it. The bridge between the two
+columns is the deps plugin's documented gap, that Maven and Gradle coordinates
+do not join the java parser's package keys.
+
+---
+
 ## Low priority (deferred — not first-class for now)
 
 These are real graph-DB table stakes but explicitly **not** a current priority.
