@@ -13,7 +13,7 @@
 //! itself the useful reply ("which one did you mean") for one more call.
 
 use crate::api::{Database, PlaneHandle};
-use crate::attach::{Attachments, Remote};
+use crate::attach::{Attachment, Attachments, Remote};
 use crate::compute::catalog::key_prefix;
 use crate::compute::expr::LogicOp;
 use crate::compute::plan::Step as PlanStep;
@@ -1292,19 +1292,54 @@ fn stated_from(
     }
 }
 
-/// The graphs one `wire` call reads: this plane, and each attachment it could
+/// Which graphs beyond its own a verb reads.
+///
+/// The scope is asked for rather than inherited: adding a graph changes what
+/// an answer's counts mean, so a verb that can cross says which graphs it
+/// read and a caller says how far to look.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Scope {
+    /// The planes this one attaches. The only scope that reaches a plane
+    /// another drsg serves, an attachment being what carries the address.
+    Attached,
+    /// Every plane this instance holds, attached or not, and the attachments
+    /// another drsg serves. A machine handed every repository then needs no
+    /// setup to be asked across them — which is the ordinary case for a
+    /// shared library and its dependents. A history plane (`…_git`) is not
+    /// one of them: it holds commits, not code.
+    All,
+}
+
+/// The graphs one call reads: this plane, and each graph in scope it could
 /// open — keyed by the name it was attached under, which is what a reader
 /// names to reach it again.
 struct Graphs<'a> {
     name: String,
     here: PlaneHandle<'a>,
     attached: Vec<(String, PlaneHandle<'a>)>,
-    /// Routes read from a plane on another drsg: the nodes themselves, since
+    /// Planes another drsg serves, unasked — [`Graphs::fetch`] puts the
+    /// question, because a verb does not always know what to ask before it
+    /// has read its own plane. Each keeps its place in the list it came from.
+    far: Vec<(usize, Attachment)>,
+    /// How to reach those, where the surface holds a network client.
+    reader: Option<&'a dyn Remote>,
+    /// What a plane on another drsg answered: the nodes themselves, since
     /// nothing here can query it a second time.
     elsewhere: Vec<(String, Vec<NodeRecord>)>,
-    /// Attachments left unread, and why — a cross-graph answer that came back
+    /// Graphs left unread, and why — a cross-graph answer that came back
     /// empty must be distinguishable from one that was never asked.
-    missed: Vec<(String, String)>,
+    missed: Vec<Missed>,
+}
+
+/// A graph in scope that was not read, and why.
+///
+/// `at` is where it sat in the list it was named in, so the report follows
+/// the order an operator attached them in however late a failure was learned
+/// — reaching a plane over the network is answered after every local one.
+struct Missed {
+    at: usize,
+    name: String,
+    why: String,
 }
 
 /// What a name resolved to across the graphs read.
@@ -1318,36 +1353,76 @@ enum Across {
 }
 
 impl<'a> Graphs<'a> {
-    fn open(db: &'a Database, plane: &str, remote: Option<&dyn Remote>) -> Result<Self> {
+    fn open(
+        db: &'a Database,
+        plane: &str,
+        scope: Option<Scope>,
+        reader: Option<&'a dyn Remote>,
+    ) -> Result<Self> {
         let here = db.plane(plane)?;
         let mut attached = Vec::new();
-        let mut elsewhere = Vec::new();
+        let mut far = Vec::new();
         let mut missed = Vec::new();
-        for a in Attachments::of(&here)?.list() {
-            match &a.url {
-                Some(url) => match remote {
-                    Some(reader) => match reader.nodes(a, &route_plan()) {
-                        Ok(nodes) => elsewhere.push((a.name.clone(), nodes)),
-                        Err(why) => missed.push((a.name.clone(), why)),
+        if scope == Some(Scope::All) {
+            for (_, name) in db.planes()? {
+                if name == plane || name.ends_with(HISTORY_SUFFIX) {
+                    continue;
+                }
+                attached.push((name.clone(), db.plane(&name)?));
+            }
+        }
+        if scope.is_some() {
+            for (at, a) in Attachments::of(&here)?.list().iter().enumerate() {
+                match (&a.url, scope) {
+                    (Some(_), _) => far.push((at, a.clone())),
+                    // Every plane is already in scope, so an attachment to one
+                    // of them names nothing new.
+                    (None, Some(Scope::All)) => {}
+                    (None, _) => match db.plane(&a.plane) {
+                        Ok(p) => attached.push((a.name.clone(), p)),
+                        Err(_) => missed.push(Missed {
+                            at,
+                            name: a.name.clone(),
+                            why: format!("no plane '{}' on this instance", a.plane),
+                        }),
                     },
-                    None => missed.push((a.name.clone(), format!("served at {url}"))),
-                },
-                None => match db.plane(&a.plane) {
-                    Ok(p) => attached.push((a.name.clone(), p)),
-                    Err(_) => missed.push((
-                        a.name.clone(),
-                        format!("no plane '{}' on this instance", a.plane),
-                    )),
-                },
+                }
             }
         }
         Ok(Self {
             name: plane.to_string(),
             here,
             attached,
-            elsewhere,
+            far,
+            reader,
+            elsewhere: Vec::new(),
             missed,
         })
+    }
+
+    /// Put one question to every plane another drsg serves, once.
+    ///
+    /// Taken rather than borrowed: a graph read over the wire is read with
+    /// the plan the verb settled on, and asking twice would report an
+    /// unreachable attachment twice.
+    fn fetch(&mut self, plan: &LogicalPlan) {
+        for (at, a) in std::mem::take(&mut self.far) {
+            let why = match self.reader {
+                Some(reader) => match reader.nodes(&a, plan) {
+                    Ok(nodes) => {
+                        self.elsewhere.push((a.name.clone(), nodes));
+                        continue;
+                    }
+                    Err(why) => why,
+                },
+                None => format!("served at {}", a.url.as_deref().unwrap_or("no url")),
+            };
+            self.missed.push(Missed {
+                at,
+                name: a.name.clone(),
+                why,
+            });
+        }
     }
 
     /// Every graph this instance holds and this call reads, with the name it
@@ -1368,10 +1443,17 @@ impl<'a> Graphs<'a> {
             out.push_str(&format!(", {name}"));
         }
         out.push('\n');
-        for (name, why) in &self.missed {
-            out.push_str(&format!("not read  {name} — {why}\n"));
+        for m in self.unread() {
+            out.push_str(&format!("not read  {} — {}\n", m.name, m.why));
         }
         out
+    }
+
+    /// The graphs this call did not read, in the order they were named.
+    fn unread(&self) -> Vec<&Missed> {
+        let mut missed: Vec<&Missed> = self.missed.iter().collect();
+        missed.sort_by_key(|m| m.at);
+        missed
     }
 
     /// The names of the attachments read, however they were reached.
@@ -1545,7 +1627,8 @@ pub struct Wire<'a> {
 /// [`Wire::name`] is a path (`/bridge/check`), or a symbol — a handler, to
 /// learn who asks for it, or a caller, to learn what serves what it asks for.
 pub fn wire(db: &Database, req: Wire<'_>) -> Result<String> {
-    let graphs = Graphs::open(db, req.plane, req.remote)?;
+    let mut graphs = Graphs::open(db, req.plane, Some(Scope::Attached), req.remote)?;
+    graphs.fetch(&route_plan());
     let (serves, requests) = graphs.stated()?;
     if serves.is_empty() && requests.is_empty() {
         return Ok(format!("{}{NO_ROUTES}", graphs.note()));
