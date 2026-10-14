@@ -281,6 +281,38 @@ in svcbilling
 时回答逐字节不变：一个半径在单个仓库之内本就是完整的，加入更多图会改变那个总数的
 含义，所以由调用方来说要看多远。
 
+**一个服务，多个仓库。** 一台装着三十四个仓库的机器，最后就有三十四个数据库——而逐个
+提供服务要花掉一个进程、一个端口和各自的一份缓存，可配置成连一个端口的客户端只能到达
+其中一个。`drsg mount` 可以在一个**正在运行**的 drsg 上提供另一个数据库的平面，并保留
+这些平面原本的名字，于是 `--plane svc-orders` 与此前一模一样：
+
+```console
+$ drsg mount ~/repos/svc-orders        # 即时生效；`--as` 可为其平面加前缀
+mounted 'svc-orders' from /home/me/repos/svc-orders
+  serves  svc-orders
+  held, not served: startup
+$ drsg mounts
+svc-orders  /home/me/repos/svc-orders  (1 plane(s))
+svc-billing  /home/me/repos/svc-billing  (1 plane(s))
+  startup  here
+  svc-orders  in svc-orders  /home/me/repos/svc-orders
+  svc-billing  in svc-billing  /home/me/repos/svc-billing
+mounts may come from /home/me/repos
+```
+
+不复制、不重新图化：每个存储保留自己的文件、**自己的写入者**（于是三十四个
+`serve watch` 的折叠并行进行，而不是排在同一个闸门后面）以及自己的生命周期——移除一个
+仓库是一次 unmount，而不是在共享文件里做区间删除。挂载会被记下来，重启后继续提供；
+`serve watch` 会给每个被挂载的仓库一个各自的 watcher，盯在它自己平面所记录的那棵树
+上——正是这一点让另外三十三个进程得以退场。若某个存储仍被其他进程持有，则会被引擎自己
+的锁拒绝，并说明原因。
+
+每个动词都随之生效，因为平面名在每次请求中被解析一次：`context`、`grep` 与 `snippet`
+按仓库作答，而 `impact --across all` 在一个进程内跨越它们全部——跨仓库的那个问题，完全
+无需任何 attach 配置。`db.mount` 属于 admin 层级，且被限制在 `[server] mount_root`
+所授予的那一个目录之内（默认是你的主目录）：路径是由本进程打开的，而其中某个平面所指名
+的树，`grep` 随后便会去读。
+
 **插件。** `drsg plugin install` 可以安装任何解析器插件——官方插件的名字、本地
 `.wasm` 文件或 URL——安装时验证其为合法组件并固定其 SHA-256，之后每次加载都会
 复查。官方目录覆盖八种语言（Rust、Go、TypeScript/JavaScript、Python、Java、C、

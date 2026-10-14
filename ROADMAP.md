@@ -1304,6 +1304,74 @@ only. And `--across` is on `impact` alone: `trace` and `fathom` do not cross.
 
 ---
 
+## 18. One process, many databases — `mount`  *(shipped)*
+
+**Status.** ✅ Shipped (2026-10-14), from issue #44. Thirty-four repositories,
+thirty-four `drsg serve` processes, thirty-four ports (17700–17733): the
+management cost and the memory are per process, and a global MCP config names
+one port, so an agent reached one repository out of thirty-four. `drsg mount`
+serves another database's planes on a running drsg, and every verb follows.
+
+**One database with thirty-four planes would also have answered this**, and is
+not what shipped. The stores already exist — months of java/TS/python parsing
+and embedding — and re-digesting them produces what is already on disk. Three
+further reasons mounts beat consolidation, and they are the design:
+
+- **One writer slot per database.** A single store serializes every
+  repository's `serve watch` fold behind one gate; thirty-four stores write in
+  parallel.
+- **Per-repository lifecycle.** Dropping a repository is an unmount, not a
+  `drop_plane` range-delete inside a shared file.
+- **Blast radius.** One corrupt store is one repository.
+
+- **The mount table is core's, not a surface's.** `Instance` owns the host
+  database and the mounted ones; resolution hands back an owned `Arc<Database>`
+  because `PlaneHandle` borrows what it reads and the table changes while the
+  process runs. Being in core is what lets everything that *enumerates* planes
+  see mounts — which is why `impact --across all` (§17) answers across all
+  thirty-four repositories in one process, with no attachment setup at all.
+- **A plane name is resolved once per request.** `plane` is the one key every
+  method and tool uses for "the plane to act on", so the RPC resolves it at
+  dispatch and the MCP layer in one `run_in`; all 39 RPC methods and 26 tools
+  answer across mounts without being touched. A prefixed mount's name is
+  rewritten to what its own database calls it.
+- **Plane names stay flat**, so `--plane svc-orders` works exactly as before.
+  `startup` is skipped (every database has one, and it would clash on the first
+  mount); any other clash refuses the whole mount and names `--as`.
+- **`serve watch` watches every mounted repository**, on the tree its own plane
+  records — the slice that actually retires the other thirty-three processes.
+  One `Instance::on_mount` hook covers a mount replayed at boot, named on the
+  command line, or arriving over the wire hours later.
+- **Written down and replayed.** A mount lives in the host's `startup` plane
+  properties, like `attachments`; a recorded directory that has moved is
+  reported and skipped rather than taken as a reason not to start.
+
+**Fork settled — who may name a mounted path.** `db.mount` opens a directory a
+caller names, and a plane inside it records a `synced_root` that `grep` and
+`snippet` would then read: the escalation `TreeAccess` exists to prevent. So
+the admin tier is not enough on its own — the path must sit under one granted
+directory (`[server] mount_root`, defaulting to the operator's home), the web
+crate refuses mounting outright when given no grant, and that same directory
+becomes a second readable root for the file-reading verbs. A local process
+(stdio, the CLI) is unconfined, since it already runs as the user whose files
+these are. Two things the engine settled for free: a store another process
+holds is refused by its own exclusive lock, with a message that already says
+`run drsg serve and share that instance instead`; and `mount` refuses a path
+that does not exist, because `Database::open` creates on demand and a mistyped
+path would otherwise be answered with a new empty database.
+
+**Follow-ups.** `drsg snapshot` / `restore` and `db.stats` are the host's
+database, not the mounts' — a mounted store is backed up where it lives.
+There is no cross-mount transaction, and none is offered rather than faked.
+`serve --follow` replicates one database, so a mounted instance is not a
+replication unit. `drop_plane` takes a `name` and so stays on the host: a
+mounted plane's name is simply not found there, which is safe but terse.
+And a mount is read *and written* through the same handle, so
+`digest --plane <mounted>` writes that mount's store — correct, and worth
+saying out loud.
+
+---
+
 ## Low priority (deferred — not first-class for now)
 
 These are real graph-DB table stakes but explicitly **not** a current priority.

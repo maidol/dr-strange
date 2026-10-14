@@ -41,6 +41,9 @@ access, and the CLI for offline operations.
 | `attach <name> --plane [--url] [--as] [--both]` | record a plane this one may ask: one here, or one another drsg serves |
 | `detach <name> --plane` | forget an attachment (an absent name is reported, not an error) |
 | `attachments --plane [--probe]` | what a plane attaches; `--probe` asks each remote one whether it answers now |
+| `mount <path> [--as] [--url]` | serve another database's planes on a **running** drsg, now — these three speak its RPC rather than opening a file, since the server holds the store's lock |
+| `unmount <name> [--url]` | stop serving a mount, releasing its store's lock (an absent name is reported, not an error) |
+| `mounts [--url]` | what that server serves: each mount with its directory and planes, and every plane with the tree it records |
 | `queries [<id>] [--limit]` | the Cypher queries that have run; `cypher --history <id>` runs one again |
 | `vectorize --plane` | embed a plane's nodes for similarity search |
 | `plugin install \| list \| remove` | manage preprocessor plugins (sandboxed wasm parsers) |

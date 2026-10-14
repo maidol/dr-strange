@@ -236,6 +236,7 @@ write_timeout_secs = 30                     # 一次写等待单写者槽位多�
 query_timeout_secs = 60                     # 一次请求内的查询可运行多久后以同样的方式停止（0 表示跑到结束）
 retain_commits = 20                         # 时间旅行可回溯的提交数；更早的版本在压缩时回收（0 表示全部保留）。对每个打开数据库的 drsg 命令生效，不只是 serve
 source_root = "/srv/myrepo"                 # grep/snippet 智能体工具读取的源码树（serve watch 会用 --dir 设置它）
+mount_root = "/srv/repos"                   # `drsg mount` 可以从哪一个目录下打开数据库（默认：你的主目录）；该目录内平面所记录的树也因此可被 grep/snippet 读取
 allowed_origins = ["https://app.example.com"]  # 额外允许的浏览器来源
 
 [server.tls]                                # 存在此节 ⇒ 以 HTTPS 提供服务

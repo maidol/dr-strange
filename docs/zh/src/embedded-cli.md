@@ -37,6 +37,9 @@
 | `attach <名称> --plane [--url] [--as] [--both]` | 记录本平面可以询问的平面：本实例上的，或由另一个 drsg 提供服务的 |
 | `detach <名称> --plane` | 移除一条附着（名称不存在时只做报告，不算错误） |
 | `attachments --plane [--probe]` | 本平面附着了什么；`--probe` 会逐个询问远端的附着现在是否应答 |
+| `mount <路径> [--as] [--url]` | 立即在一个**正在运行**的 drsg 上提供另一个数据库的平面——这三个动词说的是它的 RPC，而不是打开某个文件，因为存储的锁在服务器手里 |
+| `unmount <名称> [--url]` | 停止提供某个挂载，并释放其存储的锁（名称不存在时如实报告，而不是报错） |
+| `mounts [--url]` | 那台服务器提供了什么：每个挂载及其目录与平面，以及每个平面所记录的树 |
 | `queries [<id>] [--limit]` | 已经运行过的 Cypher 查询；`cypher --history <id>` 可再跑一次 |
 | `vectorize --plane` | 为一个平面的节点生成向量嵌入，以供相似度检索 |
 | `plugin install \| list \| remove` | 管理预处理插件（沙箱化的 wasm 解析器） |

@@ -39,6 +39,8 @@ drsg history [--plane P] [--limit N]      # the repository behind a plane: HEAD,
 drsg recall <name> --at <rev> [--vs R]    # the code as it was: a file, a range, a symbol's declaration then
 drsg wire <path|name> [--verb V]          # what serves an HTTP path and what asks for it (06-mcp.md §1)
 drsg attach <name> [--url U] [--as P] [--both]  # record a plane this one may ask (09-planes.md)
+drsg mount <path> [--as P] [--url U]        # serve another database's planes on a running drsg (09-planes.md §2)
+drsg unmount <name> / drsg mounts [--url U]  # stop serving one; what this instance serves
 drsg detach <name> / drsg attachments [--probe]  # forget one; list them, optionally asking each
 drsg queries [<id>] [--limit N]           # the Cypher queries that have run; `cypher --history <id>` reruns one
 drsg catalog [--plane P]                  # soft-schema view (labels, props, descriptions)

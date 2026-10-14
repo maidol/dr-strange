@@ -375,6 +375,42 @@ setup to be asked across them. Without the flag the answer is unchanged, byte
 for byte: a radius is complete within one repository, and adding graphs changes
 what the total counts, so the caller says how far to look.
 
+**One server, many repositories.** A machine with thirty-four repositories ends
+up with thirty-four databases — and serving each cost a process, a port and its
+own cache, while a client configured for one port reached one of them.
+`drsg mount` serves another database's planes on a **running** drsg, keeping the
+planes' own names, so `--plane svc-orders` works exactly as before:
+
+```console
+$ drsg mount ~/repos/svc-orders        # on the fly; `--as` prefixes its planes
+mounted 'svc-orders' from /home/me/repos/svc-orders
+  serves  svc-orders
+  held, not served: startup
+$ drsg mounts
+svc-orders  /home/me/repos/svc-orders  (1 plane(s))
+svc-billing  /home/me/repos/svc-billing  (1 plane(s))
+  startup  here
+  svc-orders  in svc-orders  /home/me/repos/svc-orders
+  svc-billing  in svc-billing  /home/me/repos/svc-billing
+mounts may come from /home/me/repos
+```
+
+Nothing is copied or re-digested: each store keeps its own files, **its own
+writer** (so thirty-four `serve watch` folds run in parallel rather than
+queueing behind one gate) and its own lifecycle — dropping a repository is an
+unmount, not a range-delete inside a shared file. A mount is written down, so a
+restart serves it again; `serve watch` gives each mounted repository a watcher
+on the tree its own plane records, which is what retires the other
+thirty-three processes. A store another process still holds is refused, by the
+engine's own lock, saying so.
+
+Every verb follows, because a plane name is resolved once per request: `context`,
+`grep` and `snippet` answer per repository, and `impact --across all` crosses
+all of them in one process — the cross-repository question with no attachment
+setup at all. `db.mount` is admin-tier and confined to the one directory
+`[server] mount_root` grants (your home directory by default): the path is
+opened by this process, and a plane in it names a tree `grep` would then read.
+
 **Plugins.** `drsg plugin install` installs any parser plugin — an official
 plugin's name, a local `.wasm` file, or a URL — validating it as a component
 and pinning its SHA-256, re-checked at every load. The official catalog covers

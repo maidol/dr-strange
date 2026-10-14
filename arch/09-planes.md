@@ -61,6 +61,28 @@ graphs it read. It lives here rather than in a side table because a plane's
 own map is already durable, already readable by anything that reads a plane,
 and already the thing `plane.set_props` edits.
 
+**One process may serve several databases** (issue #44). A repository digested
+into its own store is the ordinary case, and a machine ends up with dozens; a
+**mount** is such a store whose planes this process also serves, under their own
+names. Resolution is per request: the host's own planes first, then each mount
+asked its *own* database — not a list cached at mount time, which a rename
+through this instance would leave answering for a name that is gone. Plane names
+are unique across the instance by construction: `startup` is skipped (every
+database has one), and any other clash refuses the whole mount, naming the
+clashes and the `--as` prefix that resolves them.
+
+What a mount is **not**: a merge. Node and plane ids are allocated per database
+and collide freely across them, so nothing joins two stores — a request reaches
+exactly one, and the only thing shared is the name it was asked for. That is
+also why each mount keeps its own writer slot, which is the point for a machine
+folding commits in thirty-four repositories at once.
+
+The record lives in the host's `startup` plane properties (`mounts`), for the
+same reason `attachments` lives on a plane, and is replayed at startup; a
+recorded directory that has moved is reported and skipped rather than taken as
+a reason not to start. Opening is what takes a store's exclusive lock, so a
+database another process holds is refused by the engine itself.
+
 - A **default plane** (`plane_id = 0`, name `"startup"`) exists from creation, so
   single-canvas users never think about planes at all.
 - Plane names are unique and interned; all keys carry the `u32` id, never the
@@ -74,6 +96,7 @@ and already the thing `plane.set_props` edits.
 | `drop_plane(id)` | delete the canvas and everything on it | prefix range-delete per table + drop of its vector index files |
 | `rename / set properties` ✅ (M5) | metadata update — `PlaneHandle::rename` / `set_properties` / `properties` (startup can't be renamed) | O(1) |
 | `attach / detach` ✅ | record or forget a plane this one may ask — `Attachments::attach` / `detach` under `update_properties`, so two concurrent attaches cannot lose each other. A local target is verified to exist; a URL is recorded as given and contacted by nothing until a verb asks it | O(attachments) |
+| `mount / unmount` ✅ | serve another database's planes alongside this one's, or stop (issue #44) — `Instance::mount` / `unmount`. Instance lifecycle rather than plane: it adds no plane to this database, it adds a database. Confined to one granted directory on a server, and refused for a store another process holds | O(planes in it) |
 | `copy(selection, from, to)` | copy a subgraph into another plane: **new node/edge IDs**, `external_key`s carried along (they are the cross-plane identity thread) | O(selection) |
 | `move(selection, from, to)` | copy + delete; edges fully inside the selection move, edges crossing the selection boundary are dropped (reported to the caller) | O(selection) |
 | `merge(from…, to)` | v2, sits on `copy` + entity resolution (LLM layer proposes matches by external key / embedding similarity; core executes the copy plan) | — |
