@@ -136,7 +136,7 @@ names when the plane records none of its own):
 | `describe` | one symbol's properties — the lightweight node-only view |
 | `grep` | text over the watched source tree — literal or regex, path-scoped, with context lines; each hit names the symbol it falls in; bounded and counted |
 | `trace` | how one symbol reaches another: the shortest recorded call path |
-| `impact` | blast radius: everything reaching a symbol, grouped by distance |
+| `impact` | blast radius: everything reaching a symbol, grouped by distance — and, asked `--across`, which other repositories the radius reaches |
 | `fathom` | what kind of place a symbol sits in: the region within a few hops, by label and edge type, with its hubs |
 | `snippet` | a symbol's source text, or a range of a file (`path:start-end`) — the `sed -n` an agent no longer needs |
 | `recall` | the code as it was at a commit — a file, a symbol's declaration then, a search of that tree, or a diff between two revisions — the `git show` and `git log -p` an agent no longer needs |
@@ -208,6 +208,83 @@ fact lives.
 > called attached (`serve watch`, `synced_root`). That is the tree behind one
 > plane; an attachment here is another plane this one may ask. The two are
 > unrelated.
+
+## A shared library, and the repositories that depend on it
+
+"Which business repositories would this change break?" is the same question
+`impact` already answers, asked one repository out. A change to a class in a
+common library is local; its consequences are not, and a radius walked in one
+plane cannot see them.
+
+`impact --across` answers it in the other graphs too, by **two keys both sides
+already state** — nothing new is extracted, and no plugin needed changing:
+
+| join | this plane holds | a dependent holds |
+|---|---|---|
+| **build** | `Manifest.declares` — the coordinate its own manifest publishes | a node keyed by that coordinate, with `version` and `scope` on the `DEPENDS_ON` edge |
+| **code** | the changed symbol, and every key in its radius | the same key as a stand-in, labelled `External` |
+
+The coordinate is *read from this plane*, never mapped onto it. A Maven
+coordinate (`com.acme:common-base`) and a Java package (`com.acme.common…`)
+cannot be mapped to one another without a guess — which is why the `deps`
+plugin records a build dependency and declines to join it to any import.
+Standing in the library there is nothing to guess: its own `pom.xml` says
+which coordinate it publishes, and a dependent's `pom.xml` keys its
+declaration the same way.
+
+```console
+$ drsg impact com.acme.common.BaseEntity --plane commonlib --across all
+com.acme.common.BaseEntity  Class  src/main/java/com/acme/common/BaseEntity.java:3-6
+depth 1 (1):
+  com.acme.common.Dated  Class  src/main/java/com/acme/common/Dated.java:3-5  [EXTENDS]
+total affected within depth 3: 1
+note: recorded call edges only — calls the parser could not resolve (dynamic dispatch, untyped receivers) are absent, so this is a lower bound.
+
+across  commonlib, svcorders, svcbilling
+in svcorders
+  declares  com.acme:common-base  2.4.1  [runtime]  pom.xml
+  com.acme.common.Dated  ← 1
+    com.acme.orders.Order  Class  src/main/java/com/acme/orders/Order.java:5-8  [EXTENDS]
+in svcbilling
+  declares  com.acme:common-base  2.3.0  [runtime]  pom.xml
+2 graph(s) read, 2 hold(s) something: 2 declare(s) a dependency, 1 reach(es) it in code
+1 of the 2 key(s) offered are referenced elsewhere
+```
+
+`svcorders` is reached through `Dated` rather than through the changed class
+itself — a key the radius holds, not only its seed. `svcbilling` declares the
+dependency at an older version and touches none of it, which is an answer
+worth having.
+
+Two scopes, because two environments ask this differently. `--across` alone
+reads the planes this one attaches: explicit, and the only scope that can
+reach another drsg. `--across all` reads every plane this instance holds, so a
+machine that was handed thirty repositories needs no setup to be asked across
+them; an empty plane and a `…_git` history plane are not among them. Either
+way the answer names the graphs it read, and the ones it could not.
+
+Without `--across` the answer is unchanged, byte for byte. Unlike `wire`,
+which crosses graphs unasked because a route's two halves live in different
+repositories by nature, a radius *is* complete within one repository — adding
+graphs changes what the total counts, so a caller says how far to look.
+
+A graph another drsg serves answers with nodes, since that is what
+`plane.query` returns and a version is a fact about an edge. It therefore
+reports which keys it holds — itself the statement that something in it
+references them, a stand-in existing only where a reference minted one — and
+names the call that reads the rest:
+
+```console
+across  commonlib, far
+in far  at http://127.0.0.1:36600
+  declares  com.acme:common-base  (the manifest and its version are read there)
+  com.acme.common.Dated  ← referenced; what references it is read there
+  ask that drsg for the rest: `impact <key> --plane svcorders`
+```
+
+One more distinction it keeps: a graph holding a key *without* `External` is
+not a dependent but the same code again — vendored, or digested twice — and is
+reported as `holds its own` rather than counted as a user.
 
 ## Honesty is the load-bearing feature
 

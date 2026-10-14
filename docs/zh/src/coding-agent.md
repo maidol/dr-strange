@@ -114,7 +114,7 @@ plane 'myrepo' rebuilt — serve watch pid 51188, http://127.0.0.1:51900/mcp
 | `describe` | 一个符号的属性——只看节点的轻量视图 |
 | `grep` | 在被监视的源码树上做文本检索——字面或正则，可按路径限定、带上下文行，每个命中标出所在符号；有界且带计数 |
 | `trace` | 一个符号如何到达另一个：图中记录的最短调用路径 |
-| `impact` | 影响范围：所有能到达该符号的东西，按距离分组 |
+| `impact` | 影响范围：所有能到达该符号的东西，按距离分组——加上 `--across` 后，还包括这个半径触及了哪些其他仓库 |
 | `fathom` | 一个符号身处怎样的地方：几跳之内的区域，按标签与边类型计数，并给出枢纽 |
 | `snippet` | 一个符号的源码文本，或文件的某个行区间（`path:start-end`）——智能体不再需要的那条 `sed -n` |
 | `recall` | 某次提交时代码的样子——一个文件、一个符号当时的声明、那棵树上的检索，或两个修订版本之间的差异——智能体不再需要的那条 `git show` 与 `git log -p` |
@@ -175,6 +175,76 @@ $ drsg attachments --plane be --probe  # 它们现在各自是否应答？
 > **“附着”的两种含义。** 源码树处于同步状态的平面也被称为已附着
 > （`serve watch`、`synced_root`），那指的是一个平面背后的那棵树；而这里的附着
 > 指的是本平面可以询问的另一个平面。两者互不相关。
+
+## 一个公共库，以及依赖它的那些仓库
+
+「改这个类会影响哪些业务仓？」问的正是 `impact` 早已回答的那个问题，只是往外
+挪了一个仓库。公共库里一个类的改动是局部的，它的后果却不是；而在单个平面里走
+出来的半径看不见那些后果。
+
+`impact --across` 把这个问题也在其他图里回答，依据的是**两侧本就已经陈述了的
+两个键**——没有新提取任何东西，也没有任何插件需要改动：
+
+| 连接 | 本平面持有 | 依赖方持有 |
+|---|---|---|
+| **构建** | `Manifest.declares`——它自己的 manifest 所发布的坐标 | 一个以该坐标为键的节点，`version` 与 `scope` 记在 `DEPENDS_ON` 边上 |
+| **代码** | 被改动的符号，以及它半径内的每一个键 | 同一个键的替身，带 `External` 标签 |
+
+坐标是*从本平面读出来*的，绝不是映射上去的。一个 Maven 坐标
+（`com.acme:common-base`）与一个 Java 包（`com.acme.common…`）之间，不猜就无法
+互相映射——这正是 `deps` 插件记录构建依赖、却拒绝把它和任何 import 连起来的原因。
+而站在这个库里就无需去猜：它自己的 `pom.xml` 说明了它发布哪个坐标，而依赖方的
+`pom.xml` 给它的声明用的是同一个键。
+
+```console
+$ drsg impact com.acme.common.BaseEntity --plane commonlib --across all
+com.acme.common.BaseEntity  Class  src/main/java/com/acme/common/BaseEntity.java:3-6
+depth 1 (1):
+  com.acme.common.Dated  Class  src/main/java/com/acme/common/Dated.java:3-5  [EXTENDS]
+total affected within depth 3: 1
+note: recorded call edges only — calls the parser could not resolve (dynamic dispatch, untyped receivers) are absent, so this is a lower bound.
+
+across  commonlib, svcorders, svcbilling
+in svcorders
+  declares  com.acme:common-base  2.4.1  [runtime]  pom.xml
+  com.acme.common.Dated  ← 1
+    com.acme.orders.Order  Class  src/main/java/com/acme/orders/Order.java:5-8  [EXTENDS]
+in svcbilling
+  declares  com.acme:common-base  2.3.0  [runtime]  pom.xml
+2 graph(s) read, 2 hold(s) something: 2 declare(s) a dependency, 1 reach(es) it in code
+1 of the 2 key(s) offered are referenced elsewhere
+```
+
+`svcorders` 是经由 `Dated` 而非被改动的那个类本身被触及的——那是半径所持有的一
+个键，而不只是它的种子。`svcbilling` 声明的依赖停在一个更旧的版本上，并且完全
+没有用到它，这同样是一个值得拿到的回答。
+
+两种范围，因为有两种环境以不同方式提出这个问题。只写 `--across` 读的是本平面所
+附着的那些平面：显式，而且这是唯一能到达另一个 drsg 的范围。`--across all` 读的
+是本实例持有的每一个平面——于是一台被交付了三十个仓库的机器无需任何配置就能被跨
+仓追问；空平面与 `…_git` 历史平面不在其中。两种范围都会说明自己读了哪些图，以及
+哪些读不到。
+
+不写 `--across` 时，回答逐字节不变。`wire` 无需被要求就跨图，因为一条路由的两半
+天然住在不同的仓库里；而一个半径在单个仓库之内**本就是完整的**——加入更多图会改
+变那个总数的含义，所以由调用方来说要看多远。
+
+由另一个 drsg 提供服务的图回答的是节点，因为 `plane.query` 返回的就是节点，而版本
+是一条关于边的事实。于是它报告自己持有哪些键——这本身就是「它内部有东西引用了这些
+键」这句陈述，因为替身只会在有引用把它铸出来的地方存在——并指出读取其余部分的那次
+调用：
+
+```console
+across  commonlib, far
+in far  at http://127.0.0.1:36600
+  declares  com.acme:common-base  (the manifest and its version are read there)
+  com.acme.common.Dated  ← referenced; what references it is read there
+  ask that drsg for the rest: `impact <key> --plane svcorders`
+```
+
+它还守住了另一条区分：持有某个键却**不带** `External` 的图并不是依赖方，而是同一份
+代码的又一份——被 vendor 进来，或者被图化了两次——它会被报告为 `holds its own`，而
+不是被算作一个使用者。
 
 ## 诚实是基石
 

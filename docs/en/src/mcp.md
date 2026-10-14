@@ -236,7 +236,7 @@ wait, it does not turn it away.
 | `describe` | read | one symbol's properties, the lightweight node-only view |
 | `grep` | read | text search over the watched source tree — literal or regex, scoped by `path`, with context lines; each hit names the symbol it falls in |
 | `trace` | read | the shortest recorded call path between two symbols |
-| `impact` | read | everything reaching a symbol, grouped by distance |
+| `impact` | read | everything reaching a symbol, grouped by distance; `across` (`attached` or `all`) also names the *other repositories* the radius reaches, by the coordinate their build declares and the symbol their source stands in for |
 | `fathom` | read | the makeup of the region around a symbol — labels, edge types, hubs |
 | `snippet` | read | a symbol's source text, or a range of a file (`path:start-end`); says which symbol a range opens in and how to read on |
 | `history` | read | a repository's history at a glance — where HEAD is, what the branches and tags point at, what was rebased, and the newest commits; reads the `_git` plane a digest of a git checkout writes |

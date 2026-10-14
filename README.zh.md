@@ -200,7 +200,7 @@ $ drsg --db codes.drsg context 'WriteTxn::delete_node' --plane myrepo
 | `describe` | 一个符号的属性——只看节点的轻量视图 |
 | `grep` | 在被监视的源码树上做文本检索——字面或正则，可按路径限定、带上下文行，每个命中标出所在符号；有界且带计数 |
 | `trace` | 一个符号如何到达另一个：图中记录的最短调用路径 |
-| `impact` | 影响范围：所有能到达该符号的东西，按距离分组 |
+| `impact` | 影响范围：所有能到达该符号的东西，按距离分组——加上 `--across` 后，还包括它触及了哪些其他仓库 |
 | `fathom` | 一个符号身处怎样的地方：几跳之内的区域，按标签与边类型计数，并给出枢纽 |
 | `snippet` | 一个符号的源码文本，或文件的某个行区间（`path:start-end`）——智能体不再需要的那条 `sed -n` |
 | `history` | 代码背后的仓库：HEAD、分支、标签、变基与最新的提交 |
@@ -253,6 +253,33 @@ matched on verb + path, computed for this call and never stored; `*` matches eve
 `attach`、`detach` 与 `attachments` 既是 CLI 子命令也是 MCP 工具——因此智能体可以
 在一次会话内把两个仓库连起来——并且作为平面生命周期的一部分，在 JSON-RPC 服务上
 还有 `plane.attach`/`plane.detach`/`plane.attachments`。
+
+**一个公共库，以及依赖它的那些仓库。** 「改这个类会影响哪些业务仓？」问的就是
+`impact`，只是往外挪了一个仓库。`impact --across` 把这个问题也在其他图里回答，依据
+的是两侧本就已经陈述了的两个键：构建声明的**坐标**（这边是 `Manifest.declares`，
+那边是一条带 `version` 与 `scope` 的 `DEPENDS_ON` 边），以及依赖方源码为之立下替身
+的**符号**（同一个键，带 `External` 标签）。两者都不是推导出来的，也没有任何插件需要
+改动——一个 Maven 坐标与一个 Java 包，不猜就无法互相映射，但站在这个库里就无需去猜：
+它自己的 `pom.xml` 说明了它发布哪个坐标。
+
+```console
+$ drsg impact com.acme.common.BaseEntity --plane commonlib --across all
+…
+across  commonlib, svcorders, svcbilling
+in svcorders
+  declares  com.acme:common-base  2.4.1  [runtime]  pom.xml
+  com.acme.common.Dated  ← 1
+    com.acme.orders.Order  Class  src/main/java/com/acme/orders/Order.java:5-8  [EXTENDS]
+in svcbilling
+  declares  com.acme:common-base  2.3.0  [runtime]  pom.xml
+2 graph(s) read, 2 hold(s) something: 2 declare(s) a dependency, 1 reach(es) it in code
+1 of the 2 key(s) offered are referenced elsewhere
+```
+
+只写 `--across` 读的是本平面所附着的那些平面；`--across all` 读的是本实例持有的每
+一个平面，于是一台被交付了三十个仓库的机器无需任何配置就能被跨仓追问。不写这个选项
+时回答逐字节不变：一个半径在单个仓库之内本就是完整的，加入更多图会改变那个总数的
+含义，所以由调用方来说要看多远。
 
 **插件。** `drsg plugin install` 可以安装任何解析器插件——官方插件的名字、本地
 `.wasm` 文件或 URL——安装时验证其为合法组件并固定其 SHA-256，之后每次加载都会

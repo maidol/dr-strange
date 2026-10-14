@@ -27,6 +27,7 @@
 | `digest <文件\|目录\|url> --plane [--mode]` | 导入一篇文档、一个代码仓库，或一个页面及其链接 |
 | `search <查询> --plane` | 语义查找：嵌入查询文本，返回最近的节点 |
 | `context \| describe \| trace \| impact \| fathom <名称> --plane` | 已图化代码平面上的智能体动词 |
+| `impact <名称> --plane [--depth] [--across [attached\|all]]` | `--across` 把半径扩到本仓库之外：本平面所附着的那些平面，或本实例持有的每一个平面 |
 | `snippet <名称 \| path:start-end> --plane` | 一个符号的源码文本，或被解析树中任一文件的某个行区间 |
 | `grep <模式> --plane [--regex] [--path]` | 在该树上做文本检索；每个命中都标出所在的符号 |
 | `traverse <键> --plane [--edge-type]` | 一跳（或数跳）之外的邻居 |

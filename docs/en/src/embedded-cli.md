@@ -31,6 +31,7 @@ access, and the CLI for offline operations.
 | `digest <file\|dir\|url> --plane [--mode]` | ingest a document, a repository, or a page and its links |
 | `search <query> --plane` | semantic lookup: embeds the query, returns the nearest nodes |
 | `context \| describe \| trace \| impact \| fathom <name> --plane` | the agent verbs over a digested code plane |
+| `impact <name> --plane [--depth] [--across [attached\|all]]` | `--across` widens the radius past this repository: the planes this one attaches, or every plane this instance holds |
 | `snippet <name \| path:start-end> --plane` | a symbol's source text, or a range of any file in the parsed tree |
 | `grep <pattern> --plane [--regex] [--path]` | text search over that tree; each hit names the symbol it falls in |
 | `traverse <key> --plane [--edge-type]` | the neighbours a hop (or several) away |

@@ -266,7 +266,7 @@ parsed from, which `--root` names when the plane records none of its own;
 | `describe` | one symbol's properties — the lightweight node-only view |
 | `grep` | text over the watched source tree — literal or regex, path-scoped, with context lines; each hit names the symbol it falls in; bounded and counted |
 | `trace` | how one symbol reaches another: the shortest recorded call path |
-| `impact` | blast radius: everything reaching a symbol, grouped by distance |
+| `impact` | blast radius: everything reaching a symbol, grouped by distance — and, asked `--across`, which other repositories it reaches |
 | `fathom` | what kind of place a symbol sits in: the region within a few hops, by label and edge type, with its hubs |
 | `snippet` | a symbol's source text, or a range of a file (`path:start-end`) — the `sed -n` an agent no longer needs |
 | `history` | the repository behind the code: HEAD, branches, tags, rebases and the newest commits |
@@ -343,6 +343,37 @@ and `drsg attachments --probe` asks each one whether it answers now. `attach`,
 `detach` and `attachments` are CLI subcommands and MCP tools — so an agent can
 wire two repositories together inside one session — and, as plane lifecycle,
 `plane.attach`/`plane.detach`/`plane.attachments` on the JSON-RPC surface.
+
+**A shared library, and the repositories that depend on it.** "Which business
+repositories would this change break?" is `impact`, asked one repository out.
+`impact --across` answers it in the other graphs too, by two keys both sides
+already state: the **coordinate** a build declares (`Manifest.declares` here,
+a `DEPENDS_ON` edge carrying `version` and `scope` there) and the **symbol** a
+dependent's source stands in for (the same key, labelled `External`). Neither
+is derived and no plugin needed changing — a Maven coordinate and a Java
+package cannot be mapped to one another without a guess, but standing in the
+library there is nothing to guess: its own `pom.xml` says which coordinate it
+publishes.
+
+```console
+$ drsg impact com.acme.common.BaseEntity --plane commonlib --across all
+…
+across  commonlib, svcorders, svcbilling
+in svcorders
+  declares  com.acme:common-base  2.4.1  [runtime]  pom.xml
+  com.acme.common.Dated  ← 1
+    com.acme.orders.Order  Class  src/main/java/com/acme/orders/Order.java:5-8  [EXTENDS]
+in svcbilling
+  declares  com.acme:common-base  2.3.0  [runtime]  pom.xml
+2 graph(s) read, 2 hold(s) something: 2 declare(s) a dependency, 1 reach(es) it in code
+1 of the 2 key(s) offered are referenced elsewhere
+```
+
+`--across` alone reads the planes this one attaches; `--across all` reads every
+plane this instance holds, so a machine handed thirty repositories needs no
+setup to be asked across them. Without the flag the answer is unchanged, byte
+for byte: a radius is complete within one repository, and adding graphs changes
+what the total counts, so the caller says how far to look.
 
 **Plugins.** `drsg plugin install` installs any parser plugin — an official
 plugin's name, a local `.wasm` file, or a URL — validating it as a component
