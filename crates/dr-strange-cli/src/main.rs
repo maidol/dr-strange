@@ -1471,11 +1471,21 @@ fn render_mounts(method: &str, answer: &serde_json::Value) -> String {
             }
         }
         "db.unmount" => match answer.get("unmounted").and_then(serde_json::Value::as_bool) {
-            Some(true) => s.push_str(&format!(
-                "unmounted '{}' at {}\n",
-                text(answer, "name"),
-                text(answer, "path")
-            )),
+            Some(true) => {
+                s.push_str(&format!(
+                    "unmounted '{}' at {}\n",
+                    text(answer, "name"),
+                    text(answer, "path")
+                ));
+                // Said only when it is not: an operator unmounting in order to
+                // open the store elsewhere would otherwise meet its lock.
+                if answer.get("freed").and_then(serde_json::Value::as_bool) == Some(false) {
+                    s.push_str(
+                        "  still locked: a fold is running against it; \
+                         the lock frees when it finishes\n",
+                    );
+                }
+            }
             _ => s.push_str(&format!("nothing mounted as '{}'\n", text(answer, "name"))),
         },
         _ => {

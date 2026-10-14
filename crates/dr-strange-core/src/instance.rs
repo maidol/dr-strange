@@ -121,6 +121,51 @@ pub struct Mounting<'a> {
     pub remember: bool,
 }
 
+/// What an unmount stopped serving.
+///
+/// Carries no handle to the database, which is the point: while a caller held
+/// one the store stayed locked, so the lock outlived the call that was meant
+/// to release it.
+#[derive(Debug)]
+pub struct Unmounted {
+    /// The name it was served under.
+    pub name: String,
+    /// The directory it was opened from.
+    pub path: PathBuf,
+    /// The names its planes answered to here.
+    pub planes: Vec<String>,
+    /// Whether the store's lock was released before the call returned.
+    ///
+    /// `false` when something was still writing to it — a fold in flight —
+    /// which frees the lock when it finishes.
+    pub freed: bool,
+}
+
+/// How long [`Instance::unmount`] waits for work still running against a
+/// database to finish, so unmounting and re-mounting the same path is not
+/// refused by the store's own lock.
+const RELEASE_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// How often that wait looks.
+const RELEASE_POLL: std::time::Duration = std::time::Duration::from_millis(25);
+
+/// Drop a mount's own handle and wait briefly for the store to come free,
+/// reporting whether it did.
+fn release(db: Arc<Database>) -> bool {
+    let store = Arc::downgrade(&db);
+    drop(db);
+    let deadline = std::time::Instant::now() + RELEASE_WAIT;
+    loop {
+        if store.strong_count() == 0 {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(RELEASE_POLL);
+    }
+}
+
 /// What a mount brought.
 #[derive(Debug)]
 pub struct Mounted {
@@ -341,10 +386,15 @@ impl Instance {
         Ok(Mounted { mount, skipped })
     }
 
-    /// Stop serving a mount, releasing its database's lock once the last
-    /// handle to it drops — which is immediately, unless a call is still
-    /// running against it.
-    pub fn unmount(&self, name: &str) -> Result<Option<Mount>> {
+    /// Stop serving a mount and free its database's lock, waiting briefly for
+    /// work still running against it.
+    ///
+    /// The handle is dropped here rather than handed back, and
+    /// [`Unmounted::freed`] says whether the store came free before this
+    /// returned — an operator unmounting a database in order to open it with
+    /// something else needs that answer, and a caller given the handle
+    /// instead would hold the very lock it asked to release.
+    pub fn unmount(&self, name: &str) -> Result<Option<Unmounted>> {
         let mut mounts = self.write();
         let Some(at) = mounts.iter().position(|m| m.name == name) else {
             // Forget it anyway: a recorded mount whose directory has gone was
@@ -356,8 +406,21 @@ impl Instance {
         drop(mounts);
         Remembered::forget(&self.host.plane(SKIPPED)?, name)?;
         gone.db.save_sidecars();
-        tracing::info!(name, path = %gone.path.display(), "unmounted a database");
-        Ok(Some(gone))
+        let Mount {
+            name,
+            path,
+            planes,
+            db,
+            ..
+        } = gone;
+        let freed = release(db);
+        tracing::info!(%name, path = %path.display(), freed, "unmounted a database");
+        Ok(Some(Unmounted {
+            name,
+            path,
+            planes,
+            freed,
+        }))
     }
 
     /// Serve again what was recorded, and say what could not be.
@@ -718,14 +781,48 @@ mod tests {
 
         let gone = inst.unmount("svc-orders").unwrap().expect("was mounted");
         assert_eq!(gone.path, orders);
+        assert!(gone.freed, "the store came free with the unmount");
         assert!(inst.serving("svc-orders").is_err());
         assert!(inst.mounts().is_empty());
-        drop(gone);
         // The lock went with it: another handle can open the directory now.
         assert!(Database::open(&orders).is_ok());
 
         // Unmounting what was never mounted is said, not an error.
         assert!(inst.unmount("svc-orders").unwrap().is_none());
+    }
+
+    /// What `serve watch` does with a mounted database: a watcher borrows it
+    /// for as long as it runs. A borrower must not keep the store locked, or
+    /// unmounting it would free nothing until the process exited.
+    #[test]
+    fn a_borrowed_handle_does_not_keep_the_store_locked() {
+        let tmp = tempfile::tempdir().unwrap();
+        let orders = store(tmp.path(), "svc-orders");
+        let inst = host();
+        let mounted = inst.mount(mounting(&orders, None)).unwrap();
+        let watcher = Arc::downgrade(mounted.mount.database());
+        drop(mounted);
+
+        let gone = inst.unmount("svc-orders").unwrap().expect("was mounted");
+        assert!(gone.freed, "a borrower does not hold the lock");
+        assert!(watcher.upgrade().is_none(), "the watcher's handle is gone");
+        assert!(Database::open(&orders).is_ok());
+    }
+
+    /// Work still running against the database holds its own handle, so the
+    /// lock cannot be released yet — which is reported, not hidden.
+    #[test]
+    fn a_handle_still_in_use_is_reported_as_not_freed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let orders = store(tmp.path(), "svc-orders");
+        let inst = host();
+        inst.mount(mounting(&orders, None)).unwrap();
+        let busy = inst.serving("svc-orders").unwrap().db;
+
+        let gone = inst.unmount("svc-orders").unwrap().expect("was mounted");
+        assert!(!gone.freed, "something is still writing to it");
+        drop(busy);
+        assert!(Database::open(&orders).is_ok(), "freed when that ended");
     }
 
     #[test]

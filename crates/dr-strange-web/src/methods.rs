@@ -822,6 +822,7 @@ pub fn db_unmount(ctx: &Ctx<'_>, p: Value) -> Result<Value, RpcError> {
             "name": m.name,
             "path": m.path.display().to_string(),
             "planes": m.planes,
+            "freed": m.freed,
         }),
         None => jval!({ "unmounted": false, "name": req.name }),
     })

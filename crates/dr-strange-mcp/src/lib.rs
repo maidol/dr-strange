@@ -3203,6 +3203,7 @@ impl DrStrange {
                     "name": m.name,
                     "path": m.path.display().to_string(),
                     "planes": m.planes,
+                    "freed": m.freed,
                 }),
                 None => jval!({ "unmounted": false, "name": req.name }),
             })
