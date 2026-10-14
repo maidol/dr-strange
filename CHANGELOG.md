@@ -4,6 +4,24 @@ All notable changes to Dr Strange are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.20.1] - 2026-10-15
+
+### Fixed
+
+- **`unmount` now frees the store it stopped serving.** A mounted repository's
+  watcher held a handle to its database, so unmounting removed the mount, said
+  it had released the lock, and released nothing: the orphaned thread kept the
+  exclusive lock — and kept folding commits into a database this process no
+  longer served — until the process exited. Nothing else could open that
+  directory, which made unmounting a repository in order to work on its store
+  elsewhere, or re-mounting the same path, fail on a lock this server itself
+  held. A mount's watcher now **borrows** its database: it takes a handle per
+  fold, never across its sleep, and stops once the mount is gone. `unmount`
+  drops the last handle itself rather than handing it to the caller that asked
+  for the lock to be released, waits briefly for a fold in flight, and answers
+  `freed` — so an operator is told whether the store came free. The host's own
+  watcher still holds its database, which outlives every watcher anyway.
+
 ## [2.20.0] - 2026-10-15
 
 ### Added

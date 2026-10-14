@@ -246,7 +246,7 @@ wait, it does not turn it away.
 | `detach` | write | forget an attachment by the name it was made under |
 | `attachments` | read | what a plane attaches; `probe` asks each one served elsewhere whether it answers now |
 | `mount` | write | serve the planes of another database alongside this one's, now, without a restart — one process for many repositories, each keeping its own store, its own writer and its own plane names. Confined to `[server] mount_root` |
-| `unmount` | write | stop serving a mounted database, releasing its store's lock; nothing is deleted |
+| `unmount` | write | stop serving a mounted database, releasing its store's lock and stopping the watcher that folded into it; `freed` says whether the lock came free, since a fold in flight holds it until it ends. Nothing is deleted |
 | `mounts` | read | what this server serves and where each part came from — every mount with its directory and planes, and every plane with the tree it was parsed from, which is how a client maps a working directory to a plane |
 | `traverse` | read | neighborhood expansion from a node (1+ hops) |
 | `query` | read | run a serialized logical plan |

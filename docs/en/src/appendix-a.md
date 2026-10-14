@@ -18,7 +18,7 @@ or an external key.
 - **`db.stats`** · read — plane/node/edge counts, labels, edge types, indexes, commits, on-disk size, memory (the process's resident set, and the bytes the loaded plugins hold). Params: none.
 - **`db.catalog`** · read — the soft-schema catalog across every plane. Params: none.
 - **`db.mount`** · admin — serve the planes of another database alongside this one's (issue #44). The directory must already be a database and must sit under `[server] mount_root`; a store another process holds is refused. Params: `path`, `as?` (prefix the mount's plane names).
-- **`db.unmount`** · admin — stop serving a mount, releasing its store's lock. An absent name is reported, not an error. Params: `name`.
+- **`db.unmount`** · admin — stop serving a mount, releasing its store's lock. `freed` says whether the lock came free before the call returned: a fold in flight holds it until it finishes. An absent name is reported, not an error. Params: `name`.
 - **`db.mounts`** · read — what this instance serves: each mount with its directory and planes, and every plane with the source tree it records. Params: none.
 
 ## Planes
