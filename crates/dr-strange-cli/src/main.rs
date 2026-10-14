@@ -22,6 +22,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
+use dr_strange_core::compact;
 use dr_strange_core::{Dir, Metric};
 
 #[derive(Parser)]
@@ -1182,11 +1183,19 @@ fn run_agent_verbs(
         }
         Command::Impact { name, plane, depth } => {
             let db = commands::open(db_path, config::retain_commits(cfg))?;
-            let p = db.plane(&plane)?;
             write!(
                 out,
                 "{}",
-                dr_strange_core::compact::impact(&p, &name, depth)?
+                compact::impact(
+                    &db,
+                    compact::Impact {
+                        plane: &plane,
+                        name: &name,
+                        depth,
+                        across: None,
+                        remote: None,
+                    },
+                )?
             )?;
             Ok(())
         }

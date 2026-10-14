@@ -814,38 +814,66 @@ fn render_path(plane: &PlaneHandle<'_>, path: &[crate::NodeId], out: &mut String
     Ok(())
 }
 
+// `USES_TYPE` is what makes `impact` answerable *about a type*: without it
+// the walk saw only who constructed one, and reported a fraction of the
+// radius as if it were the whole of it. `READS` / `WRITES` / `USES_COLUMN`
+// are the same statement about a table and a column, which is what "who would
+// a schema change break" asks.
+//
+// Containment is deliberately absent — `CONTAINS` and `HAS_COLUMN` say a
+// thing is *part of* another, not that it would break with it.
+const IMPACT_EDGES: &[&str] = &[
+    "CALLS",
+    "REFERENCES",
+    "INSTANTIATES",
+    "IMPORTS",
+    "EXTENDS",
+    "IMPLEMENTS",
+    "USES_TYPE",
+    "READS",
+    "WRITES",
+    "USES_COLUMN",
+];
+
+/// What one `impact` call is asked, and how far it may look.
+pub struct Impact<'a> {
+    /// The plane the question is asked in.
+    pub plane: &'a str,
+    /// The symbol being changed.
+    pub name: &'a str,
+    /// Hops of incoming structural edges to walk, clamped to 1..=6.
+    pub depth: usize,
+    /// Which other graphs to answer in as well. `None` — the default — is
+    /// this plane alone, and the answer is then what it has always been.
+    ///
+    /// Unlike [`wire`], which crosses graphs unasked because a route's two
+    /// halves are in different repositories by nature, a radius is complete
+    /// within one: adding graphs changes what the total counts, and reading
+    /// thirty planes is not something a verb should do uninvited.
+    pub across: Option<Scope>,
+    /// How to read a graph another drsg serves. `None` leaves those unread
+    /// and named as such.
+    pub remote: Option<&'a dyn Remote>,
+}
+
 /// `impact` — the blast radius: what reaches this symbol, breadth-first over
 /// INCOMING structural edges (CALLS, REFERENCES, INSTANTIATES, IMPORTS,
 /// EXTENDS, IMPLEMENTS, USES_TYPE, READS, WRITES, USES_COLUMN), grouped by
 /// distance, counts always exact even when listings elide.
-pub fn impact(plane: &PlaneHandle<'_>, name: &str, depth: usize) -> Result<String> {
+///
+/// With [`Impact::across`] set it then says which *other* graphs the radius
+/// reaches — the question a shared library asks, where a change is local to
+/// one repository and its consequences are not.
+pub fn impact(db: &Database, req: Impact<'_>) -> Result<String> {
     const LEVEL_CAP: usize = 20;
-    // `USES_TYPE` is what makes this verb answerable *about a type*: without
-    // it the walk saw only who constructed one, and reported a fraction of
-    // the radius as if it were the whole of it. `READS` / `WRITES` /
-    // `USES_COLUMN` are the same statement about a table and a column, which
-    // is what "who would a schema change break" asks.
-    //
-    // Containment is deliberately absent — `CONTAINS` and `HAS_COLUMN` say a
-    // thing is *part of* another, not that it would break with it.
-    const IMPACT_EDGES: &[&str] = &[
-        "CALLS",
-        "REFERENCES",
-        "INSTANTIATES",
-        "IMPORTS",
-        "EXTENDS",
-        "IMPLEMENTS",
-        "USES_TYPE",
-        "READS",
-        "WRITES",
-        "USES_COLUMN",
-    ];
-    let node = match resolve(plane, name)? {
+    let mut graphs = Graphs::open(db, req.plane, req.across, req.remote)?;
+    let plane = &graphs.here;
+    let node = match resolve(plane, req.name)? {
         Resolved::One(n) => n,
-        Resolved::Many(hits) => return Ok(candidates(name, &hits)),
-        Resolved::None => return no_match(plane, name),
+        Resolved::Many(hits) => return Ok(candidates(req.name, &hits)),
+        Resolved::None => return no_match(plane, req.name),
     };
-    let depth = depth.clamp(1, 6);
+    let depth = req.depth.clamp(1, 6);
     let mut out = one_line(&node);
     out.push('\n');
     if let Some(note) = synced_note(plane)? {
@@ -855,6 +883,9 @@ pub fn impact(plane: &PlaneHandle<'_>, name: &str, depth: usize) -> Result<Strin
     // in, since the walk arrives breadth-first.
     let mut lines: std::collections::BTreeMap<crate::NodeId, String> =
         std::collections::BTreeMap::new();
+    // Breadth-first order, so a radius too large to carry whole is truncated
+    // to the keys nearest the change.
+    let mut offered: Vec<String> = node.external_key.iter().cloned().collect();
     let region = walk(
         plane,
         node.id,
@@ -873,6 +904,9 @@ pub fn impact(plane: &PlaneHandle<'_>, name: &str, depth: usize) -> Result<Strin
             };
             if !IMPACT_EDGES.contains(&edge.ty.as_str()) {
                 return Ok(Step::Skip);
+            }
+            if let Some(key) = &n.external_key {
+                offered.push(key.clone());
             }
             lines.insert(hop.node, format!("{}  [{}]", one_line(&n), edge.ty));
             Ok(Step::Take)
@@ -896,8 +930,373 @@ pub fn impact(plane: &PlaneHandle<'_>, name: &str, depth: usize) -> Result<Strin
     }
     out.push_str(&format!("total affected within depth {depth}: {total}\n"));
     out.push_str(CALLS_NOTE);
+    if req.across.is_some() {
+        let offered = Offered::new(plane, offered)?;
+        out.push_str(&across(&mut graphs, &offered)?);
+    }
     Ok(out)
 }
+
+/// The label a plugin puts on a node standing in for something outside its
+/// own tree, beside what the reference proves it is (`Class`, `Package`, …).
+///
+/// Two plugins asserting the same foreign key agree rather than collide, so
+/// the stand-in a java file's `import` mints and the one a `pom.xml`'s
+/// `<dependency>` mints are the same node — and either one, held in another
+/// repository under a key this plane declares, *is* that repository
+/// referencing this code.
+const EXTERNAL_LABEL: &str = "External";
+
+/// The label a build manifest carries, and the property naming what it is for.
+const MANIFEST_LABEL: &str = "Manifest";
+const DECLARES_PROP: &str = "declares";
+
+/// The edge a build manifest's declaration is written on, carrying `version`
+/// and `scope`.
+const DEPENDS_EDGE: &str = "DEPENDS_ON";
+
+/// Most keys one question carries to another graph. A radius wider than this
+/// is asked about its nearest keys and says so.
+const OFFER_CAP: usize = 500;
+
+/// Most referring symbols listed under one key; the count stays exact.
+const USES_CAP: usize = 10;
+
+/// What a radius offers another repository to recognise it by.
+///
+/// Two vocabularies, because a repository states a dependency twice and in
+/// two languages: its build declares a **coordinate**, and its source
+/// references a **symbol**. Both are already in the graph — neither is
+/// derived here, and nothing is guessed.
+struct Offered {
+    /// Every external key in the radius, nearest first, the changed symbol
+    /// leading. Another graph holding one of these as a stand-in references
+    /// this code.
+    keys: Vec<String>,
+    /// How many the radius held before [`OFFER_CAP`].
+    held: usize,
+    /// What this plane's own build manifests declare it *is*: a Maven
+    /// coordinate, an npm name, a Go module path.
+    coordinates: Vec<String>,
+}
+
+impl Offered {
+    /// The radius's keys, and the coordinates this plane publishes.
+    ///
+    /// The coordinate is **read from this plane**, not mapped onto it: a
+    /// coordinate (`com.acme:common-base`) and a package (`com.acme.common…`)
+    /// cannot be mapped to one another without a guess — which is why the
+    /// deps plugin records a Maven dependency and declines to join it to any
+    /// import. Standing in the library there is nothing to guess: its own
+    /// manifest says which coordinate it publishes, and a dependent's
+    /// manifest keys its declaration the same way.
+    fn new(plane: &PlaneHandle<'_>, keys: Vec<String>) -> Result<Self> {
+        let held = keys.len();
+        let mut keys = keys;
+        keys.truncate(OFFER_CAP);
+        let mut coordinates: Vec<String> = plane
+            .query_from_plan(LogicalPlan::new(Source::ScanLabel(MANIFEST_LABEL.into())))
+            .nodes()?
+            .iter()
+            .filter_map(|n| prop_str(&n.properties, DECLARES_PROP).map(str::to_string))
+            .collect();
+        coordinates.sort();
+        coordinates.dedup();
+        Ok(Self {
+            keys,
+            held,
+            coordinates,
+        })
+    }
+
+    /// Everything one graph is asked for in a single question.
+    fn plan(&self) -> LogicalPlan {
+        let mut asked = self.coordinates.clone();
+        asked.extend(self.keys.iter().cloned());
+        LogicalPlan::new(Source::SeekKeys(asked))
+    }
+
+    fn is_coordinate(&self, key: &str) -> bool {
+        self.coordinates.iter().any(|c| c == key)
+    }
+}
+
+/// What one graph holds of a radius.
+struct Dependent {
+    /// The name this call knows the graph by: the attachment's, or the
+    /// plane's own.
+    at: String,
+    /// The attachment it came from, where it is a plane another drsg serves
+    /// — which carries both the address it answered at and the name it goes
+    /// by there, the two things a reader needs to ask it directly.
+    served: Option<Attachment>,
+    /// Its build declarations naming a coordinate this plane publishes.
+    declares: Vec<Declared>,
+    /// Each key of the radius it references, and what references it.
+    uses: Vec<Used>,
+    /// Keys it holds as declarations of its own rather than as references —
+    /// this code again, vendored or digested twice. Not a dependent.
+    copies: Vec<NodeRecord>,
+}
+
+impl Dependent {
+    fn empty(at: &str) -> Self {
+        Self {
+            at: at.to_string(),
+            served: None,
+            declares: Vec::new(),
+            uses: Vec::new(),
+            copies: Vec::new(),
+        }
+    }
+
+    /// Does it hold anything at all of this radius?
+    fn holds(&self) -> bool {
+        !self.declares.is_empty() || !self.uses.is_empty() || !self.copies.is_empty()
+    }
+}
+
+/// A build declaration naming a coordinate this plane publishes.
+struct Declared {
+    /// The coordinate, as both manifests spell it.
+    coordinate: String,
+    /// The manifest declaring it, and the `version` and `scope` the
+    /// declaration states — all three `None` where the edge could not be
+    /// read, which is a graph another drsg serves: `plane.query` answers with
+    /// nodes, and a version is a fact about the edge.
+    manifest: Option<NodeRecord>,
+    version: Option<String>,
+    scope: Option<String>,
+}
+
+/// One key of the radius another graph references, and what references it.
+struct Used {
+    key: String,
+    /// What references it, with the edge each was reached by — capped at
+    /// [`USES_CAP`], and empty where the referrers were not read.
+    by: Vec<(NodeRecord, String)>,
+    /// How many reference it in all, or `None` where that was not read.
+    total: Option<usize>,
+}
+
+/// What a radius reaches beyond the plane it was walked in.
+fn across(graphs: &mut Graphs<'_>, offered: &Offered) -> Result<String> {
+    graphs.fetch(&offered.plan());
+    let mut found: Vec<Dependent> = Vec::new();
+    for (at, p) in graphs.attached.iter() {
+        found.push(dependent_here(at, p, offered)?);
+    }
+    for (at, nodes) in &graphs.elsewhere {
+        let mut d = dependent_far(at, nodes, offered);
+        d.served = graphs.served_by(at).cloned();
+        found.push(d);
+    }
+    Ok(render_across(graphs, offered, &found))
+}
+
+/// What a plane on this instance holds of a radius, read from its edges.
+fn dependent_here(at: &str, plane: &PlaneHandle<'_>, offered: &Offered) -> Result<Dependent> {
+    let mut d = Dependent::empty(at);
+    for n in plane.query_from_plan(offered.plan()).nodes()? {
+        let Some(key) = n.external_key.clone() else {
+            continue;
+        };
+        if offered.is_coordinate(&key) {
+            let mut written = false;
+            for nb in plane.neighbors(n.id, crate::Dir::In, Some(DEPENDS_EDGE))? {
+                let (Some(edge), Some(m)) = (plane.edge(nb.edge)?, plane.node(nb.node)?) else {
+                    continue;
+                };
+                d.declares.push(Declared {
+                    coordinate: key.clone(),
+                    manifest: Some(m),
+                    version: prop_str(&edge.properties, "version").map(str::to_string),
+                    scope: prop_str(&edge.properties, "scope").map(str::to_string),
+                });
+                written = true;
+            }
+            if !written {
+                d.declares.push(Declared {
+                    coordinate: key,
+                    manifest: None,
+                    version: None,
+                    scope: None,
+                });
+            }
+            continue;
+        }
+        if !n.labels.iter().any(|l| l == EXTERNAL_LABEL) {
+            d.copies.push(n);
+            continue;
+        }
+        let mut by = Vec::new();
+        let mut seen = BTreeSet::new();
+        for nb in plane.neighbors(n.id, crate::Dir::In, None)? {
+            let Some(edge) = plane.edge(nb.edge)? else {
+                continue;
+            };
+            if !IMPACT_EDGES.contains(&edge.ty.as_str()) || !seen.insert(nb.node) {
+                continue;
+            }
+            if let Some(r) = plane.node(nb.node)?.filter(|_| by.len() < USES_CAP) {
+                by.push((r, edge.ty.clone()));
+            }
+        }
+        d.uses.push(Used {
+            key,
+            by,
+            total: Some(seen.len()),
+        });
+    }
+    Ok(d)
+}
+
+/// What a plane another drsg serves holds of a radius.
+///
+/// It answered with nodes, so a stand-in it holds is the whole of what was
+/// read: that it holds one *is* the statement that something in it references
+/// the key, since a stand-in exists only where a reference minted it. Which
+/// symbol that is, and at which version a manifest declared the coordinate,
+/// are edges — read where they live, which the answer says.
+fn dependent_far(at: &str, nodes: &[NodeRecord], offered: &Offered) -> Dependent {
+    let mut d = Dependent::empty(at);
+    for n in nodes {
+        let Some(key) = n.external_key.clone() else {
+            continue;
+        };
+        if offered.is_coordinate(&key) {
+            d.declares.push(Declared {
+                coordinate: key,
+                manifest: None,
+                version: None,
+                scope: None,
+            });
+        } else if n.labels.iter().any(|l| l == EXTERNAL_LABEL) {
+            d.uses.push(Used {
+                key,
+                by: Vec::new(),
+                total: None,
+            });
+        } else {
+            d.copies.push(n.clone());
+        }
+    }
+    d
+}
+
+/// The cross-repository half of an `impact` answer.
+fn render_across(graphs: &Graphs<'_>, offered: &Offered, found: &[Dependent]) -> String {
+    let read = graphs.read();
+    let mut out = String::from("\n");
+    if read.is_empty() && graphs.missed.is_empty() {
+        out.push_str(NO_GRAPHS);
+        return out;
+    }
+    out.push_str(&format!("across  {}", graphs.name));
+    for name in &read {
+        out.push_str(&format!(", {name}"));
+    }
+    out.push('\n');
+    for m in graphs.unread() {
+        out.push_str(&format!("not read  {} — {}\n", m.name, m.why));
+    }
+    if offered.held > offered.keys.len() {
+        out.push_str(&format!(
+            "asked about the {} key(s) nearest the change, of {} in the radius\n",
+            offered.keys.len(),
+            offered.held
+        ));
+    }
+    let mut declaring = 0usize;
+    let mut referencing = 0usize;
+    let mut used: BTreeSet<&str> = BTreeSet::new();
+    for d in found.iter().filter(|d| d.holds()) {
+        out.push_str(&format!("in {}", d.at));
+        if let Some(url) = d.served.as_ref().and_then(|a| a.url.as_deref()) {
+            out.push_str(&format!("  at {url}"));
+        }
+        out.push('\n');
+        for dec in &d.declares {
+            out.push_str(&format!("  declares  {}", dec.coordinate));
+            if let Some(v) = &dec.version {
+                out.push_str(&format!("  {v}"));
+            }
+            if let Some(s) = &dec.scope {
+                out.push_str(&format!("  [{s}]"));
+            }
+            // The manifest's key *is* its path, so `one_line` would print it
+            // twice over.
+            match &dec.manifest {
+                Some(m) => out.push_str(&format!(
+                    "  {}",
+                    m.external_key.as_deref().unwrap_or("<keyless>")
+                )),
+                None => out.push_str("  (the manifest and its version are read there)"),
+            }
+            out.push('\n');
+        }
+        for u in &d.uses {
+            used.insert(&u.key);
+            match u.total {
+                Some(n) => out.push_str(&format!("  {}  ← {n}\n", u.key)),
+                None => out.push_str(&format!(
+                    "  {}  ← referenced; what references it is read there\n",
+                    u.key
+                )),
+            }
+            for (r, ty) in &u.by {
+                out.push_str(&format!("    {}  [{ty}]\n", one_line(r)));
+            }
+            if let Some(n) = u.total.filter(|n| *n > u.by.len()) {
+                out.push_str(&format!("    … and {} more\n", n - u.by.len()));
+            }
+        }
+        for c in &d.copies {
+            out.push_str(&format!("  holds its own  {}\n", one_line(c)));
+        }
+        // What a far graph did not answer with is one call away, so the row
+        // names that call rather than leaving a reader to assemble it.
+        if let Some(a) = &d.served {
+            out.push_str(&format!(
+                "  ask that drsg for the rest: `impact <key> --plane {}`\n",
+                a.plane
+            ));
+        }
+        declaring += usize::from(!d.declares.is_empty());
+        referencing += usize::from(!d.uses.is_empty());
+    }
+    if read.is_empty() {
+        out.push_str(UNREAD_GRAPHS);
+        return out;
+    }
+    let holding = found.iter().filter(|d| d.holds()).count();
+    out.push_str(&format!(
+        "{} graph(s) read, {holding} hold(s) something: {declaring} declare(s) a dependency, \
+         {referencing} reach(es) it in code\n",
+        read.len()
+    ));
+    out.push_str(&format!(
+        "{} of the {} key(s) offered are referenced elsewhere\n",
+        used.len(),
+        offered.keys.len()
+    ));
+    out.push_str(ACROSS_NOTE);
+    out
+}
+
+/// Nothing to cross to.
+const NO_GRAPHS: &str = "no other graph in scope: this plane attaches none, and \
+     `--across all` reads every plane this instance holds\n";
+
+/// Something to cross to, and none of it reached — which is not the same as
+/// a radius that reaches nothing, so no tally is offered for it.
+const UNREAD_GRAPHS: &str = "no graph in scope was read: what this radius reaches beyond \
+     this plane is unknown, not empty\n";
+
+/// What the cross-repository half of an `impact` answer is, and is not.
+const ACROSS_NOTE: &str = "a dependent is a graph holding a key of this radius as `External`, \
+     or declaring a coordinate this plane's own manifests publish; matched per call, \
+     never stored\n";
 
 /// `fathom` — the makeup of everything within `depth` hops of a symbol, both
 /// directions: counts by label and edge type, nodes added per hop, and the
@@ -1326,6 +1725,9 @@ struct Graphs<'a> {
     /// What a plane on another drsg answered: the nodes themselves, since
     /// nothing here can query it a second time.
     elsewhere: Vec<(String, Vec<NodeRecord>)>,
+    /// The attachment each of those came from, so an answer can name the
+    /// address it was read at and the plane it is called there.
+    served: Vec<(String, Attachment)>,
     /// Graphs left unread, and why — a cross-graph answer that came back
     /// empty must be distinguishable from one that was never asked.
     missed: Vec<Missed>,
@@ -1396,6 +1798,7 @@ impl<'a> Graphs<'a> {
             far,
             reader,
             elsewhere: Vec::new(),
+            served: Vec::new(),
             missed,
         })
     }
@@ -1411,6 +1814,7 @@ impl<'a> Graphs<'a> {
                 Some(reader) => match reader.nodes(&a, plan) {
                     Ok(nodes) => {
                         self.elsewhere.push((a.name.clone(), nodes));
+                        self.served.push((a.name.clone(), a.clone()));
                         continue;
                     }
                     Err(why) => why,
@@ -1447,6 +1851,11 @@ impl<'a> Graphs<'a> {
             out.push_str(&format!("not read  {} — {}\n", m.name, m.why));
         }
         out
+    }
+
+    /// The attachment a graph read over the wire came from.
+    fn served_by(&self, name: &str) -> Option<&Attachment> {
+        self.served.iter().find(|(n, _)| n == name).map(|(_, a)| a)
     }
 
     /// The graphs this call did not read, in the order they were named.
@@ -2120,6 +2529,20 @@ mod tests {
     use crate::api::Database;
     use crate::types::PropDesc;
 
+    /// `impact` in plane `code` alone — the shape most of these ask for.
+    fn radius(db: &Database, name: &str, depth: usize) -> Result<String> {
+        impact(
+            db,
+            Impact {
+                plane: "code",
+                name,
+                depth,
+                across: None,
+                remote: None,
+            },
+        )
+    }
+
     fn seeded() -> Database {
         let db = Database::in_memory().unwrap();
         let p = db.create_plane("code", Properties::new()).unwrap();
@@ -2773,7 +3196,7 @@ mod tests {
         for out in [
             context(&plane, "m::nope").unwrap(),
             describe(&plane, "m::nope").unwrap(),
-            impact(&plane, "m::nope", 3).unwrap(),
+            radius(&db, "m::nope", 3).unwrap(),
             trace(&plane, "m::nope", "m::api::go").unwrap(),
             trace(&plane, "m::api::go", "m::nope").unwrap(),
         ] {
@@ -2865,8 +3288,7 @@ mod tests {
             .unwrap();
         txn.create_edge(d2, d1, "CALLS", Properties::new()).unwrap();
         txn.commit().unwrap();
-        let plane = db.plane("code").unwrap();
-        let out = impact(&plane, "m::t", 3).unwrap();
+        let out = radius(&db, "m::t", 3).unwrap();
         assert!(out.contains("depth 1 (2):"), "{out}");
         assert!(out.contains("depth 2 (1):"), "{out}");
         assert!(out.contains("total affected within depth 3: 3"), "{out}");
@@ -2906,9 +3328,8 @@ mod tests {
         txn.create_edge(select, method, "IMPLEMENTS", Properties::new())
             .unwrap();
         txn.commit().unwrap();
-        let plane = db.plane("code").unwrap();
 
-        let out = impact(&plane, "orders.total", 3).unwrap();
+        let out = radius(&db, "orders.total", 3).unwrap();
         assert!(out.contains("m.xml#byId"), "the statement reads it: {out}");
         assert!(out.contains("[USES_COLUMN]"), "{out}");
         assert!(
@@ -2917,7 +3338,7 @@ mod tests {
         );
 
         // And the table, through the statement that reads it.
-        let table_out = impact(&plane, "orders", 3).unwrap();
+        let table_out = radius(&db, "orders", 3).unwrap();
         assert!(table_out.contains("[READS]"), "{table_out}");
         assert!(table_out.contains("m.xml#byId"), "{table_out}");
     }
@@ -3803,5 +4224,360 @@ mod tests {
         );
         assert_eq!(normalize_query("https://api.example.com"), "/");
         assert_eq!(normalize_query("/"), "/");
+    }
+
+    /// A shared library and the repositories that depend on it — the shape
+    /// issue #43 names. Both joins are present: `common`'s own manifest
+    /// declares the coordinate it publishes, and `orders` both declares that
+    /// coordinate and stands in for the class by name.
+    fn library_and_dependents() -> Database {
+        let db = Database::in_memory().unwrap();
+
+        // The library: the coordinate it publishes, a base class, and a
+        // subclass of it in the same tree — so the radius offers two keys.
+        let p = db.create_plane("common", Properties::new()).unwrap();
+        let mut txn = p.write().unwrap();
+        txn.create_node_with_key(
+            "pom.xml",
+            &[MANIFEST_LABEL],
+            manifest("pom.xml", "com.acme:common-base"),
+        )
+        .unwrap();
+        let base = txn
+            .create_node_with_key(
+                "com.acme.common.BaseEntity",
+                &["Class"],
+                at("src/BaseEntity.java", 7),
+            )
+            .unwrap();
+        let dated = txn
+            .create_node_with_key("com.acme.common.Dated", &["Class"], at("src/Dated.java", 4))
+            .unwrap();
+        txn.create_edge(dated, base, "EXTENDS", Properties::new())
+            .unwrap();
+        txn.commit().unwrap();
+        dependents_of(&db);
+        db
+    }
+
+    fn at(file: &str, line: i64) -> Properties {
+        let mut props = Properties::new();
+        props.insert("file".into(), PropDesc::new(PropValue::Str(file.into())));
+        props.insert("line".into(), PropDesc::new(PropValue::Int(line)));
+        props
+    }
+
+    fn manifest(file: &str, coordinate: &str) -> Properties {
+        let mut props = at(file, 1);
+        props.insert(
+            DECLARES_PROP.into(),
+            PropDesc::new(PropValue::Str(coordinate.into())),
+        );
+        props
+    }
+
+    fn declared(version: &str, scope: &str) -> Properties {
+        let mut props = Properties::new();
+        props.insert(
+            "version".into(),
+            PropDesc::new(PropValue::Str(version.into())),
+        );
+        props.insert("scope".into(), PropDesc::new(PropValue::Str(scope.into())));
+        props
+    }
+
+    /// The three repositories around [`library_and_dependents`]'s library:
+    /// one that declares the dependency and uses it, one that declares it and
+    /// uses nothing, and one holding the same code again.
+    fn dependents_of(db: &Database) {
+        // A dependent that declares the coordinate *and* names both classes.
+        let p = db.create_plane("orders", Properties::new()).unwrap();
+        let mut txn = p.write().unwrap();
+        let pom = txn
+            .create_node_with_key(
+                "backend/pom.xml",
+                &[MANIFEST_LABEL],
+                manifest("backend/pom.xml", "svc.orders:orders"),
+            )
+            .unwrap();
+        let dep = txn
+            .create_node_with_key(
+                "com.acme:common-base",
+                &["Package", EXTERNAL_LABEL],
+                Properties::new(),
+            )
+            .unwrap();
+        txn.create_edge(pom, dep, DEPENDS_EDGE, declared("2.4.1", "runtime"))
+            .unwrap();
+        let stand_in = txn
+            .create_node_with_key(
+                "com.acme.common.BaseEntity",
+                &["Class", EXTERNAL_LABEL],
+                Properties::new(),
+            )
+            .unwrap();
+        let order = txn
+            .create_node_with_key("svc.orders.Order", &["Class"], at("src/Order.java", 9))
+            .unwrap();
+        txn.create_edge(order, stand_in, "EXTENDS", Properties::new())
+            .unwrap();
+        let far_key = txn
+            .create_node_with_key(
+                "com.acme.common.Dated",
+                &["Class", EXTERNAL_LABEL],
+                Properties::new(),
+            )
+            .unwrap();
+        txn.create_edge(order, far_key, "USES_TYPE", Properties::new())
+            .unwrap();
+        // Containment is not a reference: it would otherwise count the
+        // package a stand-in sits under as a symbol that uses it.
+        txn.create_edge(dep, stand_in, "CONTAINS", Properties::new())
+            .unwrap();
+        txn.commit().unwrap();
+
+        // A dependent that declares the dependency and uses none of it.
+        let p = db.create_plane("billing", Properties::new()).unwrap();
+        let mut txn = p.write().unwrap();
+        let pom = txn
+            .create_node_with_key(
+                "pom.xml",
+                &[MANIFEST_LABEL],
+                manifest("pom.xml", "svc.billing:billing"),
+            )
+            .unwrap();
+        let dep = txn
+            .create_node_with_key(
+                "com.acme:common-base",
+                &["Package", EXTERNAL_LABEL],
+                Properties::new(),
+            )
+            .unwrap();
+        txn.create_edge(pom, dep, DEPENDS_EDGE, declared("2.3.0", "runtime"))
+            .unwrap();
+        txn.commit().unwrap();
+
+        // The same class again, declared rather than referenced.
+        let p = db.create_plane("vendored", Properties::new()).unwrap();
+        let mut txn = p.write().unwrap();
+        txn.create_node_with_key(
+            "com.acme.common.BaseEntity",
+            &["Class"],
+            at("vendor/BaseEntity.java", 7),
+        )
+        .unwrap();
+        txn.commit().unwrap();
+
+        // A history plane, which holds commits rather than code.
+        let p = db.create_plane("common_git", Properties::new()).unwrap();
+        let mut txn = p.write().unwrap();
+        txn.create_node_with_key("abc123", &["Commit"], Properties::new())
+            .unwrap();
+        txn.commit().unwrap();
+    }
+
+    fn radius_across(
+        db: &Database,
+        scope: Scope,
+        remote: Option<&dyn crate::attach::Remote>,
+    ) -> String {
+        impact(
+            db,
+            Impact {
+                plane: "common",
+                name: "com.acme.common.BaseEntity",
+                depth: 3,
+                across: Some(scope),
+                remote,
+            },
+        )
+        .unwrap()
+    }
+
+    /// The question issue #43 asks: a machine holding every repository
+    /// answers across them with nothing attached, by the two keys they
+    /// already state.
+    #[test]
+    fn impact_across_every_plane_names_the_repositories_a_change_reaches() {
+        let db = library_and_dependents();
+        let out = radius_across(&db, Scope::All, None);
+
+        // The local answer is still the first thing said.
+        assert!(out.contains("depth 1 (1):"), "{out}");
+        assert!(out.contains("total affected within depth 3: 1"), "{out}");
+
+        assert!(
+            out.contains("across  common, startup, orders, billing, vendored\n"),
+            "{out}"
+        );
+        // A history plane holds commits, not code.
+        assert!(!out.contains("common_git"), "{out}");
+
+        // The build join: the coordinate this plane's own manifest publishes,
+        // with the version and scope the dependent's edge states.
+        assert!(
+            out.contains("  declares  com.acme:common-base  2.4.1  [runtime]  backend/pom.xml\n"),
+            "{out}"
+        );
+        assert!(
+            out.contains("  declares  com.acme:common-base  2.3.0  [runtime]  pom.xml\n"),
+            "{out}"
+        );
+
+        // The code join, on the changed symbol and on a key its radius holds.
+        assert!(
+            out.contains("  com.acme.common.BaseEntity  \u{2190} 1\n"),
+            "{out}"
+        );
+        assert!(
+            out.contains("    svc.orders.Order  Class  src/Order.java:9  [EXTENDS]\n"),
+            "{out}"
+        );
+        assert!(
+            out.contains("  com.acme.common.Dated  \u{2190} 1\n"),
+            "{out}"
+        );
+
+        // The same declaration held twice is not a dependent.
+        assert!(
+            out.contains(
+                "  holds its own  com.acme.common.BaseEntity  Class  vendor/BaseEntity.java:7\n"
+            ),
+            "{out}"
+        );
+
+        assert!(
+            out.contains(
+                "4 graph(s) read, 3 hold(s) something: 2 declare(s) a dependency, \
+                 1 reach(es) it in code\n"
+            ),
+            "{out}"
+        );
+        assert!(
+            out.contains("2 of the 2 key(s) offered are referenced elsewhere\n"),
+            "{out}"
+        );
+    }
+
+    /// Containment is not a reference: the package a stand-in sits under did
+    /// not ask for it.
+    #[test]
+    fn across_counts_references_not_the_container_of_a_stand_in() {
+        let db = library_and_dependents();
+        let out = radius_across(&db, Scope::All, None);
+        assert!(!out.contains("[CONTAINS]"), "{out}");
+    }
+
+    /// The default scope is what was attached, which is one graph here and
+    /// not every plane on the instance.
+    #[test]
+    fn across_the_attached_reads_those_and_no_others() {
+        let db = library_and_dependents();
+        crate::attach::attach(
+            &db,
+            "common",
+            crate::attach::Attachment::new("orders", None, None),
+        )
+        .unwrap();
+        let out = radius_across(&db, Scope::Attached, None);
+        assert!(out.contains("across  common, orders\n"), "{out}");
+        assert!(!out.contains("billing"), "{out}");
+        assert!(!out.contains("vendored"), "{out}");
+        assert!(
+            out.contains("1 graph(s) read, 1 hold(s) something"),
+            "{out}"
+        );
+    }
+
+    /// Asked for nothing, the answer is what it has always been — no extra
+    /// section, and no plane read but its own.
+    #[test]
+    fn without_a_scope_the_answer_is_unchanged() {
+        let db = library_and_dependents();
+        let alone = impact(
+            &db,
+            Impact {
+                plane: "common",
+                name: "com.acme.common.BaseEntity",
+                depth: 3,
+                across: None,
+                remote: None,
+            },
+        )
+        .unwrap();
+        let across = radius_across(&db, Scope::All, None);
+        assert!(!alone.contains("across"), "{alone}");
+        assert!(across.starts_with(&alone), "{across}");
+    }
+
+    /// Nothing in scope says so, and names the two ways to widen it.
+    #[test]
+    fn across_says_when_there_is_nothing_to_cross_to() {
+        let db = library_and_dependents();
+        let out = radius_across(&db, Scope::Attached, None);
+        assert!(out.ends_with(NO_GRAPHS), "{out}");
+    }
+
+    /// A plane another drsg serves answers with nodes, so it reports the keys
+    /// it holds and says where the rest is read.
+    #[test]
+    fn a_plane_another_drsg_serves_reports_the_keys_it_holds() {
+        let db = library_and_dependents();
+        let far = library_and_dependents();
+        crate::attach::attach(
+            &db,
+            "common",
+            crate::attach::Attachment::new("svc", Some("orders".into()), Some("http://h:1".into())),
+        )
+        .unwrap();
+        let reader = Elsewhere(far);
+        let out = radius_across(&db, Scope::Attached, Some(&reader));
+        assert!(out.contains("across  common, svc\n"), "{out}");
+        assert!(out.contains("in svc  at http://h:1\n"), "{out}");
+        assert!(
+            out.contains(
+                "  declares  com.acme:common-base  (the manifest and its version are read there)\n"
+            ),
+            "{out}"
+        );
+        assert!(
+            out.contains(
+                "  com.acme.common.BaseEntity  \u{2190} referenced; \
+                 what references it is read there\n"
+            ),
+            "{out}"
+        );
+        assert!(
+            out.contains("  ask that drsg for the rest: `impact <key> --plane orders`\n"),
+            "{out}"
+        );
+    }
+
+    /// An attachment that cannot be reached is reported, never skipped — a
+    /// radius that crossed nothing must not read as a radius that reached
+    /// nothing.
+    #[test]
+    fn across_reports_a_graph_it_could_not_read() {
+        let db = library_and_dependents();
+        crate::attach::attach(
+            &db,
+            "common",
+            crate::attach::Attachment::new("svc", Some("orders".into()), Some("http://h:1".into())),
+        )
+        .unwrap();
+        let out = radius_across(&db, Scope::Attached, Some(&Unreachable));
+        assert!(
+            out.contains("not read  svc — connection refused\n"),
+            "{out}"
+        );
+        // Unknown, not empty: no tally is offered for a scope nothing was
+        // read from.
+        assert!(out.ends_with(UNREAD_GRAPHS), "{out}");
+        // Without a reader at all it is named unread for the other reason.
+        let unasked = radius_across(&db, Scope::Attached, None);
+        assert!(
+            unasked.contains("not read  svc — served at http://h:1\n"),
+            "{unasked}"
+        );
     }
 }

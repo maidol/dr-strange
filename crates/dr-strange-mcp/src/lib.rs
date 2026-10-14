@@ -2841,11 +2841,15 @@ impl DrStrange {
         Parameters(req): Parameters<ImpactReq>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         self.run("impact", move |db| {
-            let plane = db.plane(&req.plane)?;
             Ok(Value::String(dr_strange_core::compact::impact(
-                &plane,
-                &req.name,
-                req.depth.unwrap_or(3),
+                db,
+                dr_strange_core::compact::Impact {
+                    plane: &req.plane,
+                    name: &req.name,
+                    depth: req.depth.unwrap_or(3),
+                    across: None,
+                    remote: None,
+                },
             )?))
         })
         .await
