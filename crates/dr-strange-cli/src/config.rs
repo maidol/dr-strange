@@ -478,6 +478,20 @@ fn mount_root(cfg: &Config) -> Option<std::path::PathBuf> {
         .or_else(|| std::env::home_dir().filter(|h| !h.as_os_str().is_empty()))
 }
 
+/// Where this machine's drsg is served, for the verbs that act on a running
+/// one: `[server] addr` if the file names one, else the built-in address.
+///
+/// `http`, not `https`: `addr` is where *this* operator's server listens, and
+/// a TLS one is named with `--url` rather than guessed at here.
+pub fn server_url(cfg: &Config) -> String {
+    let addr = cfg
+        .server
+        .addr
+        .map(|a| a.to_string())
+        .unwrap_or_else(|| dr_strange_web::DEFAULT_ADDR.to_string());
+    format!("http://{addr}")
+}
+
 /// Build the web crate's [`ServeOptions`] from the `[server]` section, with an
 /// explicit CLI `--addr` overriding the file's `addr`.
 pub fn serve_options(cfg: &Config, cli_addr: Option<SocketAddr>) -> ServeOptions {

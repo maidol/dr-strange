@@ -58,48 +58,19 @@ impl Reader {
 
 impl Remote for Reader {
     fn nodes(&self, at: &Attachment, plan: &LogicalPlan) -> Result<Vec<NodeRecord>, String> {
-        let url = at.url.as_deref().ok_or("it names no url")?;
-        let url = format!("{}/rpc", url.trim_end_matches('/'));
-        let parsed = Url::parse(&url).map_err(|e| format!("{url} is not a url: {e}"))?;
-        let allow = reachable(&parsed)?;
-        let route = Route {
-            net: &self.net,
-            allow: &allow,
+        let base = at.url.as_deref().ok_or("it names no url")?;
+        let reply = call(
+            &self.net,
+            base,
+            self.token.as_deref(),
+            "plane.query",
+            jval!({ "plane": at.plane, "plan": plan }),
+        )?;
+        let url = rpc_url(base);
+        let Value::Array(rows) = reply else {
+            return Err(format!("{url} answered a result that is not a node list"));
         };
-        guard::precheck(&parsed, route.allow, route.net).map_err(|e| format!("{e:#}"))?;
-
-        let body = serde_json::to_vec(&jval!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "plane.query",
-            "params": { "plane": at.plane, "plan": plan },
-        }))
-        .map_err(|e| format!("serializing the plan: {e}"))?;
-        let agent = protect(
-            ureq::Agent::config_builder().timeout_global(Some(ANSWER_TIMEOUT)),
-            &parsed,
-            route,
-        )
-        .map_err(|e| format!("{e:#}"))?;
-        let mut post = agent
-            .post(parsed.as_str())
-            .header("content-type", "application/json");
-        if let Some(t) = &self.token {
-            post = post.header("Authorization", &format!("Bearer {t}"));
-        }
-        let reply = post.send(&body).map_err(|e| match e {
-            ureq::Error::StatusCode(code) => format!("{url} answered HTTP {code}"),
-            other => format!("{url}: {other}"),
-        })?;
-
-        let mut text = String::new();
-        Read::take(reply.into_body().into_reader(), MAX_ANSWER)
-            .read_to_string(&mut text)
-            .map_err(|e| format!("reading what {url} answered: {e}"))?;
-        let reply: Value = serde_json::from_str(&text)
-            .map_err(|_| format!("{url} answered {} bytes that are not json", text.len()))?;
-        rows(&reply, &url)?
-            .iter()
+        rows.iter()
             .map(|n| {
                 // The reply carries no plane id, and nothing here could read
                 // one: what tells the graphs apart is the attachment's name.
@@ -108,6 +79,65 @@ impl Remote for Reader {
             })
             .collect()
     }
+}
+
+/// `{base}/rpc`, however the base was spelled.
+fn rpc_url(base: &str) -> String {
+    format!("{}/rpc", base.trim_end_matches('/'))
+}
+
+/// Call one JSON-RPC method on a drsg at `base`, returning its `result`.
+///
+/// The one place this crate talks to another drsg: `Reader` reads attached
+/// planes with it, and the CLI drives a running server's instance lifecycle
+/// (`db.mount` and friends, issue #44) with it. Shared so the address guard,
+/// the size cap and the way an error is reported cannot differ between them —
+/// the guard especially, which is re-permitted for exactly the host named and
+/// no other.
+pub fn call(
+    net: &Network,
+    base: &str,
+    token: Option<&str>,
+    method: &str,
+    params: Value,
+) -> Result<Value, String> {
+    let url = rpc_url(base);
+    let parsed = Url::parse(&url).map_err(|e| format!("{url} is not a url: {e}"))?;
+    let allow = reachable(&parsed)?;
+    let route = Route { net, allow: &allow };
+    guard::precheck(&parsed, route.allow, route.net).map_err(|e| format!("{e:#}"))?;
+
+    let body = serde_json::to_vec(&jval!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": method,
+        "params": params,
+    }))
+    .map_err(|e| format!("serializing the call: {e}"))?;
+    let agent = protect(
+        ureq::Agent::config_builder().timeout_global(Some(ANSWER_TIMEOUT)),
+        &parsed,
+        route,
+    )
+    .map_err(|e| format!("{e:#}"))?;
+    let mut post = agent
+        .post(parsed.as_str())
+        .header("content-type", "application/json");
+    if let Some(t) = token {
+        post = post.header("Authorization", &format!("Bearer {t}"));
+    }
+    let reply = post.send(&body).map_err(|e| match e {
+        ureq::Error::StatusCode(code) => format!("{url} answered HTTP {code}"),
+        other => format!("{url}: {other}"),
+    })?;
+
+    let mut text = String::new();
+    Read::take(reply.into_body().into_reader(), MAX_ANSWER)
+        .read_to_string(&mut text)
+        .map_err(|e| format!("reading what {url} answered: {e}"))?;
+    let reply: Value = serde_json::from_str(&text)
+        .map_err(|_| format!("{url} answered {} bytes that are not json", text.len()))?;
+    result(&reply, &url).cloned()
 }
 
 /// The addresses an attachment may be read from: the one its URL names, and
@@ -141,12 +171,12 @@ fn reachable(url: &Url) -> Result<Vec<Prefix>, String> {
         .collect()
 }
 
-/// The `result` array of a JSON-RPC reply, or why there is none.
+/// The `result` of a JSON-RPC reply, or why there is none.
 ///
 /// A drsg's own `error` is quoted: that is the asked drsg's structured answer
 /// to the question — `plane 'ui' not found` is what an operator needs to see.
 /// Any other body is reported by shape, never by content.
-fn rows<'a>(reply: &'a Value, url: &str) -> Result<&'a Vec<Value>, String> {
+fn result<'a>(reply: &'a Value, url: &str) -> Result<&'a Value, String> {
     if let Some(e) = reply.get("error") {
         let code = e.get("code").and_then(Value::as_i64).unwrap_or_default();
         let message = e
@@ -155,9 +185,7 @@ fn rows<'a>(reply: &'a Value, url: &str) -> Result<&'a Vec<Value>, String> {
             .unwrap_or("no message");
         return Err(format!("{url} refused the query ({code}): {message}"));
     }
-    match reply.get("result") {
-        Some(Value::Array(rows)) => Ok(rows),
-        Some(_) => Err(format!("{url} answered a result that is not a node list")),
-        None => Err(format!("{url} answered no result")),
-    }
+    reply
+        .get("result")
+        .ok_or_else(|| format!("{url} answered no result"))
 }

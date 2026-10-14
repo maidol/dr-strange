@@ -259,6 +259,41 @@ enum Command {
         #[arg(long)]
         both: bool,
     },
+    /// Serve the planes of another database on a running drsg, now.
+    ///
+    /// For the machine holding many repositories, each digested into its own
+    /// store: one process then answers for all of them, routed by plane,
+    /// where serving each would cost a process and a port. The store must
+    /// already exist and sit under the server's `[server] mount_root`, and
+    /// no other process may hold it — stop that server first.
+    ///
+    /// Acts on a *running* server over its RPC, not on a database file: the
+    /// server holds the store's lock, so there is nothing here to open.
+    Mount {
+        /// The database directory to serve.
+        path: PathBuf,
+        /// Serve its planes as `<as>/<plane>`, for a repository whose plane
+        /// name this server already serves.
+        #[arg(long = "as")]
+        as_prefix: Option<String>,
+        /// Where the server is. Defaults to `[server] addr`, else the
+        /// built-in serve address.
+        #[arg(long)]
+        url: Option<String>,
+    },
+    /// Stop serving a mounted database. An absent name is reported, not an
+    /// error; nothing is deleted.
+    Unmount {
+        name: String,
+        #[arg(long)]
+        url: Option<String>,
+    },
+    /// What a running drsg serves: each mounted database with its directory
+    /// and planes, and every plane with the source tree it records.
+    Mounts {
+        #[arg(long)]
+        url: Option<String>,
+    },
     /// Forget an attachment. An absent name is reported, not an error.
     Detach {
         /// The name it was attached under.
@@ -1238,6 +1273,9 @@ fn run_agent_verbs(
         at @ (Command::Attach { .. } | Command::Detach { .. } | Command::Attachments { .. }) => {
             run_attach_verbs(at, db_path, cfg, out)
         }
+        m @ (Command::Mount { .. } | Command::Unmount { .. } | Command::Mounts { .. }) => {
+            run_mount_verbs(m, cfg, out)
+        }
         Command::Wire { name, plane, verb } => {
             let db = commands::open(db_path, config::retain_commits(cfg))?;
             // The operator attached these planes themselves, so reading one is
@@ -1265,6 +1303,131 @@ fn run_agent_verbs(
         // answer differently the first time one of them was fixed.
         other => run_tree_verbs(other, db_path, cfg, verbose, out),
     }
+}
+
+/// The verbs that change what a *running* server serves (issue #44).
+///
+/// These alone among the CLI's verbs open no database: the server holds its
+/// store's lock, so acting on a file here would either fail or edit a copy
+/// nothing is serving. They speak its RPC instead, which is also what makes
+/// them work against a server on another machine.
+fn run_mount_verbs(cmd: Command, cfg: &config::Config, out: &mut dyn Write) -> Result<()> {
+    let (method, params, url) = match cmd {
+        Command::Mount {
+            path,
+            as_prefix,
+            url,
+        } => (
+            "db.mount",
+            serde_json::json!({ "path": path.display().to_string(), "as": as_prefix }),
+            url,
+        ),
+        Command::Unmount { name, url } => ("db.unmount", serde_json::json!({ "name": name }), url),
+        Command::Mounts { url } => ("db.mounts", serde_json::json!({}), url),
+        _ => unreachable!("every Command variant belongs to a dispatch group"),
+    };
+    let base = url.unwrap_or_else(|| config::server_url(cfg));
+    let token = std::env::var("DRSG_TOKEN").ok().filter(|t| !t.is_empty());
+    let answer = dr_strange_web::attach::call(
+        &config::network(cfg)?,
+        &base,
+        token.as_deref(),
+        method,
+        params,
+    )
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
+    write!(out, "{}", render_mounts(method, &answer))?;
+    Ok(())
+}
+
+/// What the mount verbs print: one fact per line, as the other verbs do,
+/// rather than the JSON the RPC answered with.
+fn render_mounts(method: &str, answer: &serde_json::Value) -> String {
+    let text = |v: &serde_json::Value, k: &str| {
+        v.get(k)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .to_string()
+    };
+    let list = |v: &serde_json::Value, k: &str| -> Vec<String> {
+        v.get(k)
+            .and_then(serde_json::Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let mut s = String::new();
+    match method {
+        "db.mount" => {
+            s.push_str(&format!(
+                "mounted '{}' from {}\n",
+                text(answer, "name"),
+                text(answer, "path")
+            ));
+            for p in list(answer, "planes") {
+                s.push_str(&format!("  serves  {p}\n"));
+            }
+            let held = list(answer, "skipped");
+            if !held.is_empty() {
+                s.push_str(&format!("  held, not served: {}\n", held.join(", ")));
+            }
+        }
+        "db.unmount" => match answer.get("unmounted").and_then(serde_json::Value::as_bool) {
+            Some(true) => s.push_str(&format!(
+                "unmounted '{}' at {}\n",
+                text(answer, "name"),
+                text(answer, "path")
+            )),
+            _ => s.push_str(&format!("nothing mounted as '{}'\n", text(answer, "name"))),
+        },
+        _ => {
+            let mounts = answer
+                .get("mounts")
+                .and_then(serde_json::Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            match mounts.is_empty() {
+                true => s.push_str("this server mounts nothing\n"),
+                false => {
+                    for m in &mounts {
+                        s.push_str(&format!(
+                            "{}  {}  ({} plane(s))\n",
+                            text(m, "name"),
+                            text(m, "path"),
+                            list(m, "planes").len()
+                        ));
+                    }
+                }
+            }
+            for p in answer
+                .get("planes")
+                .and_then(serde_json::Value::as_array)
+                .unwrap_or(&Vec::new())
+            {
+                let root = text(p, "synced_root");
+                s.push_str(&format!(
+                    "  {}{}{}\n",
+                    text(p, "plane"),
+                    match p.get("mount").and_then(serde_json::Value::as_str) {
+                        Some(m) => format!("  in {m}"),
+                        None => "  here".into(),
+                    },
+                    match root.is_empty() {
+                        true => String::new(),
+                        false => format!("  {root}"),
+                    }
+                ));
+            }
+            if let Some(root) = answer.get("mount_root").and_then(serde_json::Value::as_str) {
+                s.push_str(&format!("mounts may come from {root}\n"));
+            }
+        }
+    }
+    s
 }
 
 /// The verbs that record and read what a plane attaches, rather than reading
