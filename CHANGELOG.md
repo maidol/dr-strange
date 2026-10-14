@@ -4,6 +4,62 @@ All notable changes to Dr Strange are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.19.0] - 2026-10-14
+
+### Added
+
+- **`impact --across`, which says which *other repositories* a change reaches.**
+  Dozens of business repositories depend on a shared library, and "which of them
+  would this change break" had no answer: a radius walked in one plane stops at
+  the repository boundary. It is answered by two keys both sides already state —
+  the **coordinate** a build declares (`Manifest.declares` in the library, a
+  `DEPENDS_ON` edge carrying `version` and `scope` in the dependent) and the
+  **symbol** a dependent's source stands in for (the same key, labelled
+  `External`). Two plugins asserting the same foreign key agree rather than
+  collide, so a stand-in in one repository and the declaration in another are
+  the same key by construction — which is why this needed no plugin change and
+  no new RPC method. The keys offered are the changed symbol's *and* every key
+  its local radius holds, breadth-first, so a repository referencing a subclass
+  of the changed class is found too. Nothing is drawn and nothing is stored, as
+  with `wire`: matched per call, so the answer can state what it could not read.
+  MCP tool parameter and `drsg impact … --across` alike. From issue #43.
+- **Two scopes, because two environments ask this differently.** `--across`
+  reads the planes this one attaches — explicit, and the only scope that reaches
+  another drsg. `--across all` reads every plane this instance holds, so a
+  machine handed thirty repositories needs no setup to be asked across them:
+  each one already stated its relationships in its own build and imports, and
+  requiring an attachment per pair would be setup to record what is written
+  down. Either way the answer names the graphs it read and the ones it could
+  not, and three outcomes stay apart: a repository that declares the dependency
+  and references the radius, one that declares it and reaches none of it (at
+  whatever version it pinned), and one holding a key *without* `External` —
+  this code again, vendored or digested twice, reported as `holds its own`
+  rather than counted as a user.
+- **The Maven coordinate needs no bridge to the package it cannot be mapped
+  to.** `com.google.guava:guava` and `com.google.common.…` cannot be joined
+  without a guess, which is why the `deps` plugin records a build dependency and
+  declines to connect it to any import. Asked standing in the library there is
+  nothing to guess: its own `Manifest.declares` already *is* the coordinate it
+  publishes, and a dependent's manifest keys its declaration the same way. The
+  coordinate is read from the plane being asked about rather than mapped onto
+  it, so the plugin's documented gap stands untouched.
+
+### Changed
+
+- **`impact` takes a request rather than a plane handle.** `compact::impact`
+  now reads a `&Database` and a `compact::Impact`, the same shape `wire` takes,
+  because a verb that may cross graphs must be able to open more than the one
+  it was handed. Asked for no scope, its output is byte-identical to 2.18.0.
+
+### Fixed
+
+- **An empty plane is no longer a graph an answer names.** Every database
+  carries a `startup` plane whether or not anything was digested into it, so
+  `--across all` named it on every call and counted it among the graphs read.
+  An empty plane cannot hold a key of any radius; it is skipped by emptiness
+  rather than by name, since a plane called `startup` may well hold a real
+  digest.
+
 ## [2.18.0] - 2026-10-13
 
 ### Added
