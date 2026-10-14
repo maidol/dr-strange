@@ -219,6 +219,10 @@ enum Command {
     },
     /// Blast radius: everything reaching this symbol through incoming
     /// structural edges, grouped by distance with exact counts.
+    ///
+    /// With `--across` it also says which other repositories the radius
+    /// reaches, by the two keys they already state: a build coordinate this
+    /// plane's manifests publish, and a symbol their source references.
     Impact {
         name: String,
         #[arg(long, default_value = "startup")]
@@ -226,6 +230,10 @@ enum Command {
         /// Hops to walk (max 6).
         #[arg(long, default_value_t = 3)]
         depth: usize,
+        /// Also answer in other graphs: the planes this one attaches, or
+        /// `all` — every plane this instance holds.
+        #[arg(long, value_name = "SCOPE", num_args = 0..=1, default_missing_value = "attached")]
+        across: Option<AcrossScope>,
     },
     /// Record a plane this one may ask — a plane on this instance, or one
     /// served by another drsg.
@@ -797,6 +805,25 @@ enum AlgoCmd {
     },
 }
 
+/// How far beyond its own plane a verb looks.
+#[derive(Copy, Clone, ValueEnum)]
+enum AcrossScope {
+    /// The planes this one attaches.
+    Attached,
+    /// Every plane this instance holds, and the attachments another drsg
+    /// serves.
+    All,
+}
+
+impl From<AcrossScope> for compact::Scope {
+    fn from(s: AcrossScope) -> Self {
+        match s {
+            AcrossScope::Attached => compact::Scope::Attached,
+            AcrossScope::All => compact::Scope::All,
+        }
+    }
+}
+
 #[derive(Copy, Clone, ValueEnum)]
 enum DirArg {
     Out,
@@ -1181,8 +1208,16 @@ fn run_agent_verbs(
             write!(out, "{}", dr_strange_core::compact::trace(&p, &from, &to)?)?;
             Ok(())
         }
-        Command::Impact { name, plane, depth } => {
+        Command::Impact {
+            name,
+            plane,
+            depth,
+            across,
+        } => {
             let db = commands::open(db_path, config::retain_commits(cfg))?;
+            // Reading a graph the operator attached themselves is proxied
+            // like their other commands, as `wire` reads one.
+            let remote = dr_strange_web::attach::Reader::from_env(config::network(cfg)?);
             write!(
                 out,
                 "{}",
@@ -1192,8 +1227,8 @@ fn run_agent_verbs(
                         plane: &plane,
                         name: &name,
                         depth,
-                        across: None,
-                        remote: None,
+                        across: across.map(Into::into),
+                        remote: Some(&remote),
                     },
                 )?
             )?;
