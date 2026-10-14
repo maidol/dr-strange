@@ -1733,6 +1733,13 @@ struct Graphs<'a> {
     missed: Vec<Missed>,
 }
 
+/// Does this plane hold a single node? One row answers it.
+fn holds_anything() -> LogicalPlan {
+    let mut plan = LogicalPlan::new(Source::ScanAll);
+    plan.push(PlanStep::Limit(1));
+    plan
+}
+
 /// A graph in scope that was not read, and why.
 ///
 /// `at` is where it sat in the list it was named in, so the report follows
@@ -1770,7 +1777,15 @@ impl<'a> Graphs<'a> {
                 if name == plane || name.ends_with(HISTORY_SUFFIX) {
                     continue;
                 }
-                attached.push((name.clone(), db.plane(&name)?));
+                let p = db.plane(&name)?;
+                // An empty plane holds nothing any question could match, and
+                // every database carries `startup` whether or not anything
+                // was ever digested into it — naming it in the answer would
+                // be noise on every call. One row is the whole probe.
+                if p.query_from_plan(holds_anything()).ids()?.is_empty() {
+                    continue;
+                }
+                attached.push((name.clone(), p));
             }
         }
         if scope.is_some() {
@@ -4407,11 +4422,13 @@ mod tests {
         assert!(out.contains("total affected within depth 3: 1"), "{out}");
 
         assert!(
-            out.contains("across  common, startup, orders, billing, vendored\n"),
+            out.contains("across  common, orders, billing, vendored\n"),
             "{out}"
         );
-        // A history plane holds commits, not code.
+        // A history plane holds commits, not code; an empty one holds
+        // nothing at all, and every database carries `startup`.
         assert!(!out.contains("common_git"), "{out}");
+        assert!(!out.contains("startup"), "{out}");
 
         // The build join: the coordinate this plane's own manifest publishes,
         // with the version and scope the dependent's edge states.
@@ -4448,7 +4465,7 @@ mod tests {
 
         assert!(
             out.contains(
-                "4 graph(s) read, 3 hold(s) something: 2 declare(s) a dependency, \
+                "3 graph(s) read, 3 hold(s) something: 2 declare(s) a dependency, \
                  1 reach(es) it in code\n"
             ),
             "{out}"
