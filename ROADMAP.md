@@ -1223,23 +1223,84 @@ off that address — the way this class of thing escalates.
 assembled at runtime) produces a route that matches nothing, counted as a
 request reaching no declaration — honest, but it does not distinguish
 *unresolvable* from *genuinely absent*; the plan's `route_unresolved` is
-unbuilt. The walk is not federated: `impact` reads `plane.neighbors` directly,
-so a cross-repository answer is rows naming each plane and its entry point,
-with `impact` run locally for the inside radius. And the known misses are
-listed with the plugins — chi's `Route(path, fn)` prefix, gorilla's
+unbuilt. And the known misses are listed with the plugins — chi's `Route(path, fn)` prefix, gorilla's
 `.Methods("GET")`, actix's `scope(…).service(h)`, a group handed to another
 function, `@FeignClient`-style declarative clients, Spring servlet context
 paths and gateway rewrites, and a literal segment where the declaration has a
 variable.
 
-**Still open for #43.** The second key vocabulary — a Maven coordinate at build
-level (`Manifest --DEPENDS_ON--> External("com.acme:common-base-v2")` against
-the manifest that declares it) and a qualified symbol at code level (the same
-`External` key, referenced on one side and declared on the other) — and an
-`impact --across` that fans out over the attachments. The attachment layer
-above is what both need, and neither changes it. The bridge between the two
-columns is the deps plugin's documented gap, that Maven and Gradle coordinates
-do not join the java parser's package keys.
+**#43 built on this and changed none of it** — see §17.
+
+---
+
+## 17. Cross-repository dependencies — which repositories a change reaches  *(shipped)*
+
+**Status.** ✅ Shipped (2026-10-14), from issue #43. Dozens of business
+repositories depend on a shared library (`common-base-v2`, `agrivo-common`),
+and "which of them would this change break" had no answer: a radius walked in
+one plane stops at the repository boundary. `impact --across` answers it in the
+other graphs too, over MCP and as `drsg impact … --across [attached|all]`.
+
+- **Two keys, both already recorded — no plugin work at all.** A repository
+  states a dependency twice: in its build, where the `deps` plugin keys it as
+  its ecosystem names it (`com.acme:common-base`, with `version` and `scope` on
+  the `DEPENDS_ON` edge), and in its source, where every code plugin mints an
+  `External` stand-in under the key the reference wrote
+  (`com.acme.common.BaseEntity`). Two handlers asserting the same foreign key
+  agree rather than collide, so the stand-in in one repository and the
+  declaration in another are the same key by construction. The whole feature is
+  core-side: the plugins already wrote everything it reads.
+- **The radius, not just the symbol.** The keys offered are the changed
+  symbol's *and* every key its local radius holds, breadth-first — so a
+  repository referencing a subclass of the changed class is found, which is the
+  ordinary case and the one a seed-only match misses.
+- **Two scopes, because two environments ask differently.** `--across` reads
+  the planes this one attaches: explicit, and the only scope that reaches
+  another drsg. `--across all` reads every plane this instance holds — the
+  issue's actual environment, thirty-odd repositories on one machine under one
+  drsg, which needs no setup because each repository already stated its
+  relationships in its own build and imports. An empty plane and a `…_git`
+  history plane are not graphs an answer names.
+- **One query per graph.** Coordinates and symbol keys travel together in a
+  single `SeekKeys` plan, which is what makes thirty graphs affordable; a
+  radius wider than the cap is asked about its nearest keys and says so.
+- **Nothing is drawn and nothing is stored**, as with `wire`: matched per call,
+  so the answer can state what it could not read. Without `--across` the output
+  is byte-identical to before — unlike `wire`, which crosses unasked because a
+  route's two halves live in different repositories by nature, a radius *is*
+  complete within one, and adding graphs changes what its total counts.
+- **Three outcomes told apart.** A repository that declares the coordinate and
+  references the radius; one that declares it and reaches none of it (a
+  dependency it does not use, at whatever version it pinned); and one holding a
+  key *without* `External`, which is this code again — vendored or digested
+  twice — reported as `holds its own` rather than counted as a user.
+
+**Fork settled — the Maven coordinate needs no bridge.** The deps plugin is
+blunt that Maven and Gradle do not join the java parser's package keys:
+`com.google.guava:guava` and `com.google.common.…` cannot be mapped to one
+another without a guess. The earlier framing took that as the gap to close,
+per library plane, by observing coordinate ↔ package-set inside one repository.
+It is not needed. The question is asked *standing in the library*, whose own
+`Manifest.declares` already **is** the coordinate it publishes, and a
+dependent's manifest keys its declaration the same way. The coordinate is read
+from this plane rather than mapped onto it, so the unmappability is sidestepped
+rather than solved — and the deps plugin's documented gap stands untouched.
+
+**Follow-ups.** The walk is still not federated: `impact` reads
+`plane.neighbors` directly, so a cross-repository answer is rows per graph
+rather than a traversal crossing the boundary, with `impact` run in that
+repository for the inside radius. A graph another drsg serves reports which
+keys it holds but not what references them or at which version, because
+`plane.query` answers with nodes and a version is a fact about an edge — a
+reader is handed the call that answers it there, and carrying edges across
+would mean a new RPC method and SDK regeneration, which this did not pay for.
+Versions are reported per repository but never compared, so "which repositories
+are behind" is still the reader's arithmetic. Python's code join holds only by
+luck (`requirements.txt` says `pillow`, the code says `PIL`), and a Gradle
+version catalog (`implementation(libs.something)`) is skipped by the deps
+plugin, so both leave the build join standing alone. Lockfiles are not read, so
+a transitive dependency no manifest declares appears through the code join
+only. And `--across` is on `impact` alone: `trace` and `fathom` do not cross.
 
 ---
 
