@@ -1106,7 +1106,22 @@ struct TraceReq {
     to: String,
 }
 
-/// `impact`'s request: one symbol and how far to look.
+/// The scope a tool asked for, named rather than numbered — `None` is this
+/// plane alone, and an unknown word is refused instead of being read as one
+/// of the two.
+fn across_scope(asked: Option<&str>) -> AnyResult<Option<dr_strange_core::compact::Scope>> {
+    use dr_strange_core::compact::Scope;
+    match asked.map(str::trim).filter(|s| !s.is_empty()) {
+        None => Ok(None),
+        Some(s) if s.eq_ignore_ascii_case("attached") => Ok(Some(Scope::Attached)),
+        Some(s) if s.eq_ignore_ascii_case("all") => Ok(Some(Scope::All)),
+        Some(other) => Err(anyhow::anyhow!(
+            "`across` is `attached` or `all`, not '{other}'"
+        )),
+    }
+}
+
+/// `impact`'s request: one symbol, how far to look, and across which graphs.
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct ImpactReq {
     #[serde(default = "default_plane")]
@@ -1115,6 +1130,11 @@ struct ImpactReq {
     /// Hops of incoming structural edges to walk (default 3, max 6).
     #[serde(default)]
     depth: Option<usize>,
+    /// Also answer in other graphs: `attached` — the planes this one
+    /// attaches — or `all`, every plane this instance holds. Omitted, the
+    /// answer is this plane alone.
+    #[serde(default)]
+    across: Option<String>,
 }
 
 /// `wire`'s request: a path or a symbol, and optionally one verb.
@@ -2835,11 +2855,18 @@ impl DrStrange {
         through incoming structural edges (CALLS, REFERENCES, INSTANTIATES, \
         IMPORTS, EXTENDS, IMPLEMENTS, USES_TYPE — so a type's radius includes \
         what is typed by it, not only what builds it), grouped by distance \
-        with exact counts. Fuzzy name; depth defaults to 3.")]
+        with exact counts. Fuzzy name; depth defaults to 3. `across` widens \
+        it past this repository: with `attached` (the planes this one \
+        attaches) or `all` (every plane this instance holds) the answer also \
+        names the graphs the radius reaches, by the keys they already state \
+        — a build coordinate this plane's manifests publish, and a symbol \
+        their source references. That is the question a shared library asks: \
+        which repositories a change in it reaches.")]
     async fn impact(
         &self,
         Parameters(req): Parameters<ImpactReq>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let remote = self.remote.clone();
         self.run("impact", move |db| {
             Ok(Value::String(dr_strange_core::compact::impact(
                 db,
@@ -2847,8 +2874,8 @@ impl DrStrange {
                     plane: &req.plane,
                     name: &req.name,
                     depth: req.depth.unwrap_or(3),
-                    across: None,
-                    remote: None,
+                    across: across_scope(req.across.as_deref())?,
+                    remote: remote.as_deref(),
                 },
             )?))
         })

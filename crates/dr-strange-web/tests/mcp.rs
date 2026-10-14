@@ -469,6 +469,164 @@ async fn wire_names_an_attachment_it_could_not_reach() {
     client.cancel().await.unwrap();
 }
 
+/// A library and a repository depending on it, each on its own real server —
+/// the case issue #43 opens with, where a shared library cannot say which
+/// business repositories a change in it reaches.
+///
+/// `declares` is what this repository's own manifest publishes; `depends_on`
+/// is a coordinate it declares a dependency on; `standin` is a foreign symbol
+/// its source references, which the plugins record as `External`.
+struct Repo {
+    plane: &'static str,
+    declares: &'static str,
+    depends_on: Option<&'static str>,
+    standin: Option<&'static str>,
+    symbol: &'static str,
+}
+
+/// A real server holding `repo` as the plugins would have written it.
+fn spawn_repo(repo: &'static Repo) -> SocketAddr {
+    use dr_strange_core::{PropDesc, PropValue};
+    set_token_once();
+    let addr = free_addr();
+    let db = Database::in_memory().unwrap();
+    let handle = db.create_plane(repo.plane, Properties::new()).unwrap();
+    let mut txn = handle.write().unwrap();
+    let text = |v: &str| PropDesc::new(PropValue::Str(v.into()));
+
+    let mut props = Properties::new();
+    props.insert("declares".into(), text(repo.declares));
+    let manifest = txn
+        .create_node_with_key("pom.xml", &["Manifest"], props)
+        .unwrap();
+    if let Some(coordinate) = repo.depends_on {
+        let dep = txn
+            .create_node_with_key(coordinate, &["Package", "External"], Properties::new())
+            .unwrap();
+        let mut edge = Properties::new();
+        edge.insert("version".into(), text("2.4.1"));
+        edge.insert("scope".into(), text("runtime"));
+        txn.create_edge(manifest, dep, "DEPENDS_ON", edge).unwrap();
+    }
+    let mut props = Properties::new();
+    props.insert("file".into(), text("src/Thing.java"));
+    props.insert("line".into(), PropDesc::new(PropValue::Int(5)));
+    let symbol = txn
+        .create_node_with_key(repo.symbol, &["Class"], props)
+        .unwrap();
+    if let Some(key) = repo.standin {
+        let foreign = txn
+            .create_node_with_key(key, &["Class", "External"], Properties::new())
+            .unwrap();
+        txn.create_edge(symbol, foreign, "EXTENDS", Properties::new())
+            .unwrap();
+    }
+    txn.commit().unwrap();
+
+    std::thread::spawn(move || {
+        let opts = dr_strange_web::ServeOptions {
+            addr,
+            ..Default::default()
+        };
+        dr_strange_web::serve(db, None, opts).unwrap();
+    });
+    addr
+}
+
+static LIBRARY: Repo = Repo {
+    plane: "common",
+    declares: "com.acme:common-base",
+    depends_on: None,
+    standin: None,
+    symbol: "com.acme.common.BaseEntity",
+};
+
+static DEPENDENT: Repo = Repo {
+    plane: "orders",
+    declares: "svc:orders",
+    depends_on: Some("com.acme:common-base"),
+    standin: Some("com.acme.common.BaseEntity"),
+    symbol: "svc.orders.Order",
+};
+
+/// Asked across, `impact` reaches the repository on the other server by the
+/// two keys it already states — the coordinate its build declares, and the
+/// symbol its source stands in for. Neither is derived here and nothing is
+/// stored: the question travels over `plane.query` like `wire`'s.
+#[tokio::test]
+async fn impact_reaches_a_repository_another_server_serves() {
+    let far = spawn_repo(&DEPENDENT);
+    let here = spawn_repo(&LIBRARY);
+    wait_ready(far).await;
+    wait_ready(here).await;
+    let client = connect(here, TOKEN).await.unwrap();
+
+    // Without a scope the answer is this repository's own.
+    let alone = call(
+        &client,
+        "impact",
+        json!({ "plane": "common", "name": "com.acme.common.BaseEntity" }),
+    )
+    .await;
+    assert!(!alone.as_str().unwrap().contains("across"), "{alone}");
+
+    call(
+        &client,
+        "attach",
+        json!({ "plane": "common", "name": "svc", "url": format!("http://{far}"), "as": "orders" }),
+    )
+    .await;
+
+    let out = call(
+        &client,
+        "impact",
+        json!({ "plane": "common", "name": "com.acme.common.BaseEntity", "across": "attached" }),
+    )
+    .await;
+    let text = out.as_str().expect("impact answers with text");
+    assert!(text.contains("across  common, svc\n"), "{text}");
+    assert!(
+        text.contains(&format!("in svc  at http://{far}\n")),
+        "{text}"
+    );
+    assert!(
+        text.contains("declares  com.acme:common-base"),
+        "the build join: {text}"
+    );
+    assert!(
+        text.contains("com.acme.common.BaseEntity  \u{2190} referenced"),
+        "the code join: {text}"
+    );
+    assert!(
+        text.contains("ask that drsg for the rest: `impact <key> --plane orders`"),
+        "the next call: {text}"
+    );
+    assert!(
+        text.contains("1 declare(s) a dependency, 1 reach(es) it in code"),
+        "{text}"
+    );
+
+    // A word that is neither scope is refused, not read as one of them.
+    let refused = client
+        .call_tool(
+            CallToolRequestParams::new("impact".to_string()).with_arguments(
+                json!({
+                    "plane": "common",
+                    "name": "com.acme.common.BaseEntity",
+                    "across": "everything",
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            ),
+        )
+        .await;
+    let said = format!("{refused:?}");
+    assert!(said.contains("attached"), "{said}");
+
+    client.cancel().await.unwrap();
+}
+
 /// Read one HTTP request off `stream`: its headers, then as many body bytes
 /// as `Content-Length` promised.
 fn drain_request(stream: &mut std::net::TcpStream) {
