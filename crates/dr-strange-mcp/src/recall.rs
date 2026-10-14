@@ -1150,13 +1150,27 @@ mod tests {
         let elsewhere = tempfile::tempdir().unwrap();
         let outside = TreeAccess {
             attached: Some(elsewhere.path()),
+            granted: None,
             plane_roots: false,
         };
         let err = recall_in(&f.db, outside, req()).unwrap_err().to_string();
-        assert!(err.contains("not inside the tree attached"), "{err}");
+        assert!(
+            err.contains("not inside any directory this server reads"),
+            "{err}"
+        );
+
+        // The directory mounts come from is readable too, for the same
+        // reason the watched tree is: the operator named it.
+        let granted = TreeAccess {
+            attached: None,
+            granted: Some(f.dir.path()),
+            plane_roots: false,
+        };
+        assert!(recall_in(&f.db, granted, req()).is_ok());
 
         let inside = TreeAccess {
             attached: Some(f.dir.path()),
+            granted: None,
             plane_roots: false,
         };
         assert!(

@@ -734,15 +734,29 @@ struct DropPlane {
 /// name across the databases this process serves (issue #44) and hands the
 /// request on under the name the holding database knows it by.
 trait Planed {
-    fn plane(&self) -> &str;
+    /// The plane this request names, or `None` where naming one is optional
+    /// and it did not.
+    fn plane(&self) -> Option<&str>;
     fn set_plane(&mut self, to: String);
+}
+
+impl Planed for GrepReq {
+    /// Unset means "whichever plane was parsed from the attached tree", which
+    /// is this process's own database by construction — so there is nothing
+    /// to resolve and the host answers.
+    fn plane(&self) -> Option<&str> {
+        self.plane.as_deref()
+    }
+    fn set_plane(&mut self, to: String) {
+        self.plane = Some(to);
+    }
 }
 
 macro_rules! planed {
     ($($t:ty),+ $(,)?) => {
         $(impl Planed for $t {
-            fn plane(&self) -> &str {
-                &self.plane
+            fn plane(&self) -> Option<&str> {
+                Some(&self.plane)
             }
             fn set_plane(&mut self, to: String) {
                 self.plane = to;
@@ -792,8 +806,18 @@ planed!(
 /// could point `snippet` at any directory the server can open.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TreeAccess<'a> {
-    /// The tree the host attached, if any.
+    /// The tree the host attached, if any — and the one a plane recording
+    /// none of its own falls back to.
     pub attached: Option<&'a std::path::Path>,
+    /// The directory this process was granted to mount databases from
+    /// (`[server] mount_root`, issue #44), if any.
+    ///
+    /// A recorded root inside it is readable: mounting is how an operator
+    /// says "serve the repositories under here", and a server that mounted a
+    /// repository's graph but refused to read its files would answer half of
+    /// every question. A *second* granted directory, not a widening of the
+    /// rule — a plane pointing outside both is still refused.
+    pub granted: Option<&'a std::path::Path>,
     /// Whether a plane's own `synced_root` may be read wherever it points.
     pub plane_roots: bool,
 }
@@ -803,8 +827,15 @@ impl<'a> TreeAccess<'a> {
     pub fn local(attached: Option<&'a std::path::Path>) -> Self {
         Self {
             attached,
+            granted: None,
             plane_roots: true,
         }
+    }
+
+    /// Every directory a plane's *recorded* root may lie under for this
+    /// process to read it.
+    fn roots(&self) -> impl Iterator<Item = &std::path::Path> {
+        self.attached.into_iter().chain(self.granted)
     }
 
     /// The tree `snippet` reads for a plane recording `recorded`, or `None`
@@ -819,17 +850,23 @@ impl<'a> TreeAccess<'a> {
         if self.plane_roots {
             return Ok(Some(recorded.to_path_buf()));
         }
-        match self.attached {
-            Some(attached) if dr_strange_core::instance::dir_within(attached, recorded) => {
-                Ok(Some(recorded.to_path_buf()))
-            }
-            Some(_) => anyhow::bail!(
-                "this plane's `synced_root` ({}) is not inside the tree attached to \
-                 this server, which reads no other files; run `serve watch` on that \
-                 tree or use the stdio server on your own machine",
-                recorded.display()
+        if self
+            .roots()
+            .any(|granted| dr_strange_core::instance::dir_within(granted, recorded))
+        {
+            return Ok(Some(recorded.to_path_buf()));
+        }
+        let reads: Vec<String> = self.roots().map(|r| r.display().to_string()).collect();
+        match reads.is_empty() {
+            false => anyhow::bail!(
+                "this plane's `synced_root` ({}) is not inside any directory this \
+                 server reads ({}); run `serve watch` on that tree, mount it from a \
+                 `[server] mount_root` that contains it, or use the stdio server on \
+                 your own machine",
+                recorded.display(),
+                reads.join(", ")
             ),
-            None => anyhow::bail!(
+            true => anyhow::bail!(
                 "this server has no source tree attached and reads no local files — \
                  the plane's `synced_root` ({}) is readable only from `serve watch` \
                  on that tree or the stdio server",
@@ -983,7 +1020,10 @@ impl DrStrange {
             let Some(instance) = instance else {
                 return f(host, req);
             };
-            let at = instance.serving(req.plane())?;
+            let Some(asked) = req.plane().map(str::to_string) else {
+                return f(host, req);
+            };
+            let at = instance.serving(&asked)?;
             // Under a prefix the plane is `far/x` here and `x` in the
             // database that holds it, which is the name to ask it for.
             req.set_plane(at.plane.clone());
@@ -2649,15 +2689,42 @@ fn read_range(
 /// cannot drift — the same reason `context` and the rest live in
 /// `dr_strange_core::compact` and are called from both.
 pub fn grep_logic(db: &Database, root: &std::path::Path, req: GrepReq) -> AnyResult<Value> {
+    grep_logic_in(db, TreeAccess::local(Some(root)), req)
+}
+
+/// [`grep_logic`] under an explicit tree policy — what the served `/mcp`
+/// uses, where the tree searched is the named plane's own.
+///
+/// A plane and a tree have to agree: searching one repository's files while
+/// placing the hits in another repository's symbols would attribute every hit
+/// to the wrong place, which is worse than refusing. So a plane that records
+/// its own root is searched *there*, and one whose root this process may not
+/// read says so rather than falling back to a tree it was not asked about
+/// (issue #44).
+pub fn grep_logic_in(db: &Database, access: TreeAccess<'_>, req: GrepReq) -> AnyResult<Value> {
     // The plane the hits are placed in: the one asked for, else the one
-    // parsed from this very tree. None is fine — hits still come back, only
-    // without a symbol beside them.
+    // parsed from the attached tree. None is fine — hits still come back,
+    // only without a symbol beside them.
     let plane = match &req.plane {
         Some(name) => Some(db.plane(name)?),
-        None => plane_for_root(db, root)?,
+        None => match access.attached {
+            Some(root) => plane_for_root(db, root)?,
+            None => None,
+        },
+    };
+    let root = match &plane {
+        Some(p) => access.plane_root(recorded_root(p).as_deref())?,
+        None => access.attached.map(std::path::Path::to_path_buf),
+    };
+    let Some(root) = root else {
+        anyhow::bail!(
+            "no source tree to search — this plane records none and this server \
+             has none attached; `serve watch` attaches its --dir, and a mounted \
+             plane is searched in the tree it records"
+        );
     };
     let symbols = plane.as_ref().map(SymbolIndex::from_plane).transpose()?;
-    Ok(Value::String(grep_tree(root, &req, symbols.as_ref())?))
+    Ok(Value::String(grep_tree(&root, &req, symbols.as_ref())?))
 }
 
 /// `snippet`'s body. `fallback_root` is the tree the process was started with,
@@ -2970,15 +3037,15 @@ impl DrStrange {
         Parameters(req): Parameters<GrepReq>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let root = self.source_root.clone();
-        self.run("grep", move |db| {
-            let Some(root) = root else {
-                anyhow::bail!(
-                    "no source tree attached to this server — `serve watch` \
-                     attaches its --dir; a plain serve has only the graph, \
-                     so run grep locally instead"
-                );
+        let granted = self.mount_root.clone();
+        let plane_roots = self.local_files;
+        self.run_in("grep", req, move |db, req| {
+            let access = TreeAccess {
+                attached: root.as_deref(),
+                granted: granted.as_deref(),
+                plane_roots,
             };
-            grep_logic(db, &root, req)
+            grep_logic_in(db, access, req)
         })
         .await
     }
@@ -3330,10 +3397,12 @@ impl DrStrange {
         Parameters(req): Parameters<SnippetReq>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let root = self.source_root.clone();
+        let granted = self.mount_root.clone();
         let plane_roots = self.local_files;
         self.run_in("snippet", req, move |db, req| {
             let access = TreeAccess {
                 attached: root.as_deref(),
+                granted: granted.as_deref(),
                 plane_roots,
             };
             snippet_logic_in(db, access, req)
@@ -3362,10 +3431,12 @@ impl DrStrange {
         Parameters(req): Parameters<RecallReq>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let (root, parsers) = (self.source_root.clone(), self.parsers.clone());
+        let granted = self.mount_root.clone();
         let plane_roots = self.local_files;
         self.run_in("recall", req, move |db, req| {
             let access = TreeAccess {
                 attached: root.as_deref(),
+                granted: granted.as_deref(),
                 plane_roots,
             };
             recall_logic_in(db, access, &*parsers, req)
@@ -5186,12 +5257,33 @@ mod snippet_tests {
         // Attached to repo-a, plane root is repo-b: not inside, refused.
         let shared = TreeAccess {
             attached: Some(&a),
+            granted: None,
             plane_roots: false,
         };
         let err = text(snippet_logic_in(&db, shared, req()))
             .unwrap_err()
             .to_string();
-        assert!(err.contains("not inside the tree attached"), "{err}");
+        assert!(
+            err.contains("not inside any directory this server reads"),
+            "{err}"
+        );
+        assert!(err.contains("mount_root"), "it names every way in: {err}");
+
+        // A mount's grant is a second readable directory, not a widening:
+        // a plane inside it is read, one outside both is still refused.
+        let granted = TreeAccess {
+            attached: None,
+            granted: Some(&b),
+            plane_roots: false,
+        };
+        assert!(text(snippet_logic_in(&db, granted, req())).is_ok());
+        let elsewhere = tempfile::tempdir().unwrap();
+        let other = TreeAccess {
+            attached: None,
+            granted: Some(elsewhere.path()),
+            plane_roots: false,
+        };
+        assert!(text(snippet_logic_in(&db, other, req())).is_err());
 
         // Nothing attached, no local files: nothing is read.
         let none = TreeAccess::default();
@@ -5204,6 +5296,7 @@ mod snippet_tests {
         let parent = a.parent().unwrap();
         let wide = TreeAccess {
             attached: Some(parent),
+            granted: None,
             plane_roots: false,
         };
         assert!(

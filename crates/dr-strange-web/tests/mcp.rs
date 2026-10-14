@@ -630,6 +630,16 @@ async fn impact_reaches_a_repository_another_server_serves() {
 /// A database on disk under `dir`, holding one plane named after the
 /// repository with one keyed symbol in it — what `drsg digest` leaves behind.
 fn repo_store(dir: &std::path::Path, plane: &str) -> std::path::PathBuf {
+    // The repository's own tree, beside its database, with one file in it —
+    // so the plane can record a `synced_root` that really exists.
+    let tree = dir.join(format!("{plane}-src"));
+    std::fs::create_dir_all(tree.join("src")).unwrap();
+    std::fs::write(
+        tree.join("src/Thing.java"),
+        format!("package {plane};\n\nclass Thing {{\n  // the only {plane} marker\n}}\n"),
+    )
+    .unwrap();
+
     let path = dir.join(plane);
     let db = Database::open(&path).unwrap();
     let handle = db.create_plane(plane, Properties::new()).unwrap();
@@ -641,11 +651,21 @@ fn repo_store(dir: &std::path::Path, plane: &str) -> std::path::PathBuf {
     );
     props.insert(
         "line".into(),
-        dr_strange_core::PropDesc::new(dr_strange_core::PropValue::Int(5)),
+        dr_strange_core::PropDesc::new(dr_strange_core::PropValue::Int(3)),
     );
     txn.create_node_with_key(&format!("{plane}.Thing"), &["Class"], props)
         .unwrap();
     txn.commit().unwrap();
+    handle
+        .update_properties(|p| {
+            p.insert(
+                "synced_root".into(),
+                dr_strange_core::PropDesc::new(dr_strange_core::PropValue::Str(
+                    tree.display().to_string(),
+                )),
+            );
+        })
+        .unwrap();
     db.save_sidecars();
     drop(db);
     path
@@ -713,6 +733,42 @@ async fn one_server_answers_tools_across_mounted_databases() {
         1,
         "only the host's own: {planes}"
     );
+
+    // The file-reading verbs reach each repository's *own* tree: a plane and
+    // a tree have to agree, or every hit lands in the wrong symbol. The
+    // trees are readable because they sit under the directory this server
+    // was granted to mount from.
+    for plane in ["svc-orders", "svc-billing"] {
+        let hits = call(
+            &client,
+            "grep",
+            json!({ "plane": plane, "pattern": "marker" }),
+        )
+        .await;
+        let text = hits.as_str().expect("grep answers with text");
+        assert!(
+            text.contains(&format!("the only {plane} marker")),
+            "{plane}: {text}"
+        );
+        // And nothing from the other repository's tree.
+        let other = match plane {
+            "svc-orders" => "svc-billing",
+            _ => "svc-orders",
+        };
+        assert!(
+            !text.contains(other),
+            "{plane} searched {other}'s tree: {text}"
+        );
+
+        let src = call(
+            &client,
+            "snippet",
+            json!({ "plane": plane, "name": "src/Thing.java:1-5" }),
+        )
+        .await;
+        let src = src.as_str().unwrap();
+        assert!(src.contains(&format!("package {plane}")), "{plane}: {src}");
+    }
 
     // Unmounted, the plane is gone from this server at once.
     let gone = call(&client, "unmount", json!({ "name": "svc-billing" })).await;
