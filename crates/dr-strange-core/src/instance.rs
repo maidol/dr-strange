@@ -131,9 +131,18 @@ pub struct Mounted {
 }
 
 /// The databases one process serves.
+/// Called after a database is mounted, with the mount just added.
+///
+/// How `serve watch` gives each mounted repository its own watcher: a mount
+/// may arrive at boot (replayed), on the command line, or over the wire hours
+/// later, and all three go through [`Instance::mount`] — so one hook covers
+/// them where three call sites would have drifted.
+pub type OnMount = Arc<dyn Fn(&Mount) + Send + Sync>;
+
 pub struct Instance {
     host: Arc<Database>,
     mounts: RwLock<Vec<Mount>>,
+    on_mount: RwLock<Option<OnMount>>,
 }
 
 impl Instance {
@@ -143,7 +152,20 @@ impl Instance {
         Self {
             host,
             mounts: RwLock::new(Vec::new()),
+            on_mount: RwLock::new(None),
         }
+    }
+
+    /// Run `f` for every database mounted from now on.
+    ///
+    /// Set before anything is mounted — a replay at startup is a mount like
+    /// any other, and a hook installed after it would miss exactly the
+    /// mounts an operator already asked for.
+    pub fn on_mount(&self, f: OnMount) {
+        *self
+            .on_mount
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(f);
     }
 
     /// This process's own database: where a plane is created, and what the
@@ -307,6 +329,15 @@ impl Instance {
             planes = mount.planes.len(),
             "mounted a database"
         );
+        // After it is served, so a hook that reads the plane finds it there.
+        let hook = self
+            .on_mount
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if let Some(f) = hook {
+            f(&mount);
+        }
         Ok(Mounted { mount, skipped })
     }
 

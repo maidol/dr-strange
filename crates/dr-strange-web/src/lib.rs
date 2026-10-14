@@ -131,6 +131,10 @@ pub struct ServeOptions {
     /// the directory is the operator's grant to make. `drsg serve` fills it
     /// from config, falling back to the user's home directory.
     pub mount_root: Option<std::path::PathBuf>,
+    /// Run for every database this server mounts — boot-time, replayed, or
+    /// over the wire (issue #44). How `serve watch` gives each mounted
+    /// repository a watcher of its own.
+    pub on_mount: Option<dr_strange_core::instance::OnMount>,
     /// The preprocessors `/mcp`'s `recall` locates a symbol with, when the
     /// operator configured a plugin store; `None` reads the default store.
     pub recall_parsers: Option<std::sync::Arc<dyn dr_strange_mcp::Parsers>>,
@@ -247,6 +251,7 @@ impl Default for ServeOptions {
             embed_provider: None,
             source_root: None,
             mount_root: None,
+            on_mount: None,
             recall_parsers: None,
             on_start: None,
             follow: None,

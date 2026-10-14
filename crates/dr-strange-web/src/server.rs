@@ -1681,8 +1681,7 @@ pub async fn run(
         return run_app(state, opts, &resync_needed, &follow_lost).await;
     }
     let db = Arc::new(db);
-    let instance = Arc::new(dr_strange_core::Instance::new(db.clone()));
-    replay_mounts(&instance, opts.mount_root.as_deref());
+    let instance = serving(&db, &opts);
     let state = Arc::new(AppState {
         instance,
         mount_root: opts.mount_root.clone(),
@@ -1705,6 +1704,21 @@ pub async fn run(
         vocab_cache: Mutex::new(None),
     });
     run_app(state, opts, &resync_needed, &follow_lost).await
+}
+
+/// The instance this server answers from: its own database, plus whatever a
+/// previous run was told to mount (issue #44).
+///
+/// The `on_mount` hook goes on before the replay, because a recorded mount is
+/// a mount — a hook installed after it would miss exactly the repositories
+/// the operator already asked for.
+fn serving(db: &Arc<Database>, opts: &ServeOptions) -> Arc<dr_strange_core::Instance> {
+    let instance = Arc::new(dr_strange_core::Instance::new(db.clone()));
+    if let Some(f) = opts.on_mount.clone() {
+        instance.on_mount(f);
+    }
+    replay_mounts(&instance, opts.mount_root.as_deref());
+    instance
 }
 
 /// Serve again the databases a previous run was told to mount (issue #44).

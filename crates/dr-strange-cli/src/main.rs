@@ -1305,6 +1305,96 @@ fn run_agent_verbs(
     }
 }
 
+/// How `serve watch` watches a mounted repository: the rules the operator
+/// gave this server, applied to whatever tree each mounted plane records.
+///
+/// One of these is built once and shared by every mount, because the rules
+/// are the server's, not the repository's — an operator sets `code_only` and
+/// the ignore policy for the machine, and a mount arriving three hours later
+/// is watched under the same ones.
+#[cfg(feature = "digest")]
+struct WatchMounts {
+    code_only: bool,
+    policy: dr_strange_llm::IgnorePolicy,
+    plugin_config: dr_strange_llm::PluginConfig,
+    embed: Option<(String, Option<String>, Option<String>)>,
+    git: bool,
+    /// The directories a mounted tree may lie under to be watched: the
+    /// watched tree itself, and the one mounts come from.
+    ///
+    /// A plane's `synced_root` is data, so the same rule the file-reading
+    /// verbs apply holds here — more so, since a watcher *writes* what it
+    /// reads back into the graph.
+    readable: Vec<PathBuf>,
+}
+
+#[cfg(feature = "digest")]
+impl WatchMounts {
+    /// Start a watcher per plane this mount serves that records a tree this
+    /// server may read.
+    fn watch(&self, mount: &dr_strange_core::Mount) {
+        for served in &mount.planes {
+            // The name the mount's own database knows it by, which is what a
+            // fold writes against.
+            let within = served
+                .rsplit_once(dr_strange_core::instance::PREFIX_SEP)
+                .map_or(served.as_str(), |(_, p)| p);
+            let Some(dir) = self.tree_of(mount, within) else {
+                continue;
+            };
+            let tree = commands::WatchTree {
+                dir,
+                code_only: self.code_only,
+                policy: self.policy.clone(),
+            };
+            let (db, plane) = (mount.database().clone(), within.to_string());
+            let (plugins, embed, git) = (self.plugin_config.clone(), self.embed.clone(), self.git);
+            // A plain thread, as the host's watcher is: the work is blocking
+            // (git, parsing, write transactions) and must not sit on the
+            // request executor.
+            std::thread::spawn(move || {
+                // Never `force` for a mount: that re-routes the whole tree
+                // before dropping the plane, and nobody asked for a rebuild
+                // of a repository they merely mounted.
+                commands::watch(db, tree, plane, plugins, embed, false, git);
+            });
+        }
+    }
+
+    /// The tree `plane` records, if this server may watch it — else `None`,
+    /// said once per mount rather than per fold.
+    fn tree_of(&self, mount: &dr_strange_core::Mount, plane: &str) -> Option<PathBuf> {
+        let recorded = mount
+            .database()
+            .plane(plane)
+            .ok()?
+            .properties()
+            .ok()?
+            .get("synced_root")
+            .map(|d| d.value.clone())
+            .and_then(|v| match v {
+                dr_strange_core::PropValue::Str(s) if !s.is_empty() => Some(PathBuf::from(s)),
+                _ => None,
+            })?;
+        if !self
+            .readable
+            .iter()
+            .any(|r| dr_strange_core::instance::dir_within(r, &recorded))
+        {
+            tracing::warn!(
+                mount = %mount.name,
+                plane,
+                tree = %recorded.display(),
+                "not watching: the tree this plane records is outside every \
+                 directory this server reads"
+            );
+            return None;
+        }
+        tracing::info!(mount = %mount.name, plane, tree = %recorded.display(), "watching a mounted repository");
+        Some(recorded)
+    }
+}
+
 /// The verbs that change what a *running* server serves (issue #44).
 ///
 /// These alone among the CLI's verbs open no database: the server holds its
@@ -1842,6 +1932,22 @@ fn run_services(
                         code_only: config::code_only(cfg, code_only),
                         policy: config::ignore_policy(cfg, ignore_files.as_deref(), tracked_only)?,
                     };
+                    // Every mounted repository gets a watcher of its own, on
+                    // the tree its own plane records (issue #44) — which is
+                    // what lets one `serve watch` replace one process per
+                    // repository. The host's `--dir` keeps `on_start`.
+                    let mounted = WatchMounts {
+                        code_only: config::code_only(cfg, code_only),
+                        policy: config::ignore_policy(cfg, ignore_files.as_deref(), tracked_only)?,
+                        plugin_config: config::plugin_config(cfg)?,
+                        embed: opts.embed_provider.clone(),
+                        git: !no_git,
+                        readable: [Some(dir.clone()), opts.mount_root.clone()]
+                            .into_iter()
+                            .flatten()
+                            .collect(),
+                    };
+                    opts.on_mount = Some(std::sync::Arc::new(move |m| mounted.watch(m)));
                     opts.on_start = Some(Box::new(move |db| {
                         commands::watch(db, tree, plane, plugin_config, embed, force, !no_git)
                     }));
