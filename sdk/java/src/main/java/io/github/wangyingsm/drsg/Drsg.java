@@ -89,6 +89,27 @@ public class Drsg extends Client {
             Long retainCommits) {
     }
 
+    public record DbMountParams(
+            String path,
+            String as) {
+
+        public static DbMountParams of(String path) {
+            return new DbMountParams(path, null);
+        }
+
+        public DbMountParams withAs(String as) {
+            return new DbMountParams(path, as);
+        }
+    }
+
+    public record DbUnmountParams(
+            String name) {
+
+        public static DbUnmountParams of(String name) {
+            return new DbUnmountParams(name);
+        }
+    }
+
     public record PluginListItem(
             String name,
             String version,
@@ -934,6 +955,21 @@ public class Drsg extends Client {
     /** The soft-schema catalog rolled up across every plane. (access: read) */
     public Map<String, Object> dbCatalog() throws DrsgException {
         return call("db.catalog", null, new TypeReference<Map<String, Object>>() {});
+    }
+
+    /** Serve the planes of another database alongside this one's. Admin, and confined to the directory `[server] mount_root` grants; `as` prefixes the mount's plane names. (access: admin) */
+    public Map<String, Object> dbMount(DbMountParams params) throws DrsgException {
+        return call("db.mount", params, new TypeReference<Map<String, Object>>() {});
+    }
+
+    /** Stop serving a mount, releasing its database's lock (an absent name is a no-op). (access: admin) */
+    public Map<String, Object> dbUnmount(DbUnmountParams params) throws DrsgException {
+        return call("db.unmount", params, new TypeReference<Map<String, Object>>() {});
+    }
+
+    /** What this instance serves: each mount with its path and planes, and every plane with the source tree it records. (access: read) */
+    public Map<String, Object> dbMounts() throws DrsgException {
+        return call("db.mounts", null, new TypeReference<Map<String, Object>>() {});
     }
 
     /** Installed preprocessor plugins — the same records `drsg plugin list --json` prints, so an agent reads one shape from either surface (ROADMAP §11). (access: read) */

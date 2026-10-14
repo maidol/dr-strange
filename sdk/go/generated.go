@@ -79,6 +79,15 @@ type Subgraph struct {
 	Truncated bool         `json:"truncated"`
 }
 
+type DbMountParams struct {
+	Path string  `json:"path"`
+	As   *string `json:"as,omitempty"`
+}
+
+type DbUnmountParams struct {
+	Name string `json:"name"`
+}
+
 type PluginListItem struct {
 	Extensions []string `json:"extensions,omitempty"`
 	File       *string  `json:"file,omitempty"`
@@ -405,6 +414,27 @@ func (c *Client) DbStats(ctx context.Context) (*DbStats, error) {
 func (c *Client) DbCatalog(ctx context.Context) (map[string]any, error) {
 	var out map[string]any
 	err := c.call(ctx, "db.catalog", nil, &out)
+	return out, err
+}
+
+// DbMount Serve the planes of another database alongside this one's. Admin, and confined to the directory `[server] mount_root` grants; `as` prefixes the mount's plane names. (access: admin)
+func (c *Client) DbMount(ctx context.Context, p DbMountParams) (map[string]any, error) {
+	var out map[string]any
+	err := c.call(ctx, "db.mount", p, &out)
+	return out, err
+}
+
+// DbUnmount Stop serving a mount, releasing its database's lock (an absent name is a no-op). (access: admin)
+func (c *Client) DbUnmount(ctx context.Context, p DbUnmountParams) (map[string]any, error) {
+	var out map[string]any
+	err := c.call(ctx, "db.unmount", p, &out)
+	return out, err
+}
+
+// DbMounts What this instance serves: each mount with its path and planes, and every plane with the source tree it records. (access: read)
+func (c *Client) DbMounts(ctx context.Context) (map[string]any, error) {
+	var out map[string]any
+	err := c.call(ctx, "db.mounts", nil, &out)
 	return out, err
 }
 

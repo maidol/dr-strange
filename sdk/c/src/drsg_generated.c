@@ -28,6 +28,38 @@ struct json_object *drsg_db_catalog(drsg_client *c, drsg_error *err) {
     return rc == 0 ? result : NULL;
 }
 
+/* Serve the planes of another database alongside this one's. Admin, and confined to the directory `[server] mount_root` grants; `as` prefixes the mount's plane names. (access: admin) */
+struct json_object *drsg_db_mount(drsg_client *c, const char *path, const drsg_db_mount_opts *opts, drsg_error *err) {
+    struct json_object *p = json_object_new_object();
+    json_object_object_add(p, "path", json_object_new_string(path));
+    if (opts) {
+        if (opts->as) json_object_object_add(p, "as", json_object_new_string(opts->as));
+    }
+    struct json_object *result = NULL;
+    int rc = drsg_call(c, "db.mount", p, &result, err);
+    if (p) json_object_put(p);
+    return rc == 0 ? result : NULL;
+}
+
+/* Stop serving a mount, releasing its database's lock (an absent name is a no-op). (access: admin) */
+struct json_object *drsg_db_unmount(drsg_client *c, const char *name, drsg_error *err) {
+    struct json_object *p = json_object_new_object();
+    json_object_object_add(p, "name", json_object_new_string(name));
+    struct json_object *result = NULL;
+    int rc = drsg_call(c, "db.unmount", p, &result, err);
+    if (p) json_object_put(p);
+    return rc == 0 ? result : NULL;
+}
+
+/* What this instance serves: each mount with its path and planes, and every plane with the source tree it records. (access: read) */
+struct json_object *drsg_db_mounts(drsg_client *c, drsg_error *err) {
+    struct json_object *p = NULL;
+    struct json_object *result = NULL;
+    int rc = drsg_call(c, "db.mounts", p, &result, err);
+    if (p) json_object_put(p);
+    return rc == 0 ? result : NULL;
+}
+
 /* Installed preprocessor plugins — the same records `drsg plugin list --json` prints, so an agent reads one shape from either surface (ROADMAP §11). (access: read) */
 struct json_object *drsg_plugin_list(drsg_client *c, drsg_error *err) {
     struct json_object *p = NULL;

@@ -94,6 +94,21 @@ export class Drsg extends Client {
     return this._call("db.catalog") as Promise<Record<string, unknown>>;
   }
 
+  /** Serve the planes of another database alongside this one's. Admin, and confined to the directory `[server] mount_root` grants; `as` prefixes the mount's plane names. (access: admin) */
+  dbMount(params: { path: string; as?: string }): Promise<Record<string, unknown>> {
+    return this._call("db.mount", params) as Promise<Record<string, unknown>>;
+  }
+
+  /** Stop serving a mount, releasing its database's lock (an absent name is a no-op). (access: admin) */
+  dbUnmount(params: { name: string }): Promise<Record<string, unknown>> {
+    return this._call("db.unmount", params) as Promise<Record<string, unknown>>;
+  }
+
+  /** What this instance serves: each mount with its path and planes, and every plane with the source tree it records. (access: read) */
+  dbMounts(): Promise<Record<string, unknown>> {
+    return this._call("db.mounts") as Promise<Record<string, unknown>>;
+  }
+
   /** Installed preprocessor plugins — the same records `drsg plugin list --json` prints, so an agent reads one shape from either surface (ROADMAP §11). (access: read) */
   pluginList(): Promise<Array<{ name?: string; version?: string; file?: string; sha256?: string; source?: string; extensions?: Array<string> }>> {
     return this._call("plugin.list") as Promise<Array<{ name?: string; version?: string; file?: string; sha256?: string; source?: string; extensions?: Array<string> }>>;

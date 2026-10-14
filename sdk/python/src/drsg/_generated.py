@@ -34,6 +34,30 @@ class Drsg(_Client):
         Access: read."""
         return self._call("db.catalog")
 
+    def db_mount(self, path, as_=None) -> Any:
+        """Serve the planes of another database alongside this one's. Admin, and confined to the directory `[server] mount_root` grants; `as` prefixes the mount's plane names.
+
+        Access: admin."""
+        _p: dict = {}
+        _p["path"] = path
+        if as_ is not None:
+            _p["as"] = as_
+        return self._call("db.mount", _p)
+
+    def db_unmount(self, name) -> Any:
+        """Stop serving a mount, releasing its database's lock (an absent name is a no-op).
+
+        Access: admin."""
+        _p: dict = {}
+        _p["name"] = name
+        return self._call("db.unmount", _p)
+
+    def db_mounts(self) -> Any:
+        """What this instance serves: each mount with its path and planes, and every plane with the source tree it records.
+
+        Access: read."""
+        return self._call("db.mounts")
+
     def plugin_list(self) -> Any:
         """Installed preprocessor plugins — the same records `drsg plugin list --json` prints, so an agent reads one shape from either surface (ROADMAP §11).
 
