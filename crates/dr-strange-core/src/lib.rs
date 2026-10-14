@@ -45,7 +45,7 @@ pub use compute::{
     node_id, p, score, similarity,
 };
 pub use error::{Error, Result};
-pub use instance::{Instance, Mount, Mounted, Mounting, Served};
+pub use instance::{Instance, Mount, Mounted, Mounting, Served, Serving};
 pub use storage::graph::{BulkEdge, BulkEdgeById, BulkNode, BulkStats};
 pub use storage::vector::Metric;
 /// Replication wire types (`serve --follow`, arch/01 §9) — ship regardless of

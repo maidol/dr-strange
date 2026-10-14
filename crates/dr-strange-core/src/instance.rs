@@ -57,17 +57,37 @@ impl Mount {
         &self.db
     }
 
-    /// The plane name to ask this mount's own database for, given the name it
-    /// answers to here.
-    fn within(&self, served: &str) -> String {
+    /// The name this mount's own database knows `served` by, or `None` when
+    /// the name is not one this mount could answer for at all.
+    ///
+    /// A prefixed mount answers only for names carrying its prefix — without
+    /// that, a bare name would be looked up inside it and a plane there could
+    /// answer for a name it was deliberately given a prefix to keep apart.
+    fn serves(&self, served: &str) -> Option<String> {
         match self.prefixed {
             true => served
                 .strip_prefix(&format!("{}{PREFIX_SEP}", self.name))
-                .unwrap_or(served)
-                .to_string(),
-            false => served.to_string(),
+                .filter(|inner| !inner.is_empty())
+                .map(str::to_string),
+            false => (served != SKIPPED).then(|| served.to_string()),
         }
     }
+}
+
+/// Which database answers for a plane, and under which name there.
+///
+/// The `Arc` is handed over rather than a borrow because
+/// [`PlaneHandle`](crate::PlaneHandle) borrows the database it reads, and a
+/// mount table that can change while the process runs cannot lend one out. A
+/// caller keeps this for as long as it holds handles from it.
+pub struct Serving {
+    /// The database to read.
+    pub db: Arc<Database>,
+    /// The plane's name *in that database*, which differs from the name asked
+    /// for only on a prefixed mount.
+    pub plane: String,
+    /// The mount it came from, or `None` for this process's own database.
+    pub mount: Option<String>,
 }
 
 /// One plane this instance serves, and where it comes from.
@@ -125,32 +145,37 @@ impl Instance {
         &self.host
     }
 
-    /// The database serving `plane` — this process's own, or a mount's.
+    /// The database serving `plane`, and the name that database knows it by
+    /// — this process's own, or a mount's.
     ///
     /// The host is asked first, so a plane here is never shadowed by a mount;
     /// a mount whose plane name would do that is refused at [`Self::mount`]
     /// rather than silently losing.
-    pub fn serving(&self, plane: &str) -> Result<Arc<Database>> {
+    ///
+    /// Each mount is asked its *own* database rather than the plane list
+    /// recorded at mount time: that list is what collisions and listings are
+    /// computed from, and a plane renamed or dropped through this instance
+    /// would leave it answering for a name that is no longer there.
+    pub fn serving(&self, plane: &str) -> Result<Serving> {
         if self.host.plane(plane).is_ok() {
-            return Ok(self.host.clone());
+            return Ok(Serving {
+                db: self.host.clone(),
+                plane: plane.to_string(),
+                mount: None,
+            });
         }
         for m in self.read().iter() {
-            if m.planes.iter().any(|p| p == plane) {
-                return Ok(m.db.clone());
+            if let Some(inner) = m.serves(plane)
+                && m.db.plane(&inner).is_ok()
+            {
+                return Ok(Serving {
+                    db: m.db.clone(),
+                    plane: inner,
+                    mount: Some(m.name.clone()),
+                });
             }
         }
         Err(Error::NotFound(format!("plane '{plane}'")))
-    }
-
-    /// The name `plane` is called in the database that holds it, which differs
-    /// from the name it answers to here only on a prefixed mount.
-    pub fn within(&self, plane: &str) -> String {
-        for m in self.read().iter() {
-            if m.planes.iter().any(|p| p == plane) {
-                return m.within(plane);
-            }
-        }
-        plane.to_string()
     }
 
     /// Every plane this instance serves, the host's first.
@@ -377,9 +402,10 @@ mod tests {
         // Every database carries `startup`; it is held and not served.
         assert_eq!(mounted.skipped, ["startup"]);
 
-        let db = inst.serving("svc-orders").unwrap();
-        assert!(db.plane("svc-orders").is_ok());
-        assert_eq!(inst.within("svc-orders"), "svc-orders");
+        let at = inst.serving("svc-orders").unwrap();
+        assert_eq!(at.mount.as_deref(), Some("svc-orders"));
+        assert_eq!(at.plane, "svc-orders");
+        assert!(at.db.plane(&at.plane).is_ok());
 
         let served: Vec<(String, Option<String>)> = inst
             .planes()
@@ -430,14 +456,20 @@ mod tests {
             })
             .unwrap();
         assert_eq!(mounted.mount.planes, ["far/svc-orders"]);
-        assert_eq!(inst.within("far/svc-orders"), "svc-orders");
         // The host's own plane of that name is untouched.
-        assert!(
-            Arc::ptr_eq(&inst.serving("svc-orders").unwrap(), inst.host()),
-            "the host still answers for its own"
+        let mine = inst.serving("svc-orders").unwrap();
+        assert!(mine.mount.is_none(), "the host still answers for its own");
+        assert!(Arc::ptr_eq(&mine.db, inst.host()));
+        // And the prefixed name reaches the mount, under its own name there.
+        let far = inst.serving("far/svc-orders").unwrap();
+        assert_eq!(
+            (far.mount.as_deref(), far.plane.as_str()),
+            (Some("far"), "svc-orders")
         );
-        let db = inst.serving("far/svc-orders").unwrap();
-        assert!(db.plane(&inst.within("far/svc-orders")).is_ok());
+        assert!(far.db.plane(&far.plane).is_ok());
+        // A prefixed mount answers for nothing else: the bare name is the
+        // host's, and a name under no prefix reaches no mount at all.
+        assert!(inst.serving("far/nope").is_err());
     }
 
     #[test]
