@@ -51,7 +51,13 @@ and **no token**: attached graphs are one environment, so a caller presents the
 token it already holds, and nothing secret is written to a graph. The record
 carries no vocabulary of its own; what the question is, and what key the two
 sides match on, belongs to the verb asking it (`wire` matches `VERB /path/{}`
-— 06-mcp.md §1). It lives here rather than in a side table because a plane's
+— 06-mcp.md §1; `impact --across` matches an `External` key and a build
+coordinate — 07-llm.md §2). A verb may also ask **every** plane this instance
+holds rather than the attached ones: a machine handed every repository has
+already stated the relationships, in each repository's own build and imports,
+and asking for an attachment per pair would be setup to record what is written
+down. So the scope is a question the caller asks, and the answer names the
+graphs it read. It lives here rather than in a side table because a plane's
 own map is already durable, already readable by anything that reads a plane,
 and already the thing `plane.set_props` edits.
 

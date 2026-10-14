@@ -60,6 +60,22 @@ from the same file. Two readers would mean two vector spaces for one corpus.
   graph** — no `Route` node, no `SERVES` edge: a synthesised edge would freeze
   a guess, while `wire` (06-mcp.md §1) computes the correspondence per call and
   can say what it could not match.
+- **A dependency is stated twice, and both statements are already keys**: a
+  repository says what it depends on in its build (`com.acme:common-base`) and
+  in its source (`com.acme.common.BaseEntity`), and the plugins already record
+  both — the `deps` plugin keys a dependency as its ecosystem names it, and
+  every code plugin mints an `External` stand-in for a foreign symbol under
+  the key the reference wrote. Two handlers asserting the same foreign key
+  agree rather than collide, so a stand-in in one repository and the
+  declaration in another are **the same key by construction**. That is the
+  whole join: `impact --across` (05-tools.md §1) matches on it per call and
+  stores nothing, exactly as `wire` matches a route. The coordinate is read
+  from the plane being asked *about* — its own `Manifest.declares` — never
+  mapped onto it, because a coordinate and a package cannot be mapped to one
+  another without a guess and this family does not guess. What a graph another
+  drsg serves cannot answer is named rather than approximated: it replies with
+  nodes, so the symbols referencing a key and the `version` on a `DEPENDS_ON`
+  edge are read where they live, and the answer says so.
 - **Preprocessing is local-only**: what makes parsing worth its cost is a
   plugin pulling the files *around* the one it was handed — and that pull is
   exactly what a shared server must not offer, since the only filesystem it
