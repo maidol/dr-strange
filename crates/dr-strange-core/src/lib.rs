@@ -5,6 +5,7 @@
 //! - [`cache`]   — decoded-object cache between storage and computation (arch/02)
 //! - [`compute`] — logical plans, executor, hybrid search, catalog (arch/03)
 //! - [`api`]     — public surface: `Database`, `PlaneHandle`, query builder (arch/04)
+//! - [`instance`] — the databases one process serves, its own and its mounts (arch/09)
 //!
 //! Planes (arch/09) are a data-model primitive and appear at every layer.
 
@@ -16,6 +17,7 @@ pub mod compact;
 pub mod compute;
 pub mod error;
 pub mod index;
+pub mod instance;
 #[cfg(feature = "json")]
 pub mod json;
 pub mod keyword;
@@ -43,6 +45,7 @@ pub use compute::{
     node_id, p, score, similarity,
 };
 pub use error::{Error, Result};
+pub use instance::{Instance, Mount, Mounted, Mounting, Served};
 pub use storage::graph::{BulkEdge, BulkEdgeById, BulkNode, BulkStats};
 pub use storage::vector::Metric;
 /// Replication wire types (`serve --follow`, arch/01 §9) — ship regardless of

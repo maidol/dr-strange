@@ -744,7 +744,9 @@ impl<'a> TreeAccess<'a> {
             return Ok(Some(recorded.to_path_buf()));
         }
         match self.attached {
-            Some(attached) if dir_within(attached, recorded) => Ok(Some(recorded.to_path_buf())),
+            Some(attached) if dr_strange_core::instance::dir_within(attached, recorded) => {
+                Ok(Some(recorded.to_path_buf()))
+            }
             Some(_) => anyhow::bail!(
                 "this plane's `synced_root` ({}) is not inside the tree attached to \
                  this server, which reads no other files; run `serve watch` on that \
@@ -758,16 +760,6 @@ impl<'a> TreeAccess<'a> {
                 recorded.display()
             ),
         }
-    }
-}
-
-/// Whether `dir` resolves to `root` or somewhere beneath it. Both sides are
-/// canonicalized, so a symlinked `dir` is judged by where it lands; a `dir`
-/// that does not exist is not within anything.
-fn dir_within(root: &std::path::Path, dir: &std::path::Path) -> bool {
-    match (root.canonicalize(), dir.canonicalize()) {
-        (Ok(root), Ok(dir)) => dir.starts_with(&root),
-        _ => false,
     }
 }
 
