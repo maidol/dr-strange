@@ -4,6 +4,81 @@ All notable changes to Dr Strange are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.20.0] - 2026-10-15
+
+### Added
+
+- **`mount`: one process serving many databases.** A repository digested into
+  its own store is the ordinary case, and a machine ends up with dozens —
+  thirty-four, in the report this comes from, each needing its own `drsg serve`,
+  its own port and its own cache, while a client configured for one port reached
+  one of them. `drsg mount <path>` serves another database's planes on a
+  **running** drsg, keeping the planes' own names, so `--plane svc-orders` works
+  exactly as before. Nothing is copied and nothing is re-digested. From issue
+  #44. `db.mount` / `db.unmount` / `db.mounts` on the JSON-RPC surface (42
+  methods now, with the six SDKs regenerated), the same three as MCP tools, and
+  `drsg mount` / `unmount` / `mounts` on the CLI — those three alone among the
+  CLI's verbs open no database, because the server holds the store's lock, so
+  they speak its RPC instead.
+- **A mount is not a merge, and that is the design.** Node and plane ids are
+  allocated per database and collide freely across them, so nothing joins two
+  stores: a request reaches exactly one, and the only thing shared is the name
+  it was asked for. Each mount therefore keeps **its own writer slot** — which
+  is the point for a machine folding commits in thirty-four repositories at
+  once, where a single store would queue every fold behind one gate — its own
+  lifecycle (dropping a repository is an unmount, not a range-delete inside a
+  shared file) and its own blast radius.
+- **Every verb follows, because a plane name is resolved once per request.**
+  `plane` is the one key every method and tool uses for "the plane to act on",
+  so the RPC resolves it at dispatch and the MCP layer in one place; all 39
+  pre-existing RPC methods and 26 tools answer across mounts untouched.
+  `context`, `grep` and `snippet` each answer in their own repository's tree,
+  and `impact --across all` crosses every mounted database in one process —
+  issue #43's cross-repository question with no attachment setup at all.
+- **`serve watch` keeps every mounted repository current**, on the tree its own
+  plane records: the part that actually retires the other thirty-three
+  processes. One hook covers a mount replayed at startup, named on the command
+  line, or arriving over the wire hours later. A mount is written down on the
+  host's own plane, like an attachment, and served again after a restart; a
+  recorded directory that has moved is reported and skipped rather than taken
+  as a reason not to start.
+- **Confined, because mounting opens a file a caller names.** `db.mount` is
+  admin-tier *and* restricted to one granted directory (`[server] mount_root`,
+  the operator's home by default) — a plane inside a mounted store records a
+  `synced_root` that `grep` and `snippet` would then read, which is the
+  escalation `TreeAccess` exists to prevent. That same directory becomes a
+  second readable root for those verbs, so a mounted repository's files are
+  reachable without weakening the rule. A local process (stdio, the CLI) is
+  unconfined, already running as the user whose files these are. Two refusals
+  come from the engine itself: a store another process holds, by its exclusive
+  lock, and a path that does not exist — mounting opens a database, it does not
+  create one.
+
+### Security
+
+- **`rustls` moves to 0.23.46**, closing four advisories published since the
+  last release: `Debug` impls on client session values disclosing the TLS 1.2
+  master secret or the TLS 1.3 resumption PSK ([RUSTSEC-2026-0346]), buffered
+  application data sent to the outer server after an ECH rejection
+  ([RUSTSEC-2026-0347]), brotli certificate decompression allocating up to a
+  gibibyte before authentication ([RUSTSEC-2026-0348]), and an unauthenticated
+  `ServerHello` downgrading later connections to classical key exchange
+  ([RUSTSEC-2026-0349]).
+
+### Fixed
+
+- **A mount is asked its own database, not a list cached when it was mounted.**
+  A plane renamed or dropped through this instance would otherwise leave the
+  recorded list answering for a name that is no longer there.
+- **Mounting needs a storage backend**, and so does replaying a recorded mount:
+  a build with no backend feature had `Instance::replay` calling a gated
+  `mount`, which the feature gate caught before release.
+
+[RUSTSEC-2026-0346]: https://rustsec.org/advisories/RUSTSEC-2026-0346
+[RUSTSEC-2026-0347]: https://rustsec.org/advisories/RUSTSEC-2026-0347
+[RUSTSEC-2026-0348]: https://rustsec.org/advisories/RUSTSEC-2026-0348
+[RUSTSEC-2026-0349]: https://rustsec.org/advisories/RUSTSEC-2026-0349
+
 ## [2.19.0] - 2026-10-14
 
 ### Added
