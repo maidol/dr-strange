@@ -795,6 +795,8 @@ pub fn db_mount(ctx: &Ctx<'_>, p: Value) -> Result<Value, RpcError> {
         path: Path::new(&req.path),
         as_prefix: req.as_prefix.as_deref(),
         grant: Some(grant),
+        // Over the wire there is no command line to name it on again.
+        remember: true,
     }))?;
     Ok(jval!({
         "name": mounted.mount.name,

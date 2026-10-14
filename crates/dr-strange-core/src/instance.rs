@@ -21,9 +21,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
-use crate::api::Database;
+use crate::api::{Database, PlaneHandle};
 use crate::error::{Error, Result};
-use crate::types::PlaneId;
+use crate::types::{PlaneId, PropDesc, PropValue, Properties};
 
 /// The default plane every database carries, skipped when a mount is read.
 ///
@@ -112,6 +112,13 @@ pub struct Mounting<'a> {
     /// caller holding its token could open a database anywhere on the host
     /// and then read the trees its planes name.
     pub grant: Option<&'a Path>,
+    /// Record this mount on the host, so a restart serves it again.
+    ///
+    /// Asked for rather than always: a mount named on the command line is
+    /// that invocation's, and remembering it would mean a later `drsg serve`
+    /// mounting a database nobody asked it for. A mount made over the wire
+    /// has no command line to be named on again, so it is remembered.
+    pub remember: bool,
 }
 
 /// What a mount brought.
@@ -213,6 +220,18 @@ impl Instance {
     #[cfg(any(feature = "redb-backend", feature = "native-backend"))]
     pub fn mount(&self, req: Mounting<'_>) -> Result<Mounted> {
         let path = req.path;
+        // A mount serves what is already there. `Database::open` creates on
+        // demand, which is right for `--db` and wrong here: a mistyped path,
+        // or a recorded one whose repository has moved, would otherwise be
+        // answered with a brand-new empty database rather than with the
+        // reason — and `--across all` would then list a plane-less graph as
+        // one it read.
+        if !path.exists() {
+            return Err(Error::NotFound(format!(
+                "no database at {} — mounting opens one, it does not create it",
+                path.display()
+            )));
+        }
         if let Some(grant) = req.grant
             && !dir_within(grant, path)
         {
@@ -276,6 +295,11 @@ impl Instance {
             prefixed,
             db,
         };
+        // Recorded before it is served, so a mount that answers a request was
+        // one a restart will serve again.
+        if req.remember {
+            Remembered::remember(&self.host.plane(SKIPPED)?, &mount)?;
+        }
         self.write().push(mount.clone());
         tracing::info!(
             name = %mount.name,
@@ -292,13 +316,40 @@ impl Instance {
     pub fn unmount(&self, name: &str) -> Result<Option<Mount>> {
         let mut mounts = self.write();
         let Some(at) = mounts.iter().position(|m| m.name == name) else {
+            // Forget it anyway: a recorded mount whose directory has gone was
+            // never served this run, and must still be forgettable.
+            Remembered::forget(&self.host.plane(SKIPPED)?, name)?;
             return Ok(None);
         };
         let gone = mounts.remove(at);
         drop(mounts);
+        Remembered::forget(&self.host.plane(SKIPPED)?, name)?;
         gone.db.save_sidecars();
         tracing::info!(name, path = %gone.path.display(), "unmounted a database");
         Ok(Some(gone))
+    }
+
+    /// Serve again what was recorded, and say what could not be.
+    ///
+    /// A recorded directory may have moved, been deleted, or be held by
+    /// another process — none of which should stop a server from starting, so
+    /// each failure is returned for the caller to log rather than raised.
+    pub fn replay(&self, grant: Option<&Path>) -> Result<Vec<(String, Error)>> {
+        let mut failed = Vec::new();
+        for rec in Remembered::of(&self.host.plane(SKIPPED)?)? {
+            let req = Mounting {
+                path: Path::new(&rec.path),
+                as_prefix: rec.prefixed.then_some(rec.name.as_str()),
+                grant,
+                // Already recorded; writing it again on every boot would be
+                // the same row rewritten for nothing.
+                remember: false,
+            };
+            if let Err(e) = self.mount(req) {
+                failed.push((rec.name, e));
+            }
+        }
+        Ok(failed)
     }
 
     /// Persist every mounted database's vector and keyword sidecars, as a
@@ -320,6 +371,114 @@ impl Instance {
         self.mounts
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+/// The property a mount list is recorded under, on the host's own default
+/// plane.
+///
+/// The host's `startup` plane rather than a side table, for the reason
+/// `attachments` lives on a plane (arch/09 §2): a plane's own map is already
+/// durable, already readable by anything that reads a plane, and already what
+/// `plane.set_props` edits. `startup` because a mount is a fact about the
+/// *instance*, not about any one of its planes, and that is the plane every
+/// database has.
+pub const MOUNTS: &str = "mounts";
+
+/// What the property means, for anything that reads the plane's own map.
+const WHAT_IT_IS: &str = "the databases this process also serves — a name, the \
+                          directory it was opened from, and whether its planes \
+                          carry the name as a prefix";
+
+/// A mount as it is written down: enough to open it again, and nothing about
+/// the run that made it.
+#[derive(Debug, Clone)]
+pub struct Remembered {
+    pub name: String,
+    pub path: String,
+    pub prefixed: bool,
+}
+
+impl Remembered {
+    /// What `plane` records, in the order mounted.
+    pub fn of(plane: &PlaneHandle<'_>) -> Result<Vec<Self>> {
+        Ok(Self::read(&plane.properties()?))
+    }
+
+    fn read(props: &Properties) -> Vec<Self> {
+        let Some(PropDesc {
+            value: PropValue::List(items),
+            ..
+        }) = props.get(MOUNTS)
+        else {
+            return Vec::new();
+        };
+        items.iter().filter_map(Self::from_prop).collect()
+    }
+
+    fn from_prop(v: &PropValue) -> Option<Self> {
+        let PropValue::Map(m) = v else { return None };
+        let text = |k: &str| match m.get(k).map(|p| &p.value) {
+            Some(PropValue::Str(s)) if !s.is_empty() => Some(s.clone()),
+            _ => None,
+        };
+        Some(Self {
+            name: text("name")?,
+            path: text("path")?,
+            prefixed: matches!(
+                m.get("prefixed").map(|p| &p.value),
+                Some(PropValue::Bool(true))
+            ),
+        })
+    }
+
+    fn to_prop(&self) -> PropValue {
+        let mut m = Properties::new();
+        m.insert(
+            "name".into(),
+            PropDesc::new(PropValue::Str(self.name.clone())),
+        );
+        m.insert(
+            "path".into(),
+            PropDesc::new(PropValue::Str(self.path.clone())),
+        );
+        if self.prefixed {
+            m.insert("prefixed".into(), PropDesc::new(PropValue::Bool(true)));
+        }
+        PropValue::Map(m)
+    }
+
+    fn write(plane: &PlaneHandle<'_>, edit: impl FnOnce(&mut Vec<Self>)) -> Result<()> {
+        plane.update_properties(|props| {
+            let mut have = Self::read(props);
+            edit(&mut have);
+            let items = have.iter().map(Self::to_prop).collect();
+            props.insert(
+                MOUNTS.into(),
+                PropDesc::described(WHAT_IT_IS, PropValue::List(items)),
+            );
+        })
+    }
+
+    /// Write `mount` down, replacing any record of the same name. Read and
+    /// write happen under one write lock, so two mounts cannot lose each
+    /// other.
+    fn remember(plane: &PlaneHandle<'_>, mount: &Mount) -> Result<()> {
+        let rec = Self {
+            name: mount.name.clone(),
+            path: mount.path.display().to_string(),
+            prefixed: mount.prefixed,
+        };
+        Self::write(plane, |have| {
+            match have.iter_mut().find(|r| r.name == rec.name) {
+                Some(slot) => *slot = rec,
+                None => have.push(rec),
+            }
+        })
+    }
+
+    fn forget(plane: &PlaneHandle<'_>, name: &str) -> Result<()> {
+        Self::write(plane, |have| have.retain(|r| r.name != name))
     }
 }
 
@@ -387,6 +546,7 @@ mod tests {
             path,
             as_prefix: None,
             grant,
+            remember: false,
         }
     }
 
@@ -453,6 +613,7 @@ mod tests {
                 path: &orders,
                 as_prefix: Some("far"),
                 grant: None,
+                remember: false,
             })
             .unwrap();
         assert_eq!(mounted.mount.planes, ["far/svc-orders"]);
@@ -541,13 +702,103 @@ mod tests {
                 path: &billing,
                 as_prefix: Some("svc-orders"),
                 grant: None,
+                remember: false,
             })
             .unwrap_err()
             .to_string();
         assert!(err.contains("already mounts 'svc-orders'"), "{err}");
     }
 
+    /// A mount made over the wire has no command line to be named on again,
+    /// so it is written down and served again on the next start.
+    #[test]
+    fn a_remembered_mount_is_served_again_after_a_restart() {
+        let tmp = tempfile::tempdir().unwrap();
+        let orders = store(tmp.path(), "svc-orders");
+        let host = tmp.path().join("host");
+        let names = |inst: &Instance| -> Vec<String> {
+            inst.mounts().iter().map(|m| m.name.clone()).collect()
+        };
+
+        {
+            let inst = Instance::new(Arc::new(Database::open(&host).unwrap()));
+            inst.mount(Mounting {
+                path: &orders,
+                as_prefix: None,
+                grant: None,
+                remember: true,
+            })
+            .unwrap();
+            assert_eq!(names(&inst), ["svc-orders"]);
+            inst.unmount("svc-orders").unwrap();
+        }
+        // Unmounted, so nothing is replayed.
+        {
+            let inst = Instance::new(Arc::new(Database::open(&host).unwrap()));
+            assert!(inst.replay(None).unwrap().is_empty());
+            assert!(names(&inst).is_empty(), "forgotten with the unmount");
+            inst.mount(Mounting {
+                path: &orders,
+                as_prefix: Some("far"),
+                grant: None,
+                remember: true,
+            })
+            .unwrap();
+        }
+        // Mounted again, under a prefix — and the prefix is remembered too.
+        {
+            let inst = Instance::new(Arc::new(Database::open(&host).unwrap()));
+            assert!(inst.replay(None).unwrap().is_empty());
+            assert_eq!(names(&inst), ["far"]);
+            assert!(inst.serving("far/svc-orders").is_ok());
+        }
+    }
+
+    /// A recorded directory that has moved must not stop a process starting,
+    /// so a replay reports what it could not open instead of failing.
+    #[test]
+    fn a_replay_reports_what_it_could_not_mount() {
+        let tmp = tempfile::tempdir().unwrap();
+        let orders = store(tmp.path(), "svc-orders");
+        let host = tmp.path().join("host");
+        {
+            let inst = Instance::new(Arc::new(Database::open(&host).unwrap()));
+            inst.mount(Mounting {
+                path: &orders,
+                as_prefix: None,
+                grant: None,
+                remember: true,
+            })
+            .unwrap();
+        }
+        std::fs::rename(&orders, tmp.path().join("moved")).unwrap();
+
+        {
+            let inst = Instance::new(Arc::new(Database::open(&host).unwrap()));
+            let failed = inst.replay(None).unwrap();
+            assert_eq!(failed.len(), 1, "{failed:?}");
+            assert_eq!(failed[0].0, "svc-orders");
+            // The reason, not a silently created empty database in its place.
+            assert!(
+                failed[0].1.to_string().contains("no database at"),
+                "{:?}",
+                failed[0].1
+            );
+            assert!(inst.mounts().is_empty());
+            // And it can be forgotten, though it was never served this run.
+            assert!(inst.unmount("svc-orders").unwrap().is_none());
+        }
+        let inst = Instance::new(Arc::new(Database::open(&host).unwrap()));
+        assert!(
+            Remembered::of(&inst.host().plane("startup").unwrap())
+                .unwrap()
+                .is_empty(),
+            "forgotten, so the next start does not retry it"
+        );
+    }
+
     /// `repo/graph.drsg` is what `drsg init` writes, so the repository names
+    /// the mount — not the file inside it, which is the same word every time.    /// `repo/graph.drsg` is what `drsg init` writes, so the repository names
     /// the mount — not the file inside it, which is the same word every time.
     #[test]
     fn a_mount_is_named_after_its_repository_not_its_file() {

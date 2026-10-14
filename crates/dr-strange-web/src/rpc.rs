@@ -735,6 +735,7 @@ mod tests {
                 path: &orders,
                 as_prefix: None,
                 grant: None,
+                remember: false,
             })
             .unwrap();
 
@@ -791,6 +792,7 @@ mod tests {
                 path: &orders,
                 as_prefix: Some("far"),
                 grant: None,
+                remember: false,
             })
             .unwrap();
 

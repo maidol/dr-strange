@@ -1676,8 +1676,10 @@ pub async fn run(
         return run_app(state, opts, &resync_needed, &follow_lost).await;
     }
     let db = Arc::new(db);
+    let instance = Arc::new(dr_strange_core::Instance::new(db.clone()));
+    replay_mounts(&instance, opts.mount_root.as_deref());
     let state = Arc::new(AppState {
-        instance: Arc::new(dr_strange_core::Instance::new(db.clone())),
+        instance,
         mount_root: opts.mount_root.clone(),
         db,
         db_path,
@@ -1698,6 +1700,24 @@ pub async fn run(
         vocab_cache: Mutex::new(None),
     });
     run_app(state, opts, &resync_needed, &follow_lost).await
+}
+
+/// Serve again the databases a previous run was told to mount (issue #44).
+///
+/// Logged rather than fatal: a repository that has moved, been deleted, or is
+/// held by another process must not stop this server from starting — the
+/// planes it was serving are gone either way, and refusing to start would
+/// take every other plane with them. `db.mounts` shows what is actually
+/// served, so a missing one is visible rather than assumed.
+fn replay_mounts(instance: &dr_strange_core::Instance, grant: Option<&std::path::Path>) {
+    match instance.replay(grant) {
+        Ok(failed) => {
+            for (name, why) in failed {
+                tracing::warn!(mount = %name, error = %why, "a recorded mount could not be served");
+            }
+        }
+        Err(e) => tracing::warn!(error = %e, "could not read the recorded mounts"),
+    }
 }
 
 /// The rest of `run`, shared by the follow and non-follow paths once
