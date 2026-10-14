@@ -72,6 +72,14 @@ pub struct DrStrange {
     /// [`DrStrange::with_remote`]. `None` leaves those attachments unread and
     /// named as such, which is any host holding no network client.
     remote: Option<Arc<dyn Remote>>,
+    /// Every database this process serves — see [`DrStrange::with_instance`].
+    /// `None` serves exactly [`DrStrange::db`], which is every host that
+    /// mounts nothing.
+    instance: Option<Arc<dr_strange_core::Instance>>,
+    /// The one directory the `mount` tool may open a database from — see
+    /// [`DrStrange::with_instance`]. `None` refuses mounting, which is every
+    /// host that was granted no directory.
+    mount_root: Option<std::path::PathBuf>,
 }
 
 /// How the host reaches an embedding provider. Only the *names* live here; the
@@ -255,6 +263,8 @@ impl DrStrange {
             parsers: default_parsers(),
             deadline: tool_deadline_from_env(),
             remote: None,
+            instance: None,
+            mount_root: None,
         }
     }
 
@@ -317,6 +327,22 @@ impl DrStrange {
     /// them unread.
     pub fn with_remote(mut self, remote: Arc<dyn Remote>) -> Self {
         self.remote = Some(remote);
+        self
+    }
+
+    /// Answer every tool across the databases `instance` serves, not just
+    /// this one's (issue #44).
+    ///
+    /// The host passes the same instance its other surfaces hold, so a plane
+    /// mounted over `db.mount` is reachable from a tool call in the same
+    /// moment, without restarting anything.
+    pub fn with_instance(
+        mut self,
+        instance: Arc<dr_strange_core::Instance>,
+        mount_root: Option<std::path::PathBuf>,
+    ) -> Self {
+        self.instance = Some(instance);
+        self.mount_root = mount_root;
         self
     }
 
@@ -702,6 +728,56 @@ struct DropPlane {
     confirm: bool,
 }
 
+/// A tool request that names the plane to act on.
+///
+/// Every request carrying `plane` implements it, so one place resolves that
+/// name across the databases this process serves (issue #44) and hands the
+/// request on under the name the holding database knows it by.
+trait Planed {
+    fn plane(&self) -> &str;
+    fn set_plane(&mut self, to: String);
+}
+
+macro_rules! planed {
+    ($($t:ty),+ $(,)?) => {
+        $(impl Planed for $t {
+            fn plane(&self) -> &str {
+                &self.plane
+            }
+            fn set_plane(&mut self, to: String) {
+                self.plane = to;
+            }
+        })+
+    };
+}
+
+planed!(
+    Algo,
+    Ask,
+    AttachReq,
+    AttachmentsReq,
+    Cypher,
+    DetachReq,
+    Digest,
+    FathomReq,
+    GetNode,
+    HistoryReq,
+    Hybrid,
+    ImpactReq,
+    PlaneOnly,
+    Query,
+    Rebuild,
+    SearchReq,
+    SnippetReq,
+    SymbolReq,
+    TraceReq,
+    Traverse,
+    WireReq,
+    WriteEdges,
+    WriteNodes,
+    crate::recall::RecallReq
+);
+
 // ---- helpers -------------------------------------------------------------
 
 /// Which trees the file-reading verbs (`grep`, `snippet`) may open.
@@ -884,6 +960,38 @@ impl DrStrange {
         self.blocking(tool, f).await.map_err(Into::into)
     }
 
+    /// Run a tool body against the database holding the plane its request
+    /// names (issue #44): this process's own, or one it mounts.
+    ///
+    /// The resolution happens on the blocking thread, with the rest of the
+    /// tool's work — it reads an index per mount, which is not something to
+    /// do on the executor. A plane nothing serves fails exactly as it did
+    /// before this existed, with the same message `Database::plane` gives.
+    async fn run_in<T, F>(
+        &self,
+        tool: &'static str,
+        req: T,
+        f: F,
+    ) -> Result<CallToolResult, rmcp::ErrorData>
+    where
+        T: Planed + Send + 'static,
+        F: FnOnce(&Database, T) -> AnyResult<Value> + Send + 'static,
+    {
+        let instance = self.instance.clone();
+        self.run(tool, move |host| {
+            let mut req = req;
+            let Some(instance) = instance else {
+                return f(host, req);
+            };
+            let at = instance.serving(req.plane())?;
+            // Under a prefix the plane is `far/x` here and `x` in the
+            // database that holds it, which is the name to ask it for.
+            req.set_plane(at.plane.clone());
+            f(&at.db, req)
+        })
+        .await
+    }
+
     async fn blocking<F>(&self, tool: &'static str, f: F) -> Result<CallToolResult, McpError>
     where
         F: FnOnce(&Database) -> AnyResult<Value> + Send + 'static,
@@ -980,16 +1088,44 @@ fn scored_rows(rows: &[(dr_strange_core::NodeRecord, Option<f32>)]) -> Value {
 /// `list_planes`' body. `watched` is the tree this server has attached (the
 /// `serve watch` directory or `[server] source_root`), which is what `grep`
 /// reads; `snippet` reads any plane's own `synced_root`.
-fn list_planes_logic(db: &Database, watched: Option<&std::path::Path>) -> AnyResult<Value> {
-    let names: Vec<String> = db.planes()?.into_iter().map(|(_, name)| name).collect();
+fn list_planes_logic(
+    db: &Database,
+    instance: Option<&dr_strange_core::Instance>,
+    watched: Option<&std::path::Path>,
+) -> AnyResult<Value> {
+    // Every plane this *instance* serves, so a mounted repository's planes
+    // are listed beside this database's own (issue #44) — this is the call an
+    // agent makes to learn which repositories one server can answer for.
+    let served: Vec<(String, Option<String>)> = match instance {
+        Some(inst) => inst
+            .planes()?
+            .into_iter()
+            .map(|s| (s.plane, s.mount))
+            .collect(),
+        None => db
+            .planes()?
+            .into_iter()
+            .map(|(_, name)| (name, None))
+            .collect(),
+    };
+    let names: Vec<String> = served.iter().map(|(n, _)| n.clone()).collect();
     let watched = watched.map(|w| w.canonicalize().unwrap_or_else(|_| w.to_path_buf()));
     let mut out = Vec::new();
-    for (id, name) in db.planes()? {
-        let plane = db.plane(&name)?;
+    for (name, mount) in &served {
+        let name = name.clone();
+        let held = match instance {
+            Some(inst) => Some(inst.serving(&name)?),
+            None => None,
+        };
+        let (holder, within) = match &held {
+            Some(at) => (at.db.as_ref(), at.plane.as_str()),
+            None => (db, name.as_str()),
+        };
+        let plane = holder.plane(within)?;
         let cat = plane.catalog()?;
         let props = plane.properties()?;
         let mut row = jval!({
-            "id": id.0, "name": name,
+            "id": plane.id().0, "name": name, "mount": mount,
             "nodes": cat.node_count, "edges": cat.edge_count,
             "properties": json::properties_to_json(&props),
         });
@@ -1023,12 +1159,12 @@ fn list_planes_logic(db: &Database, watched: Option<&std::path::Path>) -> AnyRes
         // the history beside the code plane under exactly this name, so both
         // ends of it are the host's own doing.
         let suffix = dr_strange_core::compact::HISTORY_SUFFIX;
-        let kind = match name.strip_suffix(suffix) {
+        let kind = match name.as_str().strip_suffix(suffix) {
             Some(code) if names.iter().any(|n| n == code) => Some(format!(
                 "the commit history of plane `{code}` — commits, branches, \
                  tags, merges and rebases; the `history` tool reads it"
             )),
-            _ if names.iter().any(|n| n == &format!("{name}{suffix}")) => Some(format!(
+            _ if names.iter().any(|n| *n == format!("{name}{suffix}")) => Some(format!(
                 "source code; this repository's history is in plane \
                  `{name}{suffix}`"
             )),
@@ -1127,6 +1263,23 @@ struct ImpactReq {
     /// answer is this plane alone.
     #[serde(default)]
     across: Option<String>,
+}
+
+/// `mount`'s request: the database directory, and a prefix for its planes.
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct MountReq {
+    /// The database directory to open and serve.
+    path: String,
+    /// Serve this mount's planes as `<as>/<plane>`, for a repository whose
+    /// plane name is already taken here.
+    #[serde(rename = "as", default)]
+    as_prefix: Option<String>,
+}
+
+/// `unmount`'s request: the name the mount is known by.
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct UnmountReq {
+    name: String,
 }
 
 /// `wire`'s request: a path or a symbol, and optionally one verb.
@@ -2721,8 +2874,9 @@ impl DrStrange {
         tool's default.")]
     async fn list_planes(&self) -> Result<CallToolResult, rmcp::ErrorData> {
         let root = self.source_root.clone();
+        let instance = self.instance.clone();
         self.run("list_planes", move |db| {
-            list_planes_logic(db, root.as_deref())
+            list_planes_logic(db, instance.as_deref(), root.as_deref())
         })
         .await
     }
@@ -2733,8 +2887,10 @@ impl DrStrange {
         &self,
         Parameters(req): Parameters<PlaneOnly>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        self.run("describe_plane", move |db| describe_plane_logic(db, req))
-            .await
+        self.run_in("describe_plane", req, move |db, req| {
+            describe_plane_logic(db, req)
+        })
+        .await
     }
 
     #[tool(description = "The primary code-context tool: one symbol's whole \
@@ -2751,7 +2907,7 @@ impl DrStrange {
         &self,
         Parameters(req): Parameters<SymbolReq>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        self.run("context", move |db| {
+        self.run_in("context", req, move |db, req| {
             compact_logic(db, req, dr_strange_core::compact::context)
         })
         .await
@@ -2767,7 +2923,7 @@ impl DrStrange {
         Parameters(req): Parameters<SearchReq>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let embed = self.embed.clone();
-        self.run("search", move |db| {
+        self.run_in("search", req, move |db, req| {
             let Some(cfg) = &embed else {
                 // The section is `[digest]`, and saying `[server]` was worse
                 // than saying nothing: `[server]` denies unknown fields, so an
@@ -2834,7 +2990,7 @@ impl DrStrange {
         &self,
         Parameters(req): Parameters<TraceReq>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        self.run("trace", move |db| {
+        self.run_in("trace", req, move |db, req| {
             let plane = db.plane(&req.plane)?;
             Ok(Value::String(dr_strange_core::compact::trace(
                 &plane, &req.from, &req.to,
@@ -2859,7 +3015,7 @@ impl DrStrange {
         Parameters(req): Parameters<ImpactReq>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let remote = self.remote.clone();
-        self.run("impact", move |db| {
+        self.run_in("impact", req, move |db, req| {
             Ok(Value::String(dr_strange_core::compact::impact(
                 db,
                 dr_strange_core::compact::Impact {
@@ -2889,7 +3045,7 @@ impl DrStrange {
         &self,
         Parameters(req): Parameters<AttachReq>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        self.run("attach", move |db| {
+        self.run_in("attach", req, move |db, req| {
             let a = dr_strange_core::attach::Attach {
                 at: dr_strange_core::attach::Attachment::new(req.name, req.as_plane, req.url),
                 both: req.both,
@@ -2909,10 +3065,144 @@ impl DrStrange {
         &self,
         Parameters(req): Parameters<DetachReq>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        self.run("detach", move |db| {
+        self.run_in("detach", req, move |db, req| {
             Ok(Value::String(dr_strange_core::attach::detach(
                 db, &req.plane, &req.name,
             )?))
+        })
+        .await
+    }
+
+    #[tool(description = "Serve the planes of another database alongside this \
+        one's, now, without a restart. One process can then answer for many \
+        repositories — each digested into its own store, keeping its own \
+        writer and its own plane names — where serving each would otherwise \
+        cost a process and a port. `path` is the database directory; it must \
+        sit under the directory this server was granted, and it must already \
+        be a database (this opens one, it does not create one). `as` prefixes \
+        the mount's plane names, for a repository whose plane name is already \
+        taken here. A store another process holds is refused, so stop that \
+        server first.")]
+    async fn mount(
+        &self,
+        Parameters(req): Parameters<MountReq>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let instance = self.instance.clone();
+        let grant = self.mount_root.clone();
+        self.run("mount", move |_| {
+            let instance = instance.ok_or_else(|| {
+                anyhow::anyhow!("this surface serves one database and mounts nothing")
+            })?;
+            let grant = grant.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "this server mounts nothing: it was given no \
+                     `[server] mount_root` to open databases from"
+                )
+            })?;
+            let mounted = instance.mount(dr_strange_core::Mounting {
+                path: std::path::Path::new(&req.path),
+                as_prefix: req.as_prefix.as_deref(),
+                grant: Some(&grant),
+                remember: true,
+            })?;
+            Ok(jval!({
+                "name": mounted.mount.name,
+                "path": mounted.mount.path.display().to_string(),
+                "planes": mounted.mount.planes,
+                "skipped": mounted.skipped,
+            }))
+        })
+        .await
+    }
+
+    #[tool(description = "Stop serving a mounted database, releasing its \
+        store's lock so another process can open it. An absent name is \
+        reported rather than an error. Deletes nothing: the store and its \
+        planes stay where they are.")]
+    async fn unmount(
+        &self,
+        Parameters(req): Parameters<UnmountReq>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let instance = self.instance.clone();
+        self.run("unmount", move |_| {
+            let instance = instance.ok_or_else(|| {
+                anyhow::anyhow!("this surface serves one database and mounts nothing")
+            })?;
+            Ok(match instance.unmount(&req.name)? {
+                Some(m) => jval!({
+                    "unmounted": true,
+                    "name": m.name,
+                    "path": m.path.display().to_string(),
+                    "planes": m.planes,
+                }),
+                None => jval!({ "unmounted": false, "name": req.name }),
+            })
+        })
+        .await
+    }
+
+    #[tool(description = "What this server serves and where each part came \
+        from: every mounted database with its directory and planes, and every \
+        plane with the source tree it was parsed from. Call it to learn which \
+        plane a working directory belongs to — match the directory against \
+        each plane's `synced_root` — and which repositories this one process \
+        can answer for.")]
+    async fn mounts(&self) -> Result<CallToolResult, rmcp::ErrorData> {
+        let instance = self.instance.clone();
+        let grant = self.mount_root.clone();
+        self.run("mounts", move |db| {
+            let mounts = match &instance {
+                Some(inst) => inst
+                    .mounts()
+                    .iter()
+                    .map(|m| {
+                        jval!({
+                            "name": m.name,
+                            "path": m.path.display().to_string(),
+                            "planes": m.planes,
+                            "prefixed": m.prefixed,
+                        })
+                    })
+                    .collect(),
+                None => Vec::new(),
+            };
+            let mut planes = Vec::new();
+            let served: Vec<(String, Option<String>)> = match &instance {
+                Some(inst) => inst
+                    .planes()?
+                    .into_iter()
+                    .map(|s| (s.plane, s.mount))
+                    .collect(),
+                None => db
+                    .planes()?
+                    .into_iter()
+                    .map(|(_, name)| (name, None))
+                    .collect(),
+            };
+            for (name, mount) in served {
+                let held = match &instance {
+                    Some(inst) => Some(inst.serving(&name)?),
+                    None => None,
+                };
+                let (holder, within) = match &held {
+                    Some(at) => (at.db.as_ref(), at.plane.as_str()),
+                    None => (db, name.as_str()),
+                };
+                let root = holder.plane(within)?.properties().ok().and_then(|props| {
+                    match props.get("synced_root").map(|d| &d.value) {
+                        Some(dr_strange_core::PropValue::Str(s)) if !s.is_empty() => {
+                            Some(s.clone())
+                        }
+                        _ => None,
+                    }
+                });
+                planes.push(jval!({ "plane": name, "mount": mount, "synced_root": root }));
+            }
+            Ok(jval!({
+                "mounts": mounts,
+                "planes": planes,
+                "mount_root": grant.map(|r| r.display().to_string()),
+            }))
         })
         .await
     }
@@ -2929,7 +3219,7 @@ impl DrStrange {
         Parameters(req): Parameters<AttachmentsReq>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let remote = self.remote.clone();
-        self.run("attachments", move |db| {
+        self.run_in("attachments", req, move |db, req| {
             let probe = remote.as_deref().filter(|_| req.probe);
             Ok(Value::String(dr_strange_core::attach::attachments(
                 db, &req.plane, probe,
@@ -2953,7 +3243,7 @@ impl DrStrange {
         Parameters(req): Parameters<WireReq>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let remote = self.remote.clone();
-        self.run("wire", move |db| {
+        self.run_in("wire", req, move |db, req| {
             Ok(Value::String(dr_strange_core::compact::wire(
                 db,
                 dr_strange_core::compact::Wire {
@@ -2982,7 +3272,7 @@ impl DrStrange {
         &self,
         Parameters(req): Parameters<FathomReq>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        self.run("fathom", move |db| {
+        self.run_in("fathom", req, move |db, req| {
             let plane = db.plane(&req.plane)?;
             Ok(Value::String(dr_strange_core::compact::fathom(
                 &plane,
@@ -3006,7 +3296,7 @@ impl DrStrange {
         &self,
         Parameters(req): Parameters<HistoryReq>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        self.run("history", move |db| {
+        self.run_in("history", req, move |db, req| {
             // Naming the code plane finds the history beside it; naming the
             // history plane is taken at its word.
             let history = dr_strange_core::compact::history_plane_name(&req.plane);
@@ -3041,7 +3331,7 @@ impl DrStrange {
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let root = self.source_root.clone();
         let plane_roots = self.local_files;
-        self.run("snippet", move |db| {
+        self.run_in("snippet", req, move |db, req| {
             let access = TreeAccess {
                 attached: root.as_deref(),
                 plane_roots,
@@ -3073,7 +3363,7 @@ impl DrStrange {
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let (root, parsers) = (self.source_root.clone(), self.parsers.clone());
         let plane_roots = self.local_files;
-        self.run("recall", move |db| {
+        self.run_in("recall", req, move |db, req| {
             let access = TreeAccess {
                 attached: root.as_deref(),
                 plane_roots,
@@ -3090,7 +3380,7 @@ impl DrStrange {
         &self,
         Parameters(req): Parameters<SymbolReq>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        self.run("describe", move |db| {
+        self.run_in("describe", req, move |db, req| {
             compact_logic(db, req, dr_strange_core::compact::describe)
         })
         .await
@@ -3101,8 +3391,7 @@ impl DrStrange {
         &self,
         Parameters(req): Parameters<GetNode>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        self.run("get_node", move |db| get_node_logic(db, req))
-            .await
+        self.run_in("get_node", req, get_node_logic).await
     }
 
     #[tool(description = "Neighbourhood expansion from a node (1 hop by \
@@ -3111,8 +3400,7 @@ impl DrStrange {
         &self,
         Parameters(req): Parameters<Traverse>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        self.run("traverse", move |db| traverse_logic(db, req))
-            .await
+        self.run_in("traverse", req, traverse_logic).await
     }
 
     #[tool(description = "Run a serialized logical query plan and return the \
@@ -3121,7 +3409,7 @@ impl DrStrange {
         &self,
         Parameters(req): Parameters<Query>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        self.run("query", move |db| query_logic(db, req)).await
+        self.run_in("query", req, query_logic).await
     }
 
     #[tool(description = "Run a graph algorithm over a plane (or one `label` \
@@ -3137,7 +3425,7 @@ impl DrStrange {
         &self,
         Parameters(req): Parameters<Algo>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        self.run("algo", move |db| algo_logic(db, req)).await
+        self.run_in("algo", req, algo_logic).await
     }
 
     #[tool(
@@ -3155,8 +3443,10 @@ impl DrStrange {
         Parameters(req): Parameters<Hybrid>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let allow = self.embed.clone();
-        self.run("hybrid", move |db| hybrid_logic(db, req, allow.as_ref()))
-            .await
+        self.run_in("hybrid", req, move |db, req| {
+            hybrid_logic(db, req, allow.as_ref())
+        })
+        .await
     }
 
     #[tool(
@@ -3172,8 +3462,10 @@ impl DrStrange {
         Parameters(req): Parameters<Ask>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let allow = self.embed.clone();
-        self.run("ask", move |db| ask_logic(db, req, allow.as_ref()))
-            .await
+        self.run_in("ask", req, move |db, req| {
+            ask_logic(db, req, allow.as_ref())
+        })
+        .await
     }
 
     #[tool(description = "Run an openCypher-subset statement — the way to ask \
@@ -3200,8 +3492,10 @@ impl DrStrange {
         Parameters(req): Parameters<Cypher>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let allow = self.embed.clone();
-        self.run("cypher", move |db| cypher_logic(db, req, allow.as_ref()))
-            .await
+        self.run_in("cypher", req, move |db, req| {
+            cypher_logic(db, req, allow.as_ref())
+        })
+        .await
     }
 
     #[tool(description = "Create nodes (batched). Each: {external_key?, labels, \
@@ -3211,7 +3505,7 @@ impl DrStrange {
         Parameters(req): Parameters<WriteNodes>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let embed = self.embed.clone();
-        self.run("write_nodes", move |db| {
+        self.run_in("write_nodes", req, move |db, req| {
             // Built inside the blocking body: constructing it reads the
             // environment, and `embed` itself is a blocking HTTP call (the LLM
             // layer is sync, on ureq), so it belongs on this thread and not on
@@ -3243,8 +3537,10 @@ impl DrStrange {
         &self,
         Parameters(req): Parameters<WriteEdges>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        self.run("write_edges", move |db| write_edges_logic(db, req))
-            .await
+        self.run_in("write_edges", req, move |db, req| {
+            write_edges_logic(db, req)
+        })
+        .await
     }
 
     #[tool(description = "Create a new empty plane.")]
@@ -3290,7 +3586,7 @@ impl DrStrange {
         let tuning = self.digest;
         let local_files = self.local_files;
         let allow = self.embed.clone();
-        self.run("digest", move |db| {
+        self.run_in("digest", req, move |db, req| {
             digest_logic(db, req, tuning, local_files, allow.as_ref())
         })
         .await
@@ -3307,7 +3603,7 @@ impl DrStrange {
         &self,
         Parameters(req): Parameters<Rebuild>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        self.run("rebuild", move |db| rebuild_logic(db, req)).await
+        self.run_in("rebuild", req, rebuild_logic).await
     }
 }
 
@@ -3659,7 +3955,7 @@ mod tests {
     #[test]
     fn list_and_describe() {
         let db = fixture();
-        let planes = list_planes_logic(&db, None).unwrap();
+        let planes = list_planes_logic(&db, None, None).unwrap();
         assert_eq!(planes[0]["nodes"], jval!(2));
         assert!(
             planes[0].get("source_tree").is_none(),
@@ -3687,7 +3983,7 @@ mod tests {
         );
         plane.set_properties(props).unwrap();
 
-        let planes = list_planes_logic(&db, None).unwrap();
+        let planes = list_planes_logic(&db, None, None).unwrap();
         assert_eq!(
             planes[0]["properties"]["synced_root"]["$value"],
             jval!("/home/wangying/workspace/dr-strange")
@@ -3715,7 +4011,7 @@ mod tests {
             plane.set_properties(props).unwrap();
         };
         let tree = |watched: Option<&std::path::Path>| {
-            list_planes_logic(&db, watched).unwrap()[0]["source_tree"]
+            list_planes_logic(&db, None, watched).unwrap()[0]["source_tree"]
                 .as_str()
                 .unwrap()
                 .to_string()

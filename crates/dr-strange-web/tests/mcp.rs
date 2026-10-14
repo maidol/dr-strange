@@ -627,7 +627,107 @@ async fn impact_reaches_a_repository_another_server_serves() {
     client.cancel().await.unwrap();
 }
 
+/// A database on disk under `dir`, holding one plane named after the
+/// repository with one keyed symbol in it — what `drsg digest` leaves behind.
+fn repo_store(dir: &std::path::Path, plane: &str) -> std::path::PathBuf {
+    let path = dir.join(plane);
+    let db = Database::open(&path).unwrap();
+    let handle = db.create_plane(plane, Properties::new()).unwrap();
+    let mut txn = handle.write().unwrap();
+    let mut props = Properties::new();
+    props.insert(
+        "file".into(),
+        dr_strange_core::PropDesc::new(dr_strange_core::PropValue::Str("src/Thing.java".into())),
+    );
+    props.insert(
+        "line".into(),
+        dr_strange_core::PropDesc::new(dr_strange_core::PropValue::Int(5)),
+    );
+    txn.create_node_with_key(&format!("{plane}.Thing"), &["Class"], props)
+        .unwrap();
+    txn.commit().unwrap();
+    db.save_sidecars();
+    drop(db);
+    path
+}
+
+/// One server, many repositories — the whole of issue #44. Two databases are
+/// mounted over `/mcp` on a running server and answered per plane, by tools
+/// that were never told mounts exist.
+#[tokio::test]
+async fn one_server_answers_tools_across_mounted_databases() {
+    set_token_once();
+    let tmp = tempfile::tempdir().unwrap();
+    let orders = repo_store(tmp.path(), "svc-orders");
+    let billing = repo_store(tmp.path(), "svc-billing");
+    let addr = free_addr();
+    let granted = tmp.path().to_path_buf();
+    std::thread::spawn(move || {
+        let opts = dr_strange_web::ServeOptions {
+            addr,
+            mount_root: Some(granted),
+            ..Default::default()
+        };
+        dr_strange_web::serve(Database::in_memory().unwrap(), None, opts).unwrap();
+    });
+    wait_ready(addr).await;
+    let client = connect(addr, TOKEN).await.unwrap();
+
+    for path in [&orders, &billing] {
+        let out = call(
+            &client,
+            "mount",
+            json!({ "path": path.display().to_string() }),
+        )
+        .await;
+        assert_eq!(out["skipped"][0], "startup", "{out}");
+    }
+
+    // One port, both repositories, each answered on its own database — and
+    // `context` never heard of a mount.
+    for plane in ["svc-orders", "svc-billing"] {
+        let got = call(
+            &client,
+            "context",
+            json!({ "plane": plane, "name": format!("{plane}.Thing") }),
+        )
+        .await;
+        let text = got.as_str().expect("context answers with text");
+        assert!(text.contains(&format!("{plane}.Thing")), "{text}");
+        assert!(text.contains("src/Thing.java"), "{text}");
+    }
+
+    // `list_planes` is the instance's whole set, and the `startup` every
+    // mounted database carries is not among them.
+    let planes = call(&client, "list_planes", json!({})).await;
+    let names: Vec<&str> = planes
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|p| p["name"].as_str())
+        .collect();
+    assert!(names.contains(&"svc-orders"), "{planes}");
+    assert!(names.contains(&"svc-billing"), "{planes}");
+    assert_eq!(
+        names.iter().filter(|n| **n == "startup").count(),
+        1,
+        "only the host's own: {planes}"
+    );
+
+    // Unmounted, the plane is gone from this server at once.
+    let gone = call(&client, "unmount", json!({ "name": "svc-billing" })).await;
+    assert_eq!(gone["unmounted"], true, "{gone}");
+    let after = call(&client, "list_planes", json!({})).await;
+    assert!(
+        !after.to_string().contains("svc-billing"),
+        "still served: {after}"
+    );
+
+    client.cancel().await.unwrap();
+}
+
 /// Read one HTTP request off `stream`: its headers, then as many body bytes
+/// as `Content-Length` promised./// Read one HTTP request off `stream`: its headers, then as many body bytes
 /// as `Content-Length` promised.
 fn drain_request(stream: &mut std::net::TcpStream) {
     let mut buf = Vec::new();

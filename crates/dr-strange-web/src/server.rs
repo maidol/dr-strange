@@ -564,6 +564,10 @@ fn mcp_router(
     tool_deadline: Option<Option<Duration>>,
 ) -> Router<Arc<AppState>> {
     let db = state.db.clone();
+    // Shared, not cloned per session: a `db.mount` on one session is served
+    // by the next tool call on every other, which is what "on the fly" means.
+    let instance = state.instance.clone();
+    let mount_root = state.mount_root.clone();
     let digest = dr_strange_mcp::DigestTuning {
         chunk_chars: state.digest.chunk_chars,
         concurrency: state.digest.concurrency,
@@ -591,7 +595,8 @@ fn mcp_router(
         move || {
             let mut svc = DrStrange::with_digest(db.clone(), digest)
                 .with_tool_gate(tools.clone())
-                .with_remote(remote.clone());
+                .with_remote(remote.clone())
+                .with_instance(instance.clone(), mount_root.clone());
             if let Some(root) = &source_root {
                 svc = svc.with_source_root(root.clone());
             }
