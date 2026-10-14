@@ -122,6 +122,15 @@ pub struct ServeOptions {
     /// The source tree behind the graph, when one is attached — enables the
     /// MCP `grep` tool. `serve watch` sets it to its `--dir`.
     pub source_root: Option<std::path::PathBuf>,
+    /// The one directory `db.mount` may open a database from
+    /// (`[server] mount_root`, issue #44).
+    ///
+    /// `None` — the default — refuses mounting outright rather than defaulting
+    /// to something wide: the path is opened by this process, and a plane in
+    /// it names a source tree that `grep` and `snippet` would then read, so
+    /// the directory is the operator's grant to make. `drsg serve` fills it
+    /// from config, falling back to the user's home directory.
+    pub mount_root: Option<std::path::PathBuf>,
     /// The preprocessors `/mcp`'s `recall` locates a symbol with, when the
     /// operator configured a plugin store; `None` reads the default store.
     pub recall_parsers: Option<std::sync::Arc<dyn dr_strange_mcp::Parsers>>,
@@ -237,6 +246,7 @@ impl Default for ServeOptions {
             retain_commits: Some(DEFAULT_RETAIN_COMMITS),
             embed_provider: None,
             source_root: None,
+            mount_root: None,
             recall_parsers: None,
             on_start: None,
             follow: None,

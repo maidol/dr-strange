@@ -224,6 +224,11 @@ pub struct ServerCfg {
     /// watch` attaches its `--dir` automatically; this covers a plain
     /// `serve` over a digested database.
     pub source_root: Option<std::path::PathBuf>,
+    /// The one directory `db.mount` may open a database from (issue #44).
+    /// Omitted, the user's home directory stands in — wide enough that an
+    /// operator's repositories are reachable, narrow enough that a token
+    /// holder cannot open a database outside their own files.
+    pub mount_root: Option<std::path::PathBuf>,
     /// How long a write waits for the single writer slot before returning a
     /// retryable timeout. `0` waits forever (the embedded default); omitted
     /// means 30s.
@@ -460,6 +465,19 @@ fn mcp_tool_deadline(file_secs: Option<u64>, env_set: bool) -> Option<Option<std
     file_secs.map(|secs| (secs > 0).then(|| std::time::Duration::from_secs(secs)))
 }
 
+/// The directory a server may mount databases from: what `[server]
+/// mount_root` names, else the user's home directory.
+///
+/// Defaulted here rather than in the web crate, whose own default is to
+/// refuse: the fallback is a judgement about *this* operator's machine, and
+/// a process with no home directory to speak of mounts nothing.
+fn mount_root(cfg: &Config) -> Option<std::path::PathBuf> {
+    cfg.server
+        .mount_root
+        .clone()
+        .or_else(|| std::env::home_dir().filter(|h| !h.as_os_str().is_empty()))
+}
+
 /// Build the web crate's [`ServeOptions`] from the `[server]` section, with an
 /// explicit CLI `--addr` overriding the file's `addr`.
 pub fn serve_options(cfg: &Config, cli_addr: Option<SocketAddr>) -> ServeOptions {
@@ -470,6 +488,7 @@ pub fn serve_options(cfg: &Config, cli_addr: Option<SocketAddr>) -> ServeOptions
     if let Some(root) = &cfg.server.source_root {
         opts.source_root = Some(root.clone());
     }
+    opts.mount_root = mount_root(cfg);
     if let Some(max_concurrent) = cfg.server.max_concurrent {
         opts.max_concurrent = max_concurrent;
     }

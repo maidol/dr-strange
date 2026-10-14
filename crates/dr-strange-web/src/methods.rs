@@ -36,6 +36,11 @@ pub struct Ctx<'a> {
     /// dispatch; a handler never consults it, so a method cannot read one
     /// plane and write another by mistake.
     pub instance: Option<&'a dr_strange_core::Instance>,
+    /// The one directory `db.mount` may open a database from
+    /// (`[server] mount_root`). `None` refuses mounting outright, which is
+    /// the default: a server that was granted no directory opens no file a
+    /// caller names.
+    pub mount_root: Option<&'a Path>,
     /// Server-side `digest.run` defaults (request params override these).
     pub digest: crate::DigestDefaults,
     /// When this request's queries must stop. `None` ⇒ run to completion.
@@ -99,6 +104,7 @@ impl Ctx<'_> {
             // reaches this context; `db.mounts` reads each mount's own path.
             db_path: None,
             instance: self.instance,
+            mount_root: self.mount_root,
             digest: self.digest,
             deadline: self.deadline,
             history_limit: self.history_limit,
@@ -744,6 +750,129 @@ fn plugin_store() -> Result<dr_strange_llm::PluginStore, RpcError> {
 /// Plugin-store errors name the store directory and the files in it.
 fn plug(e: anyhow::Error) -> RpcError {
     opaque("plugin store error", format!("{e:#}"))
+}
+
+#[derive(Deserialize)]
+pub struct MountDb {
+    path: String,
+    #[serde(rename = "as", default)]
+    as_prefix: Option<String>,
+}
+
+/// The instance this method acts on, or why this surface has none.
+///
+/// An embedded caller serves exactly one database and has no table to add to,
+/// which is a different answer from "the mount failed".
+fn instance<'a>(ctx: &Ctx<'a>) -> Result<&'a dr_strange_core::Instance, RpcError> {
+    ctx.instance.ok_or_else(|| {
+        RpcError::invalid_params(
+            "this surface serves one database and mounts nothing — `drsg serve` does",
+        )
+    })
+}
+
+/// `db.mount` — serve the planes of another database alongside this one's
+/// (issue #44).
+///
+/// Instance lifecycle, beside `db.stats` and `db.catalog`: 34 repositories
+/// digested into 34 stores cost 34 processes and 34 ports to serve, and a
+/// client configured for one port reaches one of them.
+///
+/// **Admin, and confined.** The path is opened by this process, and a plane
+/// in it names a source tree that `grep` and `snippet` would then read, so a
+/// caller may only name a directory under the one the operator granted with
+/// `[server] mount_root`. With no grant, nothing is mounted at all.
+pub fn db_mount(ctx: &Ctx<'_>, p: Value) -> Result<Value, RpcError> {
+    let req: MountDb = params(p)?;
+    let instance = instance(ctx)?;
+    let grant = ctx.mount_root.ok_or_else(|| {
+        RpcError::invalid_params(
+            "this server mounts nothing: it was given no `[server] mount_root` \
+             to open databases from",
+        )
+    })?;
+    let mounted = app(instance.mount(dr_strange_core::Mounting {
+        path: Path::new(&req.path),
+        as_prefix: req.as_prefix.as_deref(),
+        grant: Some(grant),
+    }))?;
+    Ok(jval!({
+        "name": mounted.mount.name,
+        "path": mounted.mount.path.display().to_string(),
+        "planes": mounted.mount.planes,
+        "skipped": mounted.skipped,
+    }))
+}
+
+#[derive(Deserialize)]
+pub struct UnmountDb {
+    name: String,
+}
+
+/// `db.unmount` — stop serving a mount, releasing its database's lock (an
+/// absent name is a no-op, reported as such).
+pub fn db_unmount(ctx: &Ctx<'_>, p: Value) -> Result<Value, RpcError> {
+    let req: UnmountDb = params(p)?;
+    let gone = app(instance(ctx)?.unmount(&req.name))?;
+    Ok(match gone {
+        Some(m) => jval!({
+            "unmounted": true,
+            "name": m.name,
+            "path": m.path.display().to_string(),
+            "planes": m.planes,
+        }),
+        None => jval!({ "unmounted": false, "name": req.name }),
+    })
+}
+
+/// `db.mounts` — what this instance serves and where each part came from,
+/// with the source tree each plane records so a client can map a working
+/// directory to a plane.
+pub fn db_mounts(ctx: &Ctx<'_>) -> Result<Value, RpcError> {
+    let mut out = Vec::new();
+    for (name, mount) in served_planes(ctx)? {
+        let held = match ctx.instance {
+            Some(instance) => Some(app(instance.serving(&name))?),
+            None => None,
+        };
+        let (db, within) = match &held {
+            Some(at) => (at.db.as_ref(), at.plane.as_str()),
+            None => (ctx.db, name.as_str()),
+        };
+        let root = app(db.plane(within))?
+            .properties()
+            .ok()
+            .and_then(|props| prop_text(&props, "synced_root"));
+        out.push(jval!({ "plane": name, "mount": mount, "synced_root": root }));
+    }
+    let mounts: Vec<Value> = match ctx.instance {
+        Some(instance) => instance
+            .mounts()
+            .iter()
+            .map(|m| {
+                jval!({
+                    "name": m.name,
+                    "path": m.path.display().to_string(),
+                    "planes": m.planes,
+                    "prefixed": m.prefixed,
+                })
+            })
+            .collect(),
+        None => Vec::new(),
+    };
+    Ok(jval!({
+        "mounts": mounts,
+        "planes": out,
+        "mount_root": ctx.mount_root.map(|r| r.display().to_string()),
+    }))
+}
+
+/// A plane property read as text, for the few places that want one string.
+fn prop_text(props: &Properties, key: &str) -> Option<String> {
+    match props.get(key).map(|d| &d.value) {
+        Some(dr_strange_core::PropValue::Str(s)) if !s.is_empty() => Some(s.clone()),
+        _ => None,
+    }
 }
 
 /// `db.catalog` — the soft schema across every plane.
@@ -3263,6 +3392,7 @@ mod guard_tests {
             db,
             db_path: None,
             instance: None,
+            mount_root: None,
             digest: crate::DigestDefaults::default(),
             deadline: None,
             history_limit: Database::DEFAULT_HISTORY,

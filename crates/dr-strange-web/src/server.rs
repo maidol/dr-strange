@@ -73,6 +73,9 @@ pub struct AppState {
     /// Every database this process serves: [`AppState::db`] and whatever it
     /// mounts (issue #44). A request's plane decides which one answers it.
     pub instance: Arc<dr_strange_core::Instance>,
+    /// The one directory `db.mount` may open a database from; `None` refuses
+    /// mounting, which is what a server given no grant does.
+    pub mount_root: Option<PathBuf>,
     /// Write-authorization backend (v1: a single shared `DRSG_TOKEN`).
     pub authorizer: Arc<dyn Authorizer>,
     /// Browser-`Origin` allow-list — the CSRF guard.
@@ -175,6 +178,7 @@ impl AppState {
             db: self.db.as_ref(),
             db_path: self.db_path.as_deref(),
             instance: Some(self.instance.as_ref()),
+            mount_root: self.mount_root.as_deref(),
             digest: self.digest,
             // Stamped per request, not per process: the budget is how long
             // *this* call may run, so it starts when the call does.
@@ -1650,6 +1654,7 @@ pub async fn run(
         ));
         let state = Arc::new(AppState {
             instance: Arc::new(dr_strange_core::Instance::new(db_for_tail.clone())),
+            mount_root: opts.mount_root.clone(),
             db: db_for_tail,
             db_path,
             authorizer,
@@ -1673,6 +1678,7 @@ pub async fn run(
     let db = Arc::new(db);
     let state = Arc::new(AppState {
         instance: Arc::new(dr_strange_core::Instance::new(db.clone())),
+        mount_root: opts.mount_root.clone(),
         db,
         db_path,
         authorizer,

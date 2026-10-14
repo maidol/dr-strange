@@ -210,6 +210,9 @@ const METHODS: &[&str] = &[
     "rpc.discover",
     "db.stats",
     "db.catalog",
+    "db.mount",
+    "db.unmount",
+    "db.mounts",
     "plugin.list",
     "plugin.catalog",
     "plugin.install",
@@ -285,6 +288,11 @@ fn dispatch_method(
         "rpc.discover" => guarded!(Access::Read, methods::rpc_discover(ctx)),
         "db.stats" => guarded!(Access::Read, methods::db_stats(ctx)),
         "db.catalog" => guarded!(Access::Read, methods::db_catalog(ctx)),
+        // Opening a database the caller names, and serving what is in it:
+        // the admin tier, and confined to `[server] mount_root` besides.
+        "db.mount" => guarded!(Access::Admin, methods::db_mount(ctx, params)),
+        "db.unmount" => guarded!(Access::Admin, methods::db_unmount(ctx, params)),
+        "db.mounts" => guarded!(Access::Read, methods::db_mounts(ctx)),
         "plugin.list" => guarded!(Access::Read, methods::plugin_list(ctx)),
         "plugin.catalog" => guarded!(Access::Read, methods::plugin_catalog(ctx)),
         "plugin.install" => guarded!(Access::Write, methods::plugin_install(ctx, params)),
@@ -379,6 +387,7 @@ mod tests {
             db,
             db_path: None,
             instance: None,
+            mount_root: None,
             digest: crate::DigestDefaults::default(),
             deadline: None,
             history_limit: Database::DEFAULT_HISTORY,
@@ -398,6 +407,7 @@ mod tests {
             db,
             db_path: None,
             instance: None,
+            mount_root: None,
             digest: crate::DigestDefaults::default(),
             deadline: None,
             history_limit: Database::DEFAULT_HISTORY,
@@ -681,17 +691,33 @@ mod tests {
     /// Dispatch against an instance rather than a bare database — what a
     /// server does, and the only way a mounted plane is reachable.
     fn call_on(instance: &dr_strange_core::Instance, body: &str) -> Option<Value> {
+        call_granted(instance, None, &Auth::allow_all(), body)
+    }
+
+    /// The same, with the directory a `db.mount` may open from and the
+    /// credentials to attempt it under.
+    fn call_granted(
+        instance: &dr_strange_core::Instance,
+        grant: Option<&std::path::Path>,
+        auth: &Auth<'_>,
+        body: &str,
+    ) -> Option<Value> {
         let ctx = Ctx {
             db: instance.host(),
             db_path: None,
             instance: Some(instance),
+            mount_root: grant,
             digest: crate::DigestDefaults::default(),
             deadline: None,
             history_limit: Database::DEFAULT_HISTORY,
             configured_provider: None,
             retain_commits: Some(crate::DEFAULT_RETAIN_COMMITS),
         };
-        handle(&ctx, &Auth::allow_all(), body.as_bytes())
+        handle(&ctx, auth, body.as_bytes())
+    }
+
+    fn empty_instance() -> dr_strange_core::Instance {
+        dr_strange_core::Instance::new(std::sync::Arc::new(Database::in_memory().unwrap()))
     }
 
     /// Every method takes the plane it acts on under one key, so routing a
@@ -786,6 +812,137 @@ mod tests {
         assert!(bare.get("error").is_some(), "{bare}");
     }
 
+    /// Mounting over the wire: the grant is the operator's, the mount is the
+    /// caller's, and the planes answer at once on a running server.
+    #[test]
+    fn a_database_is_mounted_and_unmounted_on_a_running_server() {
+        let tmp = tempfile::tempdir().unwrap();
+        let granted = tmp.path().join("repos");
+        std::fs::create_dir_all(&granted).unwrap();
+        let orders = store(&granted, "svc-orders");
+        let instance = empty_instance();
+        let auth = Auth::allow_all();
+        let mount = format!(
+            r#"{{"jsonrpc":"2.0","id":1,"method":"db.mount","params":{{"path":"{}"}}}}"#,
+            orders.display()
+        );
+
+        let out = call_granted(&instance, Some(&granted), &auth, &mount).unwrap();
+        assert_eq!(out["result"]["name"], "svc-orders", "{out}");
+        assert_eq!(out["result"]["planes"][0], "svc-orders", "{out}");
+        // Every database carries `startup`; it is held and not served.
+        assert_eq!(out["result"]["skipped"][0], "startup", "{out}");
+
+        // The plane answers immediately, through a method that never heard
+        // of mounts.
+        let got = call_on(
+            &instance,
+            r#"{"jsonrpc":"2.0","id":1,"method":"node.get",
+                "params":{"plane":"svc-orders","key":"svc-orders::thing"}}"#,
+        )
+        .unwrap();
+        assert_eq!(got["result"]["labels"][0], "Thing", "{got}");
+
+        // `db.mounts` says what is served and where each part came from.
+        let listed = call_on(
+            &instance,
+            r#"{"jsonrpc":"2.0","id":1,"method":"db.mounts"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            listed["result"]["mounts"][0]["name"], "svc-orders",
+            "{listed}"
+        );
+        assert_eq!(
+            listed["result"]["mounts"][0]["path"],
+            orders.display().to_string(),
+            "{listed}"
+        );
+        let planes = listed["result"]["planes"].as_array().unwrap();
+        assert!(
+            planes
+                .iter()
+                .any(|p| p["plane"] == "svc-orders" && p["mount"] == "svc-orders"),
+            "{listed}"
+        );
+
+        // Unmounting is said, and so is unmounting what is not there.
+        let gone = call_on(
+            &instance,
+            r#"{"jsonrpc":"2.0","id":1,"method":"db.unmount","params":{"name":"svc-orders"}}"#,
+        )
+        .unwrap();
+        assert_eq!(gone["result"]["unmounted"], true, "{gone}");
+        let again = call_on(
+            &instance,
+            r#"{"jsonrpc":"2.0","id":1,"method":"db.unmount","params":{"name":"svc-orders"}}"#,
+        )
+        .unwrap();
+        assert_eq!(again["result"]["unmounted"], false, "{again}");
+        assert!(again.get("error").is_none(), "absent is a no-op: {again}");
+    }
+
+    /// The path is the operator's grant to make, so a caller naming one
+    /// outside it is refused — and a server granted nothing mounts nothing,
+    /// which is the default rather than a wide one.
+    #[test]
+    fn mounting_is_confined_to_the_directory_the_operator_granted() {
+        let tmp = tempfile::tempdir().unwrap();
+        let granted = tmp.path().join("repos");
+        std::fs::create_dir_all(&granted).unwrap();
+        let outside = store(tmp.path(), "elsewhere");
+        let instance = empty_instance();
+        let auth = Auth::allow_all();
+        let mount = format!(
+            r#"{{"jsonrpc":"2.0","id":1,"method":"db.mount","params":{{"path":"{}"}}}}"#,
+            outside.display()
+        );
+
+        let refused = call_granted(&instance, Some(&granted), &auth, &mount).unwrap();
+        let said = refused["error"]["message"].as_str().unwrap();
+        assert!(said.contains("elsewhere"), "{said}");
+        assert!(said.contains("mount_root"), "it names the widening: {said}");
+
+        // No grant at all: nothing is mounted, and the answer says why.
+        let ungranted = call_granted(&instance, None, &auth, &mount).unwrap();
+        let said = ungranted["error"]["message"].as_str().unwrap();
+        assert!(said.contains("mount_root"), "{said}");
+        assert!(instance.mounts().is_empty());
+    }
+
+    /// Opening a database the caller names is the admin tier, like the plane
+    /// writes — a read token cannot widen what this process serves.
+    #[test]
+    fn mounting_is_gated_like_the_other_instance_writes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let orders = store(tmp.path(), "svc-orders");
+        let instance = empty_instance();
+        let token = SharedToken::new(Some("s3cret".into()));
+        let mount = format!(
+            r#"{{"jsonrpc":"2.0","id":1,"method":"db.mount","params":{{"path":"{}"}}}}"#,
+            orders.display()
+        );
+
+        let denied = call_granted(
+            &instance,
+            Some(tmp.path()),
+            &Auth::new(&token, native(None)),
+            &mount,
+        )
+        .unwrap();
+        assert_eq!(err_code(&denied), -32001);
+        assert!(instance.mounts().is_empty());
+
+        let ok = call_granted(
+            &instance,
+            Some(tmp.path()),
+            &Auth::new(&token, native(Some("s3cret"))),
+            &mount,
+        )
+        .unwrap();
+        assert!(ok.get("error").is_none(), "{ok}");
+    }
+
     /// The configured provider is the one non-preset name a request may use.
     #[test]
     fn the_configured_provider_passes_the_guard() {
@@ -794,6 +951,7 @@ mod tests {
             db: &db,
             db_path: None,
             instance: None,
+            mount_root: None,
             digest: crate::DigestDefaults::default(),
             deadline: None,
             history_limit: Database::DEFAULT_HISTORY,
