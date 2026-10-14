@@ -23,7 +23,7 @@ use std::sync::{Arc, RwLock};
 
 use crate::api::{Database, PlaneHandle};
 use crate::error::{Error, Result};
-use crate::types::{PlaneId, PropDesc, PropValue, Properties};
+use crate::types::{PropDesc, PropValue, Properties};
 
 /// The default plane every database carries, skipped when a mount is read.
 ///
@@ -285,7 +285,7 @@ impl Instance {
         let prefixed = req.as_prefix.is_some();
         let (mut planes, mut skipped) = (Vec::new(), Vec::new());
         for (id, plane) in db.planes()? {
-            if id == PlaneId::STARTUP || plane == SKIPPED {
+            if id == crate::types::PlaneId::STARTUP || plane == SKIPPED {
                 skipped.push(plane);
                 continue;
             }
@@ -365,6 +365,9 @@ impl Instance {
     /// A recorded directory may have moved, been deleted, or be held by
     /// another process — none of which should stop a server from starting, so
     /// each failure is returned for the caller to log rather than raised.
+    ///
+    /// Needs a storage backend, since replaying is mounting.
+    #[cfg(any(feature = "redb-backend", feature = "native-backend"))]
     pub fn replay(&self, grant: Option<&Path>) -> Result<Vec<(String, Error)>> {
         let mut failed = Vec::new();
         for rec in Remembered::of(&self.host.plane(SKIPPED)?)? {
@@ -494,6 +497,10 @@ impl Remembered {
     /// Write `mount` down, replacing any record of the same name. Read and
     /// write happen under one write lock, so two mounts cannot lose each
     /// other.
+    ///
+    /// Only [`Instance::mount`] records, and that needs a backend to open
+    /// what it records.
+    #[cfg(any(feature = "redb-backend", feature = "native-backend"))]
     fn remember(plane: &PlaneHandle<'_>, mount: &Mount) -> Result<()> {
         let rec = Self {
             name: mount.name.clone(),
@@ -516,6 +523,7 @@ impl Remembered {
 /// The name a mount takes from its own path: the directory's own name, or its
 /// parent's where the database is a conventional `graph.drsg` inside the
 /// repository it holds.
+#[cfg(any(feature = "redb-backend", feature = "native-backend"))]
 fn mount_name(path: &Path) -> Result<String> {
     let name = path
         .file_name()
