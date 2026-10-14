@@ -21,6 +21,7 @@ use crate::compute::{Expr, LogicalPlan, Source};
 use crate::error::Result;
 use crate::types::{NodeRecord, PropValue, Properties};
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 /// How a lenient symbol lookup ended.
 pub enum Resolved {
@@ -854,6 +855,11 @@ pub struct Impact<'a> {
     /// How to read a graph another drsg serves. `None` leaves those unread
     /// and named as such.
     pub remote: Option<&'a dyn Remote>,
+    /// Every database this process serves (issue #44). With one,
+    /// [`Scope::All`] spans them — which is what lets a machine handed thirty
+    /// repositories answer across them with nothing attached. `None` is this
+    /// database's planes alone, which is every embedded caller.
+    pub instance: Option<&'a crate::Instance>,
 }
 
 /// `impact` — the blast radius: what reaches this symbol, breadth-first over
@@ -866,7 +872,10 @@ pub struct Impact<'a> {
 /// one repository and its consequences are not.
 pub fn impact(db: &Database, req: Impact<'_>) -> Result<String> {
     const LEVEL_CAP: usize = 20;
-    let mut graphs = Graphs::open(db, req.plane, req.across, req.remote)?;
+    // Taken before the graphs are opened and held for the whole answer: a
+    // mounted database is owned by the instance, and a handle borrows it.
+    let held = Held::of(db, req.plane, req.across, req.instance)?;
+    let mut graphs = Graphs::open(db, req.plane, &held, req.remote)?;
     let plane = &graphs.here;
     let node = match resolve(plane, req.name)? {
         Resolved::One(n) => n,
@@ -1761,43 +1770,108 @@ enum Across {
     None,
 }
 
-impl<'a> Graphs<'a> {
-    fn open(
-        db: &'a Database,
+/// A graph in scope, held open for the whole answer.
+///
+/// The database comes as an `Arc` rather than a borrow because a mounted one
+/// is owned by an [`Instance`](crate::Instance) whose table may change while
+/// this process runs, and [`PlaneHandle`] borrows the database it reads. So
+/// every database an answer will touch is taken once, up front, into the
+/// caller's own frame — and the handles [`Graphs`] opens borrow from there.
+struct Reading {
+    /// The name it answers to in this answer's rows.
+    name: String,
+    /// The database holding it, or `None` for the one the call was handed —
+    /// which is every plane an embedded caller can reach, there being no
+    /// instance to resolve through.
+    db: Option<Arc<Database>>,
+    /// Its name inside that database, which differs only on a prefixed mount.
+    within: String,
+}
+
+/// Every graph a cross-graph call will read, gathered before any handle is
+/// opened.
+struct Held {
+    local: Vec<Reading>,
+    far: Vec<(usize, Attachment)>,
+    missed: Vec<Missed>,
+}
+
+impl Held {
+    /// What `scope` names, from the plane `plane` was asked in.
+    ///
+    /// `instance` widens "every plane this instance holds" from one database
+    /// to every database this process serves (issue #44) — which is what lets
+    /// a machine handed thirty repositories answer across them. Without one,
+    /// it is this database's planes, exactly as before.
+    fn of(
+        db: &Database,
         plane: &str,
         scope: Option<Scope>,
-        reader: Option<&'a dyn Remote>,
+        instance: Option<&crate::Instance>,
     ) -> Result<Self> {
-        let here = db.plane(plane)?;
-        let mut attached = Vec::new();
-        let mut far = Vec::new();
-        let mut missed = Vec::new();
+        let mut held = Self {
+            local: Vec::new(),
+            far: Vec::new(),
+            missed: Vec::new(),
+        };
         if scope == Some(Scope::All) {
-            for (_, name) in db.planes()? {
+            let served: Vec<(String, Option<Arc<Database>>, String)> = match instance {
+                Some(inst) => inst
+                    .planes()?
+                    .into_iter()
+                    .map(|s| {
+                        let at = inst.serving(&s.plane)?;
+                        Ok((s.plane, Some(at.db), at.plane))
+                    })
+                    .collect::<Result<_>>()?,
+                None => db
+                    .planes()?
+                    .into_iter()
+                    .map(|(_, name)| (name.clone(), None, name))
+                    .collect(),
+            };
+            for (name, holder, within) in served {
                 if name == plane || name.ends_with(HISTORY_SUFFIX) {
                     continue;
                 }
-                let p = db.plane(&name)?;
                 // An empty plane holds nothing any question could match, and
                 // every database carries `startup` whether or not anything
                 // was ever digested into it — naming it in the answer would
                 // be noise on every call. One row is the whole probe.
-                if p.query_from_plan(holds_anything()).ids()?.is_empty() {
+                if holder
+                    .as_deref()
+                    .unwrap_or(db)
+                    .plane(&within)?
+                    .query_from_plan(holds_anything())
+                    .ids()?
+                    .is_empty()
+                {
                     continue;
                 }
-                attached.push((name.clone(), p));
+                held.local.push(Reading {
+                    name,
+                    db: holder,
+                    within,
+                });
             }
         }
         if scope.is_some() {
+            let here = db.plane(plane)?;
             for (at, a) in Attachments::of(&here)?.list().iter().enumerate() {
                 match (&a.url, scope) {
-                    (Some(_), _) => far.push((at, a.clone())),
+                    (Some(_), _) => held.far.push((at, a.clone())),
                     // Every plane is already in scope, so an attachment to one
                     // of them names nothing new.
                     (None, Some(Scope::All)) => {}
-                    (None, _) => match db.plane(&a.plane) {
-                        Ok(p) => attached.push((a.name.clone(), p)),
-                        Err(_) => missed.push(Missed {
+                    // An attachment names a plane *this instance serves*,
+                    // which since mounts may be one another database holds.
+                    (None, _) => match serving(db, instance, &a.plane) {
+                        Some(r) => held.local.push(Reading {
+                            name: a.name.clone(),
+                            db: r.0,
+                            within: r.1,
+                        }),
+                        None => held.missed.push(Missed {
                             at,
                             name: a.name.clone(),
                             why: format!("no plane '{}' on this instance", a.plane),
@@ -1806,6 +1880,46 @@ impl<'a> Graphs<'a> {
                 }
             }
         }
+        Ok(held)
+    }
+}
+
+/// The database serving `plane` and its name there — through `instance` where
+/// there is one, else this database alone (`None`).
+fn serving(
+    db: &Database,
+    instance: Option<&crate::Instance>,
+    plane: &str,
+) -> Option<(Option<Arc<Database>>, String)> {
+    match instance {
+        Some(inst) => inst.serving(plane).ok().map(|at| (Some(at.db), at.plane)),
+        None => db.plane(plane).ok().map(|_| (None, plane.to_string())),
+    }
+}
+
+impl<'a> Graphs<'a> {
+    fn open(
+        db: &'a Database,
+        plane: &str,
+        held: &'a Held,
+        reader: Option<&'a dyn Remote>,
+    ) -> Result<Self> {
+        let here = db.plane(plane)?;
+        let mut attached = Vec::new();
+        for r in &held.local {
+            let holder = r.db.as_deref().unwrap_or(db);
+            attached.push((r.name.clone(), holder.plane(&r.within)?));
+        }
+        let far = held.far.clone();
+        let missed = held
+            .missed
+            .iter()
+            .map(|m| Missed {
+                at: m.at,
+                name: m.name.clone(),
+                why: m.why.clone(),
+            })
+            .collect();
         Ok(Self {
             name: plane.to_string(),
             here,
@@ -2032,6 +2146,9 @@ pub struct Wire<'a> {
     /// unread and named as such, which is every surface that holds no network
     /// client.
     pub remote: Option<&'a dyn Remote>,
+    /// Every database this process serves (issue #44), so an attachment
+    /// naming a plane on this instance finds it wherever it is mounted.
+    pub instance: Option<&'a crate::Instance>,
 }
 
 /// `wire` — what serves a path, and what asks for it.
@@ -2051,7 +2168,8 @@ pub struct Wire<'a> {
 /// [`Wire::name`] is a path (`/bridge/check`), or a symbol — a handler, to
 /// learn who asks for it, or a caller, to learn what serves what it asks for.
 pub fn wire(db: &Database, req: Wire<'_>) -> Result<String> {
-    let mut graphs = Graphs::open(db, req.plane, Some(Scope::Attached), req.remote)?;
+    let held = Held::of(db, req.plane, Some(Scope::Attached), req.instance)?;
+    let mut graphs = Graphs::open(db, req.plane, &held, req.remote)?;
     graphs.fetch(&route_plan());
     let (serves, requests) = graphs.stated()?;
     if serves.is_empty() && requests.is_empty() {
@@ -2553,6 +2671,7 @@ mod tests {
                 name,
                 depth,
                 across: None,
+                instance: None,
                 remote: None,
             },
         )
@@ -3668,6 +3787,7 @@ mod tests {
                 plane: "code",
                 name: "/bridge/check",
                 verb: None,
+                instance: None,
                 remote: None,
             },
         )
@@ -3703,6 +3823,7 @@ mod tests {
                 plane: "code",
                 name: "BridgeController.check",
                 verb: None,
+                instance: None,
                 remote: None,
             },
         )
@@ -3717,6 +3838,7 @@ mod tests {
                 plane: "code",
                 name: "web/src/api.check",
                 verb: None,
+                instance: None,
                 remote: None,
             },
         )
@@ -3738,6 +3860,7 @@ mod tests {
                 plane: "code",
                 name: "/api/missing",
                 verb: None,
+                instance: None,
                 remote: None,
             },
         )
@@ -3756,6 +3879,7 @@ mod tests {
                 plane: "code",
                 name: "/api/dead",
                 verb: None,
+                instance: None,
                 remote: None,
             },
         )
@@ -3774,6 +3898,7 @@ mod tests {
                 plane: "code",
                 name: "/bridge/check",
                 verb: Some("get"),
+                instance: None,
                 remote: None,
             },
         )
@@ -3789,6 +3914,7 @@ mod tests {
                 plane: "code",
                 name: "/bridge/check",
                 verb: Some("POST"),
+                instance: None,
                 remote: None,
             },
         )
@@ -3871,6 +3997,7 @@ mod tests {
                 plane: "api",
                 name: "/api/orders",
                 verb: None,
+                instance: None,
                 remote: None,
             },
         )
@@ -3893,6 +4020,7 @@ mod tests {
                 plane: "api",
                 name: "/api/orders",
                 verb: None,
+                instance: None,
                 remote: None,
             },
         )
@@ -3931,6 +4059,7 @@ mod tests {
                 plane: "api",
                 name: "client.loadOne",
                 verb: None,
+                instance: None,
                 remote: None,
             },
         )
@@ -3947,6 +4076,7 @@ mod tests {
                 plane: "api",
                 name: "nothing.at.all",
                 verb: None,
+                instance: None,
                 remote: None,
             },
         )
@@ -3979,6 +4109,7 @@ mod tests {
                 plane: "api",
                 name: "/api/orders",
                 verb: None,
+                instance: None,
                 remote: None,
             },
         )
@@ -4074,6 +4205,7 @@ mod tests {
                     name: "/api/orders",
                     verb: None,
                     remote,
+                    instance: None,
                 },
             )
             .unwrap()
@@ -4142,6 +4274,7 @@ mod tests {
                 plane: "api",
                 name: "com.acme.Orders.one",
                 verb: None,
+                instance: None,
                 remote: Some(&reader),
             },
         )
@@ -4170,6 +4303,7 @@ mod tests {
                 plane: "api",
                 name: "/api/orders",
                 verb: None,
+                instance: None,
                 remote: Some(&Unreachable),
             },
         )
@@ -4191,6 +4325,7 @@ mod tests {
                 plane: "code",
                 name: "BridgeController.helper",
                 verb: None,
+                instance: None,
                 remote: None,
             },
         )
@@ -4203,6 +4338,7 @@ mod tests {
                 plane: "code",
                 name: "/anything",
                 verb: None,
+                instance: None,
                 remote: None,
             },
         )
@@ -4247,9 +4383,14 @@ mod tests {
     /// coordinate and stands in for the class by name.
     fn library_and_dependents() -> Database {
         let db = Database::in_memory().unwrap();
+        library_plane(&db);
+        dependents_of(&db);
+        db
+    }
 
-        // The library: the coordinate it publishes, a base class, and a
-        // subclass of it in the same tree — so the radius offers two keys.
+    /// The shared library: the coordinate it publishes, a base class, and a
+    /// subclass of it in the same tree — so the radius offers two keys.
+    fn library_plane(db: &Database) {
         let p = db.create_plane("common", Properties::new()).unwrap();
         let mut txn = p.write().unwrap();
         txn.create_node_with_key(
@@ -4271,8 +4412,6 @@ mod tests {
         txn.create_edge(dated, base, "EXTENDS", Properties::new())
             .unwrap();
         txn.commit().unwrap();
-        dependents_of(&db);
-        db
     }
 
     fn at(file: &str, line: i64) -> Properties {
@@ -4404,6 +4543,7 @@ mod tests {
                 depth: 3,
                 across: Some(scope),
                 remote,
+                instance: None,
             },
         )
         .unwrap()
@@ -4476,6 +4616,88 @@ mod tests {
         );
     }
 
+    /// The two issues meet here: a machine holding every repository in its
+    /// own store (#44) answers "which repositories would this change break"
+    /// (#43) across all of them, with nothing attached and nothing
+    /// re-digested.
+    #[test]
+    fn across_all_spans_the_databases_this_process_mounts() {
+        let tmp = tempfile::tempdir().unwrap();
+        // The library in one store, its two dependents in another — the
+        // shape of thirty-four repositories digested one at a time.
+        let lib = tmp.path().join("commonlib");
+        {
+            let db = Database::open(&lib).unwrap();
+            library_plane(&db);
+            db.save_sidecars();
+        }
+        let deps = tmp.path().join("services");
+        {
+            let db = Database::open(&deps).unwrap();
+            dependents_of(&db);
+            db.save_sidecars();
+        }
+
+        let inst = crate::Instance::new(Arc::new(Database::open(&lib).unwrap()));
+        inst.mount(crate::Mounting {
+            path: &deps,
+            as_prefix: None,
+            grant: None,
+            remember: false,
+        })
+        .unwrap();
+
+        let out = impact(
+            inst.host(),
+            Impact {
+                plane: "common",
+                name: "com.acme.common.BaseEntity",
+                depth: 3,
+                across: Some(Scope::All),
+                remote: None,
+                instance: Some(&inst),
+            },
+        )
+        .unwrap();
+
+        // Both dependents are in another database entirely, and both answer.
+        assert!(
+            out.contains("across  common, orders, billing, vendored\n"),
+            "{out}"
+        );
+        assert!(
+            out.contains("  declares  com.acme:common-base  2.4.1  [runtime]  backend/pom.xml\n"),
+            "{out}"
+        );
+        assert!(
+            out.contains("    svc.orders.Order  Class  src/Order.java:9  [EXTENDS]\n"),
+            "{out}"
+        );
+        assert!(
+            out.contains(
+                "3 graph(s) read, 3 hold(s) something: 2 declare(s) a dependency, \
+                          1 reach(es) it in code\n"
+            ),
+            "{out}"
+        );
+
+        // Without the instance it is the library's own store alone — which is
+        // the answer that was available before one process served both.
+        let alone = impact(
+            inst.host(),
+            Impact {
+                plane: "common",
+                name: "com.acme.common.BaseEntity",
+                depth: 3,
+                across: Some(Scope::All),
+                remote: None,
+                instance: None,
+            },
+        )
+        .unwrap();
+        assert!(alone.ends_with(NO_GRAPHS), "{alone}");
+    }
+
     /// Containment is not a reference: the package a stand-in sits under did
     /// not ask for it.
     #[test]
@@ -4518,6 +4740,7 @@ mod tests {
                 name: "com.acme.common.BaseEntity",
                 depth: 3,
                 across: None,
+                instance: None,
                 remote: None,
             },
         )

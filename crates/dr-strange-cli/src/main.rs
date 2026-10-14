@@ -1228,6 +1228,7 @@ fn run_agent_verbs(
                         name: &name,
                         depth,
                         across: across.map(Into::into),
+                        instance: None,
                         remote: Some(&remote),
                     },
                 )?
@@ -1252,6 +1253,7 @@ fn run_agent_verbs(
                         plane: &plane,
                         name: &name,
                         verb: verb.as_deref(),
+                        instance: None,
                         remote: Some(&remote),
                     },
                 )?

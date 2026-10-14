@@ -3082,6 +3082,7 @@ impl DrStrange {
         Parameters(req): Parameters<ImpactReq>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let remote = self.remote.clone();
+        let instance = self.instance.clone();
         self.run_in("impact", req, move |db, req| {
             Ok(Value::String(dr_strange_core::compact::impact(
                 db,
@@ -3090,6 +3091,7 @@ impl DrStrange {
                     name: &req.name,
                     depth: req.depth.unwrap_or(3),
                     across: across_scope(req.across.as_deref())?,
+                    instance: instance.as_deref(),
                     remote: remote.as_deref(),
                 },
             )?))
@@ -3310,6 +3312,7 @@ impl DrStrange {
         Parameters(req): Parameters<WireReq>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let remote = self.remote.clone();
+        let instance = self.instance.clone();
         self.run_in("wire", req, move |db, req| {
             Ok(Value::String(dr_strange_core::compact::wire(
                 db,
@@ -3317,6 +3320,7 @@ impl DrStrange {
                     plane: &req.plane,
                     name: &req.name,
                     verb: req.verb.as_deref(),
+                    instance: instance.as_deref(),
                     remote: remote.as_deref(),
                 },
             )?))
