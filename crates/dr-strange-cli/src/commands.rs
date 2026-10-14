@@ -1724,13 +1724,39 @@ fn recorded_sync_point(db: &Database, plane_name: &str) -> (Option<String>, Opti
     (get(SYNC_COMMIT_PROP), get(SYNC_ROOT_PROP))
 }
 
+/// The database a watcher writes to, and who owns it.
+///
+/// The server's own database outlives every watcher, so that one holds it. A
+/// mounted database belongs to the mount table instead: this watcher borrows
+/// it, so `unmount` frees the store's lock when it drops the mount rather
+/// than when a sleeping thread next wakes.
+#[cfg(feature = "digest")]
+pub enum WatchedDb {
+    /// The server's own database, held for as long as the process runs.
+    Held(std::sync::Arc<Database>),
+    /// A mounted one, owned by the mount table that served it.
+    Borrowed(std::sync::Weak<Database>),
+}
+
+#[cfg(feature = "digest")]
+impl WatchedDb {
+    /// A handle to write through, or `None` once a mounted database has been
+    /// unmounted.
+    fn get(&self) -> Option<std::sync::Arc<Database>> {
+        match self {
+            Self::Held(db) => Some(db.clone()),
+            Self::Borrowed(db) => db.upgrade(),
+        }
+    }
+}
+
 /// The entry `drsg serve watch` hands to the server's `on_start` hook: run
 /// the loop forever, and if it stops, say why — the server stays up either
 /// way, and a watcher that died silently would just look like a quiet repo.
 #[cfg(feature = "digest")]
 #[allow(clippy::too_many_arguments)]
 pub fn watch(
-    db: std::sync::Arc<Database>,
+    db: WatchedDb,
     tree: WatchTree,
     plane_name: String,
     plugin_config: dr_strange_llm::PluginConfig,
@@ -1931,7 +1957,7 @@ fn fold_one_move(
 
 #[cfg(feature = "digest")]
 fn watch_loop(
-    db: &Database,
+    held: &WatchedDb,
     tree: TreeRead<'_>,
     plane_name: &str,
     plugin_config: &dr_strange_llm::PluginConfig,
@@ -1945,7 +1971,7 @@ fn watch_loop(
     // provider that cannot be built (missing key), degrades to facts-only —
     // said once here, not per fold.
     let embedder = watch_embedder(embed.as_ref());
-    let revectorize = |why: &str| {
+    let revectorize = |db: &Database, why: &str| {
         let Some(e) = embedder.as_deref() else {
             return;
         };
@@ -1981,6 +2007,14 @@ fn watch_loop(
     // install` between commits is still picked up without a restart, but a
     // commit no longer pays for a load.
     let mut live = dr_strange_llm::LivePlugins::new(plugin_config.clone());
+
+    // The startup phase's handle, dropped before the poll loop begins: from
+    // there on a handle is taken per fold, so a mounted database is held only
+    // while something is actually written to it.
+    let Some(strong) = held.get() else {
+        return Ok(());
+    };
+    let db = &*strong;
 
     // Where to start folding from — and, when the repository cannot say,
     // what to do instead of giving up. A brand-new project has no commit to
@@ -2020,7 +2054,7 @@ fn watch_loop(
             prose_skipped_chars = stats.prose_chars,
             "plane rebuilt"
         );
-        revectorize("--force rebuild");
+        revectorize(db, "--force rebuild");
     } else {
         head = catch_up_from(db, tree.dir, plane_name, &root, head)?;
     }
@@ -2039,6 +2073,7 @@ fn watch_loop(
     // Before serving, so an agent's first question already carries the note if
     // a plugin landed while this server was down.
     note_plugin_drift(db, plane_name, &mut live);
+    drop(strong);
 
     tracing::info!(
         tree.dir = %tree.dir.display(),
@@ -2052,7 +2087,7 @@ fn watch_loop(
          into the history plane on the next HEAD move"
     );
     poll_commits(
-        db,
+        held,
         tree,
         plane_name,
         &mut live,
@@ -2071,17 +2106,27 @@ fn watch_loop(
 #[allow(clippy::too_many_arguments)]
 #[cfg(feature = "digest")]
 fn poll_commits(
-    db: &Database,
+    held: &WatchedDb,
     tree: TreeRead<'_>,
     plane_name: &str,
     live: &mut dr_strange_llm::LivePlugins,
     source: &str,
     git: bool,
     mut head: String,
-    revectorize: &dyn Fn(&str),
+    revectorize: &dyn Fn(&Database, &str),
 ) -> Result<()> {
     loop {
         std::thread::sleep(WATCH_POLL);
+        // Taken per tick and never held across the sleep: a mounted database
+        // is the mount table's, and unmounting it frees the store at once.
+        let Some(strong) = held.get() else {
+            tracing::info!(
+                plane = plane_name,
+                "the database this watcher folded into is no longer served — stopping"
+            );
+            return Ok(());
+        };
+        let db = &*strong;
         let now = match git_head(tree.dir) {
             Ok(h) => h,
             Err(e) => {
@@ -2100,7 +2145,7 @@ fn poll_commits(
                     tracing::warn!(error = format!("{e:#}"), "recording the sync point failed");
                 }
                 if changed {
-                    revectorize("commit fold");
+                    revectorize(db, "commit fold");
                 }
                 // Folds are commit-paced, so keeping the sidecars fresh here
                 // is cheap — and a hard kill then costs the next boot nothing.
@@ -2211,7 +2256,7 @@ fn bootstrap_unborn(
     live: &mut dr_strange_llm::LivePlugins,
     source: &str,
     why: &anyhow::Error,
-    revectorize: &dyn Fn(&str),
+    revectorize: &dyn Fn(&Database, &str),
 ) -> Result<Option<String>> {
     let is_repo = is_git_repo(tree.dir);
     tracing::info!(
@@ -2227,7 +2272,7 @@ fn bootstrap_unborn(
         prose_skipped_chars = stats.prose_chars,
         "plane built from the working tree — no sync point until a commit exists"
     );
-    revectorize("working-tree scan");
+    revectorize(db, "working-tree scan");
 
     if !is_repo {
         tracing::warn!(
@@ -2255,7 +2300,7 @@ fn bootstrap_unborn(
         prose_skipped_chars = stats.prose_chars,
         "first commit — plane rebuilt on it"
     );
-    revectorize("first commit");
+    revectorize(db, "first commit");
     Ok(Some(first))
 }
 

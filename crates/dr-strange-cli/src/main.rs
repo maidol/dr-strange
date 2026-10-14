@@ -1347,7 +1347,11 @@ impl WatchMounts {
                 code_only: self.code_only,
                 policy: self.policy.clone(),
             };
-            let (db, plane) = (mount.database().clone(), within.to_string());
+            // Borrowed, not held: the mount table owns this database, and
+            // unmounting it must free its store rather than wait for the
+            // watcher below to notice.
+            let db = commands::WatchedDb::Borrowed(std::sync::Arc::downgrade(mount.database()));
+            let plane = within.to_string();
             let (plugins, embed, git) = (self.plugin_config.clone(), self.embed.clone(), self.git);
             // A plain thread, as the host's watcher is: the work is blocking
             // (git, parsing, write transactions) and must not sit on the
@@ -1949,7 +1953,15 @@ fn run_services(
                     };
                     opts.on_mount = Some(std::sync::Arc::new(move |m| mounted.watch(m)));
                     opts.on_start = Some(Box::new(move |db| {
-                        commands::watch(db, tree, plane, plugin_config, embed, force, !no_git)
+                        commands::watch(
+                            commands::WatchedDb::Held(db),
+                            tree,
+                            plane,
+                            plugin_config,
+                            embed,
+                            force,
+                            !no_git,
+                        )
                     }));
                 }
                 #[cfg(not(feature = "digest"))]
