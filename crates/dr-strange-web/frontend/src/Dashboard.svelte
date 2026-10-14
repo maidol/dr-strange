@@ -268,7 +268,7 @@
 
 <h2>Planes</h2>
 <section class="planes">
-  {#each planes as p (p.id)}
+  {#each planes as p (p.name)}
     <article class="card" class:selected={p.name === plane}>
       <button
         class="card-select"

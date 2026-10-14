@@ -268,6 +268,19 @@ fn dispatch_method(
         }};
     }
 
+    // A mounted plane lives in another database (issue #44), so the plane
+    // these params name decides which one the handlers read. Resolved here,
+    // once, rather than in each method: `plane` is the one key that means
+    // "the plane to act on", and a method that resolved for itself could
+    // read one database and write another.
+    //
+    // The `Arc` is bound before the context that borrows it, so the mounted
+    // database outlives every handle taken from it during this call.
+    let mut params = params;
+    let mounted = ctx.mounted(&mut params);
+    let on_mount = mounted.as_deref().map(|db| ctx.on(db));
+    let ctx = on_mount.as_ref().unwrap_or(ctx);
+
     match method {
         "rpc.discover" => guarded!(Access::Read, methods::rpc_discover(ctx)),
         "db.stats" => guarded!(Access::Read, methods::db_stats(ctx)),
@@ -365,6 +378,7 @@ mod tests {
         Ctx {
             db,
             db_path: None,
+            instance: None,
             digest: crate::DigestDefaults::default(),
             deadline: None,
             history_limit: Database::DEFAULT_HISTORY,
@@ -383,6 +397,7 @@ mod tests {
         let ctx = Ctx {
             db,
             db_path: None,
+            instance: None,
             digest: crate::DigestDefaults::default(),
             deadline: None,
             history_limit: Database::DEFAULT_HISTORY,
@@ -649,6 +664,128 @@ mod tests {
         }
     }
 
+    /// A database on disk holding one named plane with one keyed node.
+    fn store(dir: &std::path::Path, plane: &str) -> std::path::PathBuf {
+        let path = dir.join(plane);
+        let db = Database::open(&path).unwrap();
+        let p = db.create_plane(plane, Properties::new()).unwrap();
+        let mut txn = p.write().unwrap();
+        txn.create_node_with_key(&format!("{plane}::thing"), &["Thing"], Properties::new())
+            .unwrap();
+        txn.commit().unwrap();
+        db.save_sidecars();
+        drop(db);
+        path
+    }
+
+    /// Dispatch against an instance rather than a bare database — what a
+    /// server does, and the only way a mounted plane is reachable.
+    fn call_on(instance: &dr_strange_core::Instance, body: &str) -> Option<Value> {
+        let ctx = Ctx {
+            db: instance.host(),
+            db_path: None,
+            instance: Some(instance),
+            digest: crate::DigestDefaults::default(),
+            deadline: None,
+            history_limit: Database::DEFAULT_HISTORY,
+            configured_provider: None,
+            retain_commits: Some(crate::DEFAULT_RETAIN_COMMITS),
+        };
+        handle(&ctx, &Auth::allow_all(), body.as_bytes())
+    }
+
+    /// Every method takes the plane it acts on under one key, so routing a
+    /// request to the database holding that plane is resolved once, at
+    /// dispatch — and a method that never heard of mounts answers across
+    /// them (issue #44).
+    #[test]
+    fn a_method_answers_on_a_mounted_planes_own_database() {
+        let tmp = tempfile::tempdir().unwrap();
+        let orders = store(tmp.path(), "svc-orders");
+        let instance =
+            dr_strange_core::Instance::new(std::sync::Arc::new(Database::in_memory().unwrap()));
+        instance
+            .mount(dr_strange_core::Mounting {
+                path: &orders,
+                as_prefix: None,
+                grant: None,
+            })
+            .unwrap();
+
+        // `node.get` is an ordinary read method: it was not touched, and it
+        // reaches a database this process did not open as its own.
+        let got = call_on(
+            &instance,
+            r#"{"jsonrpc":"2.0","id":1,"method":"node.get",
+                "params":{"plane":"svc-orders","key":"svc-orders::thing"}}"#,
+        )
+        .unwrap();
+        assert_eq!(got["result"]["labels"][0], "Thing", "{got}");
+
+        // A plane nothing serves is still the handler's own miss, not a
+        // second error invented at dispatch.
+        let miss = call_on(
+            &instance,
+            r#"{"jsonrpc":"2.0","id":1,"method":"node.get",
+                "params":{"plane":"nope","key":"x"}}"#,
+        )
+        .unwrap();
+        assert!(
+            miss["error"]["message"].as_str().unwrap().contains("nope"),
+            "{miss}"
+        );
+
+        // `plane.list` is the instance's whole set, each naming its mount.
+        let listed = call_on(
+            &instance,
+            r#"{"jsonrpc":"2.0","id":1,"method":"plane.list"}"#,
+        )
+        .unwrap();
+        let rows = listed["result"].as_array().unwrap();
+        let orders_row = rows
+            .iter()
+            .find(|r| r["name"] == "svc-orders")
+            .unwrap_or_else(|| panic!("{listed}"));
+        assert_eq!(orders_row["mount"], "svc-orders", "{listed}");
+        assert_eq!(orders_row["nodes"], 1, "{listed}");
+        let host_row = rows.iter().find(|r| r["name"] == "startup").unwrap();
+        assert!(host_row["mount"].is_null(), "the host's own: {listed}");
+    }
+
+    /// Under a prefix the plane is `far/svc-orders` here and `svc-orders`
+    /// there, so dispatch rewrites the name before the handler reads it.
+    #[test]
+    fn a_prefixed_mounts_plane_is_asked_for_by_its_own_name_there() {
+        let tmp = tempfile::tempdir().unwrap();
+        let orders = store(tmp.path(), "svc-orders");
+        let instance =
+            dr_strange_core::Instance::new(std::sync::Arc::new(Database::in_memory().unwrap()));
+        instance
+            .mount(dr_strange_core::Mounting {
+                path: &orders,
+                as_prefix: Some("far"),
+                grant: None,
+            })
+            .unwrap();
+
+        let got = call_on(
+            &instance,
+            r#"{"jsonrpc":"2.0","id":1,"method":"node.get",
+                "params":{"plane":"far/svc-orders","key":"svc-orders::thing"}}"#,
+        )
+        .unwrap();
+        assert_eq!(got["result"]["labels"][0], "Thing", "{got}");
+
+        // The unprefixed name reaches nothing: that is what the prefix is for.
+        let bare = call_on(
+            &instance,
+            r#"{"jsonrpc":"2.0","id":1,"method":"node.get",
+                "params":{"plane":"svc-orders","key":"svc-orders::thing"}}"#,
+        )
+        .unwrap();
+        assert!(bare.get("error").is_some(), "{bare}");
+    }
+
     /// The configured provider is the one non-preset name a request may use.
     #[test]
     fn the_configured_provider_passes_the_guard() {
@@ -656,6 +793,7 @@ mod tests {
         let ctx = Ctx {
             db: &db,
             db_path: None,
+            instance: None,
             digest: crate::DigestDefaults::default(),
             deadline: None,
             history_limit: Database::DEFAULT_HISTORY,

@@ -66,8 +66,13 @@ const MAX_BODY: usize = 64 * 1024 * 1024;
 /// Everything the request handlers share. `Arc`-wrapped and cheap to clone
 /// into each blocking task.
 pub struct AppState {
+    /// This process's own database — where a plane is created, and what the
+    /// instance-wide reads (`db.stats`, a snapshot) are about.
     pub db: Arc<Database>,
     pub db_path: Option<PathBuf>,
+    /// Every database this process serves: [`AppState::db`] and whatever it
+    /// mounts (issue #44). A request's plane decides which one answers it.
+    pub instance: Arc<dr_strange_core::Instance>,
     /// Write-authorization backend (v1: a single shared `DRSG_TOKEN`).
     pub authorizer: Arc<dyn Authorizer>,
     /// Browser-`Origin` allow-list — the CSRF guard.
@@ -169,6 +174,7 @@ impl AppState {
         Ctx {
             db: self.db.as_ref(),
             db_path: self.db_path.as_deref(),
+            instance: Some(self.instance.as_ref()),
             digest: self.digest,
             // Stamped per request, not per process: the budget is how long
             // *this* call may run, so it starts when the call does.
@@ -1643,6 +1649,7 @@ pub async fn run(
             follow_lost.clone(),
         ));
         let state = Arc::new(AppState {
+            instance: Arc::new(dr_strange_core::Instance::new(db_for_tail.clone())),
             db: db_for_tail,
             db_path,
             authorizer,
@@ -1663,8 +1670,10 @@ pub async fn run(
         });
         return run_app(state, opts, &resync_needed, &follow_lost).await;
     }
+    let db = Arc::new(db);
     let state = Arc::new(AppState {
-        db: Arc::new(db),
+        instance: Arc::new(dr_strange_core::Instance::new(db.clone())),
+        db,
         db_path,
         authorizer,
         origins,

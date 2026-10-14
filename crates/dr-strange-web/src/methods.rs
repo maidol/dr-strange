@@ -29,6 +29,13 @@ use crate::rpc::RpcError;
 pub struct Ctx<'a> {
     pub db: &'a Database,
     pub db_path: Option<&'a Path>,
+    /// Every database this process serves (issue #44), when it is a server —
+    /// `None` for an embedded caller, which serves exactly [`Ctx::db`].
+    ///
+    /// Read only to decide *which* database a request's plane lives in, at
+    /// dispatch; a handler never consults it, so a method cannot read one
+    /// plane and write another by mistake.
+    pub instance: Option<&'a dr_strange_core::Instance>,
     /// Server-side `digest.run` defaults (request params override these).
     pub digest: crate::DigestDefaults,
     /// When this request's queries must stop. `None` ⇒ run to completion.
@@ -59,6 +66,45 @@ impl Ctx<'_> {
             Some(d) => p.with_deadline(d),
             None => p,
         })
+    }
+
+    /// The mounted database serving the plane `params` names, if it is one —
+    /// and the plane name rewritten to what that database calls it, which
+    /// differs only under a prefixed mount.
+    ///
+    /// `plane` is the one key that means "the plane to act on", across every
+    /// method that takes one, so this reads it generically rather than each
+    /// method resolving for itself. A name nothing serves resolves to
+    /// `None` and the handler reports the miss it would have reported anyway.
+    pub fn mounted(&self, params: &mut Value) -> Option<std::sync::Arc<dr_strange_core::Database>> {
+        let instance = self.instance?;
+        let asked = params.get("plane")?.as_str()?;
+        let at = instance.serving(asked).ok()?;
+        at.mount.as_ref()?;
+        if at.plane != asked {
+            params["plane"] = Value::String(at.plane.clone());
+        }
+        Some(at.db)
+    }
+
+    /// This context reading `db` instead of its own — how a request for a
+    /// mounted plane reaches the database holding it without any method
+    /// knowing that mounts exist.
+    pub fn on<'b>(&'b self, db: &'b Database) -> Ctx<'b> {
+        Ctx {
+            db,
+            // This process's path is not that database's, and reporting one
+            // store's footprint for another is worse than reporting none.
+            // `db.stats`, the only reader, takes no plane and so never
+            // reaches this context; `db.mounts` reads each mount's own path.
+            db_path: None,
+            instance: self.instance,
+            digest: self.digest,
+            deadline: self.deadline,
+            history_limit: self.history_limit,
+            configured_provider: self.configured_provider,
+            retain_commits: self.retain_commits,
+        }
     }
 }
 
@@ -706,16 +752,51 @@ pub fn db_catalog(ctx: &Ctx<'_>) -> Result<Value, RpcError> {
     serde_json::to_value(cat).map_err(|e| RpcError::server(e.to_string()))
 }
 
+/// Every plane this call may name, with the mount it came from — the
+/// instance's whole set where there is one, this database's otherwise.
+fn served_planes(ctx: &Ctx<'_>) -> Result<Vec<(String, Option<String>)>, RpcError> {
+    match ctx.instance {
+        Some(instance) => Ok(app(instance.planes())?
+            .into_iter()
+            .map(|s| (s.plane, s.mount))
+            .collect()),
+        None => Ok(app(ctx.db.planes())?
+            .into_iter()
+            .map(|(_, name)| (name, None))
+            .collect()),
+    }
+}
+
 /// `plane.list` — plane cards: id, name, counts, and any plane properties.
+///
+/// Every plane this *instance* serves, so a mounted database's planes are
+/// listed beside this one's, each naming the mount it came from (issue #44).
+/// `name` is the identity the whole surface uses (`--plane <name>`); `id` is
+/// that plane's id **in its own database**, so two planes from two mounts may
+/// share one.
 pub fn plane_list(ctx: &Ctx<'_>) -> Result<Value, RpcError> {
     let mut out = Vec::new();
-    for (id, name) in app(ctx.db.planes())? {
-        let plane = ctx.plane(&name)?;
+    for (name, mount) in served_planes(ctx)? {
+        // Held for as long as the handle below, which borrows it.
+        let held = match ctx.instance {
+            Some(instance) => Some(app(instance.serving(&name))?),
+            None => None,
+        };
+        let (db, within) = match &held {
+            Some(at) => (at.db.as_ref(), at.plane.as_str()),
+            None => (ctx.db, name.as_str()),
+        };
+        let plane = app(db.plane(within))?;
+        let plane = match ctx.deadline {
+            Some(d) => plane.with_deadline(d),
+            None => plane,
+        };
         let counters = app(plane.counters())?;
         let props = app(plane.properties())?;
         out.push(jval!({
-            "id": id.0,
+            "id": plane.id().0,
             "name": name,
+            "mount": mount,
             "nodes": counters.nodes,
             "edges": counters.edges,
             "properties": json::properties_to_json(&props),
@@ -3181,6 +3262,7 @@ mod guard_tests {
         Ctx {
             db,
             db_path: None,
+            instance: None,
             digest: crate::DigestDefaults::default(),
             deadline: None,
             history_limit: Database::DEFAULT_HISTORY,

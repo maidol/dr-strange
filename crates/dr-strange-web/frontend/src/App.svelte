@@ -145,7 +145,7 @@
     <label class="plane-pick">
       Plane
       <select bind:value={plane}>
-        {#each planes as p (p.id)}<option value={p.name}>{p.name}</option>{/each}
+        {#each planes as p (p.name)}<option value={p.name}>{p.name}</option>{/each}
         {#if !planes.length}<option value={plane}>{plane}</option>{/if}
       </select>
     </label>
