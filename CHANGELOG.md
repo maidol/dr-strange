@@ -4,6 +4,21 @@ All notable changes to Dr Strange are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.20.2] - 2026-10-15
+
+### Security
+
+- **The plugin sandbox is patched against
+  [RUSTSEC-2026-0352](https://rustsec.org/advisories/RUSTSEC-2026-0352).**
+  `wasmtime-wasi` 48.0.5 allowed a filesystem sandbox escape when renaming a
+  symlink with a trailing slash
+  ([GHSA-m9f7-9w4p-gv38](https://github.com/bytecodealliance/wasmtime/security/advisories/GHSA-m9f7-9w4p-gv38)).
+  A preprocessor plugin is a wasm component drsg downloads and runs over a
+  source tree, and its preopened directory is the whole of what stands between
+  it and the rest of the filesystem — so of the sandboxes drsg relies on, this
+  is the one that matters. 48.0.6 closes it. No drsg code changed, and no
+  installed plugin needs reinstalling.
+
 ## [2.20.1] - 2026-10-15
 
 ### Fixed
