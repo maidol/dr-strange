@@ -292,45 +292,33 @@ impl Database {
     }
 
     /// Load the shipped sidecars into the live registries — ids are
-    /// preserved, so they match — and persist them where this database keeps
-    /// its own. The live registries are what every search reads, so they are
-    /// loaded whether or not a sidecar path exists: an in-memory database has
-    /// none, and kept its pre-restore (empty) registries without this. A
-    /// snapshot with no usable sidecar (a frame missing, or stamped with
-    /// another seq) falls back to the KV, which is always the source of truth
-    /// — the same fresh-sidecar-else-rebuild rule `open` applies.
+    /// preserved, so they match. The live registries are what every search
+    /// reads, so they are loaded whether or not a sidecar path exists: an
+    /// in-memory database has none, and kept its pre-restore (empty)
+    /// registries without this. A snapshot with no usable sidecar (a frame
+    /// missing, or stamped with another seq) falls back to the KV, which is
+    /// always the source of truth — the same fresh-sidecar-else-rebuild rule
+    /// `open` applies.
     fn load_sidecars(&self, acc: &Restoring) -> Result<()> {
         let seq = acc.stats.seq;
-        let vectors = match acc
-            .hnsw
-            .as_deref()
-            .and_then(|bytes| VectorRegistry::from_bytes(bytes, seq))
-        {
-            Some(reg) => {
-                if let (Some(bytes), Some(path)) = (&acc.hnsw, self.sidecar.as_deref()) {
-                    std::fs::write(path, bytes)?;
-                }
-                reg
-            }
+        // Kept only while usable: cleared when the registry is rebuilt from
+        // the KV instead, so a stale frame is never persisted as a sidecar.
+        let mut hnsw = acc.hnsw.as_deref();
+        let mut bm25 = acc.bm25.as_deref();
+        let vectors = match hnsw.and_then(|bytes| VectorRegistry::from_bytes(bytes, seq)) {
+            Some(reg) => reg,
             None => {
+                hnsw = None;
                 let mut reg = VectorRegistry::new();
                 self.engine.with_read(|txn| reg.rebuild_from(txn))?;
                 tracing::info!("rebuilt vector indexes from the restored KV (no usable sidecar)");
                 reg
             }
         };
-        let keywords = match acc
-            .bm25
-            .as_deref()
-            .and_then(|bytes| KeywordRegistry::from_bytes(bytes, seq))
-        {
-            Some(reg) => {
-                if let (Some(bytes), Some(path)) = (&acc.bm25, self.keyword_sidecar.as_deref()) {
-                    std::fs::write(path, bytes)?;
-                }
-                reg
-            }
+        let keywords = match bm25.and_then(|bytes| KeywordRegistry::from_bytes(bytes, seq)) {
+            Some(reg) => reg,
             None => {
+                bm25 = None;
                 let mut reg = KeywordRegistry::new();
                 self.engine.with_read(|txn| reg.rebuild_from(txn))?;
                 tracing::info!("rebuilt keyword indexes from the restored KV (no usable sidecar)");
@@ -339,6 +327,27 @@ impl Database {
         };
         *self.indexes_mut() = vectors;
         *self.keywords_mut() = keywords;
+        // Only now, with the KV durable and the live registries matching it,
+        // persist the shipped sidecars where this database keeps its own.
+        // The sidecar is a cache of the registry (the next open rebuilds
+        // from the KV without one), so a failed write is a warning, never an
+        // `Err`: the restore has landed, and reporting it failed would have
+        // the caller retry a restore the non-empty check now refuses, or
+        // take a working database for a broken one.
+        for (bytes, path, kind) in [
+            (hnsw, self.sidecar.as_deref(), "HNSW"),
+            (bm25, self.keyword_sidecar.as_deref(), "BM25"),
+        ] {
+            if let (Some(bytes), Some(path)) = (bytes, path)
+                && let Err(e) = std::fs::write(path, bytes)
+            {
+                tracing::warn!(
+                    error = %e,
+                    path = %path.display(),
+                    "failed to write the restored {kind} sidecar; the next open rebuilds it from the KV"
+                );
+            }
+        }
         Ok(())
     }
 }
@@ -620,6 +629,24 @@ mod tests {
         assert_indexes_serve(&on_disk, a, b);
     }
 
+    /// The sidecar files are caches of the registries, and the KV restore is
+    /// durable before they are written: a sidecar that cannot be written
+    /// must not turn a landed restore into an `Err` (the caller would retry
+    /// a restore the non-empty check now refuses) nor leave the live
+    /// registries at their pre-restore, empty state.
+    #[test]
+    fn restore_survives_an_unwritable_sidecar_with_its_indexes_loaded() {
+        let (buf, a, b) = indexed_snapshot();
+        let dir = tempfile::tempdir().unwrap();
+        let dst = Database::open(dir.path().join("db")).unwrap();
+        // A directory where each sidecar file goes makes every write fail.
+        std::fs::create_dir(dir.path().join("db.hnsw")).unwrap();
+        std::fs::create_dir(dir.path().join("db.bm25")).unwrap();
+
+        let stats = dst.restore(&mut buf.as_slice()).unwrap();
+        assert_eq!(stats.nodes, 2, "the restore landed");
+        assert_indexes_serve(&dst, a, b);
+    }
     /// Adjacency of node 1 in the startup plane, read through the query
     /// path's reader (so through the L2 cache).
     fn hops_of_node_1(db: &Database) -> Vec<NodeId> {
