@@ -175,7 +175,7 @@ installed plugins.
 
 ## The official catalog
 
-Ten official plugins cover the common languages and two cross-cutting
+Thirteen official plugins cover the common languages and two cross-cutting
 sources, each wrapping a mature parser rather than reinventing one:
 
 | Plugin | Claims | Parser underneath |
@@ -185,9 +185,12 @@ sources, each wrapping a mature parser rather than reinventing one:
 | `ts` | `.ts .tsx .mts .cts .js .jsx .mjs .cjs` | [swc](https://swc.rs) — ESM and CommonJS |
 | `py` | `.py .pyi .pyw` | [ruff](https://github.com/astral-sh/ruff)'s parser |
 | `java` | `.java` | [tree-sitter-java](https://github.com/tree-sitter/tree-sitter-java) |
+| `kotlin` | `.kt .kts` | [tree-sitter-kotlin-ng](https://github.com/tree-sitter-grammars/tree-sitter-kotlin) |
+| `csharp` | `.cs` | [tree-sitter-c-sharp](https://github.com/tree-sitter/tree-sitter-c-sharp) |
 | `c` | `.c .h` | [tree-sitter-c](https://github.com/tree-sitter/tree-sitter-c) |
 | `web` | `.html .htm .css` | tree-sitter html/css/js — one plugin, so `class="btn"` binds to the stylesheet defining `.btn` |
 | `toml` | `.toml` | [toml](https://crates.io/crates/toml) |
+| `xml` | `.xml` | [quick-xml](https://crates.io/crates/quick-xml) — by the dialect the file declares |
 | `git` | *(a git checkout)* | git's own object database, read directly — [flate2](https://crates.io/crates/flate2) for the zlib streams. Dispatched by the source being a checkout rather than by extension, and writes the history plane beside the code one |
 | `deps` | *(manifests, by name)* | [toml_edit](https://crates.io/crates/toml_edit) and [quick-xml](https://crates.io/crates/quick-xml): `package.json`, `go.mod`, `pyproject.toml`, `requirements.txt`, `pom.xml`. A manifest is a *filename*, not an extension — `Cargo.toml` stays with the `toml` plugin |
 

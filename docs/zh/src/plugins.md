@@ -139,7 +139,7 @@ shell 里临时覆盖——`DRSG_PLUGINS_DEADLINE_SECS` 与 `DRSG_PLUGINS_TOTAL_
 
 ## 官方目录
 
-十个官方插件覆盖常用语言与两类横切来源，每个都包装一个成熟的解析器而非重新发明：
+十三个官方插件覆盖常用语言与两类横切来源，每个都包装一个成熟的解析器而非重新发明：
 
 | 插件 | 处理的扩展名 | 底层解析器 |
 |---|---|---|
@@ -148,9 +148,12 @@ shell 里临时覆盖——`DRSG_PLUGINS_DEADLINE_SECS` 与 `DRSG_PLUGINS_TOTAL_
 | `ts` | `.ts .tsx .mts .cts .js .jsx .mjs .cjs` | [swc](https://swc.rs)——同时支持 ESM 与 CommonJS |
 | `py` | `.py .pyi .pyw` | [ruff](https://github.com/astral-sh/ruff) 的解析器 |
 | `java` | `.java` | [tree-sitter-java](https://github.com/tree-sitter/tree-sitter-java) |
+| `kotlin` | `.kt .kts` | [tree-sitter-kotlin-ng](https://github.com/tree-sitter-grammars/tree-sitter-kotlin) |
+| `csharp` | `.cs` | [tree-sitter-c-sharp](https://github.com/tree-sitter/tree-sitter-c-sharp) |
 | `c` | `.c .h` | [tree-sitter-c](https://github.com/tree-sitter/tree-sitter-c) |
 | `web` | `.html .htm .css` | tree-sitter html/css/js——一个插件同时处理，`class="btn"` 才能绑定到定义 `.btn` 的样式表 |
 | `toml` | `.toml` | [toml](https://crates.io/crates/toml) |
+| `xml` | `.xml` | [quick-xml](https://crates.io/crates/quick-xml)——按文件自己声明的方言 |
 | `git` | *（一个 git 检出目录）* | 直接读取 git 自己的对象库，用 [flate2](https://crates.io/crates/flate2) 解 zlib 流。它按“来源是一个检出目录”分发，而非按扩展名；写出的历史平面就放在代码平面旁边 |
 | `deps` | *（清单文件，按文件名）* | [toml_edit](https://crates.io/crates/toml_edit) 与 [quick-xml](https://crates.io/crates/quick-xml)：`package.json`、`go.mod`、`pyproject.toml`、`requirements.txt`、`pom.xml`。清单是一个*文件名*而非扩展名——`Cargo.toml` 仍归 `toml` 插件 |
 
