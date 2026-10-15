@@ -4,6 +4,70 @@ All notable changes to Dr Strange are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.20.3] - 2026-10-15
+
+### Fixed
+
+- **A durable commit can no longer report `Err`.** `WriteTxn::commit`
+  committed the KV and then applied the buffered vector index events with
+  `?`: the first failure returned `Err` for a write that was already durable
+  and visible, skipped every remaining vector and keyword event, and left the
+  in-memory registries quietly behind the KV. The divergence could outlive the
+  process — a clean close saved the diverged registry as a sidecar stamped with
+  the current sequence, and the next open loaded it back as fresh instead of
+  rebuilding. Nothing after the KV commit may become an `Err` now: every
+  pending event is applied, one failure never skipping the rest, and a failed
+  vector event marks the registry *diverged* — it keeps serving, which beats
+  no answer, but is never persisted at that sequence, so the next open rebuilds
+  from the KV, which is always the truth.
+- **A restore leaves the live registries matching what it restored.** Restore
+  only loaded a snapshot's HNSW and BM25 frames when the database had a sidecar
+  *path* to write them to. An in-memory database has none, so it kept its
+  pre-restore, empty registries: keyword search returned nothing and vector
+  search silently fell back to brute force. The registries are now set
+  whether or not a sidecar path exists — from the shipped bytes when they parse
+  and carry the restored sequence, otherwise rebuilt from the just-restored KV.
+  The sidecar writes come last and are best-effort: a sidecar is a cache of the
+  registry, so a failed write is a warning rather than an `Err` from a restore
+  that has already landed, which would have the caller retry a restore the
+  non-empty check then refuses.
+- **A replica's restore lands at its master's sequence.** A fresh follower's
+  own bootstrap takes sequence 1, and a restore that allocated its own sequence
+  left the replica *behind* a young master — so the master's very next live
+  batch was at or below the follower's `committed_seq`, `apply_replicated`
+  refused it as a replay, and the follow loop answered with a full resync,
+  forever. The write path now carries the sequence a restore must land at (or
+  above) and the native engine commits at `max(next, floor)`; sequences still
+  only ever advance.
+- **A follower's searches follow.** `apply_replicated` landed each batch in the
+  KV and dropped the graph cache, but never touched the in-memory HNSW and BM25
+  registries, so a `serve --follow` replica answered vector and keyword
+  searches from whatever it rebuilt on open: nodes created on the master never
+  became searchable, deleted ones were hidden only by the snapshot filter, and
+  an index declared after the follower opened did not exist for it at all. Each
+  replicated batch is now mirrored into both registries.
+- **A restored database no longer reports itself empty.** The per-plane summary
+  counters are maintained by `WriteTxn::commit`, which the restore path does not
+  go through — it writes frames with raw graph inserts — so the target kept the
+  zero row its bootstrap wrote and `db.stats` and `drsg stats` reported an empty
+  database over a full one. Each plane is recounted inside the restore
+  transaction.
+- **Opening a database commits nothing unless something is missing.**
+  `Database::init` ran two bootstrap write transactions on every open even when
+  both had nothing to do, advancing the commit sequence by two. On a replica
+  that is a correctness bug rather than a blemish: its sequence is the master's,
+  landed verbatim, so each restart of `serve --follow` pushed it two past the
+  master. It also cost every embedded open two fsyncs.
+- **Dropping a plane drops its index declarations.** `drop_plane` swept the
+  plane's rows by key prefix and deleted its counters row, but the `vidx:` and
+  `kidx:` declarations live in meta under their own prefixes, as do the live
+  registry entries. A stale handle still listed the dropped plane's indexes, the
+  sidecars kept carrying them, and every later open rebuilt them over nothing —
+  for a plane id that is never reused.
+- **The redb-only build compiles again.** A test-only fault seam and the
+  follower integration test are native-only, and are now gated like their one
+  caller.
+
 ## [2.20.2] - 2026-10-15
 
 ### Security
