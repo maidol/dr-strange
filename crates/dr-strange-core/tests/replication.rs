@@ -9,9 +9,9 @@
 
 use std::sync::{Arc, Mutex};
 
-use dr_strange_core::ReplicatedBatch;
 use dr_strange_core::storage::engine::{ReadTransaction, StorageEngine, TableId, WriteTransaction};
 use dr_strange_core::storage::native::NativeEngine;
+use dr_strange_core::{Database, Properties, ReplicatedBatch};
 
 /// A scratch directory that cleans up after itself.
 struct Dir(std::path::PathBuf);
@@ -180,4 +180,198 @@ fn apply_replicated_refuses_a_sequence_that_does_not_advance() {
     assert_eq!(e.committed_seq(), 4);
     let txn = e.begin_read().unwrap();
     assert_eq!(txn.get(TableId::Nodes, &[1]).unwrap(), Some(vec![0xff]));
+}
+
+/// Wire up a `Database` master so every commit's batch lands in a shared
+/// `Vec`, in order — the `Database`-level twin of [`capture`].
+fn capture_db(src: &Database) -> Arc<Mutex<Vec<ReplicatedBatch>>> {
+    let batches = Arc::new(Mutex::new(Vec::new()));
+    let sink = batches.clone();
+    src.on_wal_commit(move |batch| sink.lock().unwrap().push(batch))
+        .unwrap();
+    batches
+}
+
+fn apply_all(replica: &Database, batches: &Mutex<Vec<ReplicatedBatch>>) {
+    for batch in batches.lock().unwrap().drain(..) {
+        replica.apply_replicated(batch).unwrap();
+    }
+}
+
+#[test]
+fn reopening_a_replica_writes_nothing_so_its_sequence_stays_the_masters() {
+    // A replica's commit sequence is the master's, landed verbatim by
+    // `apply_replicated`. If opening the database ran bootstrap commits of
+    // its own, every restart of `serve --follow` would push the replica's
+    // sequence past the master's, and the next replicated batch would move
+    // it backwards (or, once the engine refuses regressions, be rejected).
+    // So an open of an already-initialised database must commit nothing.
+    let dir_m = Dir::new("reopen-master");
+    let dir_r = Dir::new("reopen-replica");
+    let master = Database::open(&dir_m.0).unwrap();
+    let batches = capture_db(&master);
+
+    // The very first open of the replica is the only one allowed to write:
+    // it lays down the meta the master's batches will then overwrite.
+    let bootstrapped = {
+        let replica = Database::open_read_only(&dir_r.0).unwrap();
+        replica.commit_seq().unwrap()
+    };
+    {
+        let replica = Database::open_read_only(&dir_r.0).unwrap();
+        assert_eq!(
+            replica.commit_seq().unwrap(),
+            bootstrapped,
+            "a second open must not advance the sequence"
+        );
+    }
+
+    let plane = master.plane("startup").unwrap();
+    let first = {
+        let mut w = plane.write().unwrap();
+        let id = w.create_node(&["Doc"], Properties::new()).unwrap();
+        w.commit().unwrap();
+        id
+    };
+    {
+        let replica = Database::open_read_only(&dir_r.0).unwrap();
+        apply_all(&replica, &batches);
+        assert_eq!(replica.commit_seq().unwrap(), master.commit_seq().unwrap());
+    }
+
+    // Reopen twice more, then keep following: the replica's sequence must
+    // still be the master's before and after every further batch.
+    for _ in 0..2 {
+        let replica = Database::open_read_only(&dir_r.0).unwrap();
+        assert_eq!(
+            replica.commit_seq().unwrap(),
+            master.commit_seq().unwrap(),
+            "reopening the replica ran it ahead of the master"
+        );
+    }
+    let second = {
+        let mut w = plane.write().unwrap();
+        let id = w.create_node(&["Doc"], Properties::new()).unwrap();
+        w.commit().unwrap();
+        id
+    };
+    let replica = Database::open_read_only(&dir_r.0).unwrap();
+    apply_all(&replica, &batches);
+    assert_eq!(replica.commit_seq().unwrap(), master.commit_seq().unwrap());
+    let seen = replica.plane("startup").unwrap();
+    assert!(seen.node(first).unwrap().is_some());
+    assert!(seen.node(second).unwrap().is_some());
+}
+
+#[test]
+fn reopening_a_database_commits_nothing() {
+    let dir = Dir::new("reopen-plain");
+    let seq = {
+        let db = Database::open(&dir.0).unwrap();
+        let plane = db.plane("startup").unwrap();
+        let mut w = plane.write().unwrap();
+        w.create_node(&["Doc"], Properties::new()).unwrap();
+        w.commit().unwrap();
+        db.commit_seq().unwrap()
+    };
+    for _ in 0..3 {
+        let db = Database::open(&dir.0).unwrap();
+        assert_eq!(db.commit_seq().unwrap(), seq, "open is not a write");
+    }
+}
+
+#[test]
+fn a_follower_mirrors_replicated_batches_into_its_search_indexes() {
+    // A batch is raw KV, so a follower's HNSW/BM25 registries are not told
+    // about it the way a local commit's events tell the master's. They must
+    // still track it: declarations made after the follower opened, nodes
+    // created, deleted and re-texted afterwards — all searchable on the
+    // follower after the batch lands, not only after its next open.
+    use dr_strange_core::{Language, Metric, NodeId, PropDesc, PropValue};
+
+    fn doc(x: f32, y: f32, body: &str) -> Properties {
+        let mut p = Properties::new();
+        p.insert("emb".into(), PropDesc::new(PropValue::Vector(vec![x, y])));
+        p.insert("body".into(), PropDesc::new(PropValue::Str(body.into())));
+        p
+    }
+    let ids = |hits: Vec<(NodeId, f32)>| hits.into_iter().map(|(id, _)| id).collect::<Vec<_>>();
+
+    let dir_m = Dir::new("index-master");
+    let dir_r = Dir::new("index-replica");
+    let master = Database::open(&dir_m.0).unwrap();
+    let batches = capture_db(&master);
+    let replica = Database::open_read_only(&dir_r.0).unwrap();
+
+    // Declarations replicate: the follower builds the indexes it now knows.
+    let plane = master.plane("startup").unwrap();
+    plane
+        .ensure_vector_index("Doc", "emb", Metric::Cosine)
+        .unwrap();
+    plane
+        .ensure_keyword_index("Doc", "body", Language::English)
+        .unwrap();
+    apply_all(&replica, &batches);
+    let seen = replica.plane("startup").unwrap();
+    assert_eq!(
+        seen.vector_indexes().len(),
+        1,
+        "vector declaration mirrored"
+    );
+    assert_eq!(
+        seen.keyword_indexes().len(),
+        1,
+        "keyword declaration mirrored"
+    );
+
+    // Creates replicate into the indexes.
+    let (a, b) = {
+        let mut w = plane.write().unwrap();
+        let a = w
+            .create_node(&["Doc"], doc(1.0, 0.0, "graph databases"))
+            .unwrap();
+        let b = w
+            .create_node(&["Doc"], doc(0.0, 1.0, "vector search"))
+            .unwrap();
+        w.commit().unwrap();
+        (a, b)
+    };
+    apply_all(&replica, &batches);
+    let near_a = seen
+        .query()
+        .vector_top_k(Some("Doc"), "emb", vec![1.0, 0.0], Metric::Cosine, 5)
+        .ids()
+        .unwrap();
+    assert_eq!(near_a, vec![a, b], "the follower's vector index holds both");
+    assert_eq!(ids(seen.keyword_search("Doc", "body", "graph", 5)), vec![a]);
+
+    // A delete and a re-text replicate too.
+    {
+        let mut w = plane.write().unwrap();
+        w.delete_node(a).unwrap();
+        w.set_prop(
+            b,
+            "body",
+            PropDesc::new(PropValue::Str("graph everywhere".into())),
+        )
+        .unwrap();
+        w.commit().unwrap();
+    }
+    apply_all(&replica, &batches);
+    let near_a = seen
+        .query()
+        .vector_top_k(Some("Doc"), "emb", vec![1.0, 0.0], Metric::Cosine, 5)
+        .ids()
+        .unwrap();
+    assert_eq!(
+        near_a,
+        vec![b],
+        "the deleted node left the follower's vector index"
+    );
+    assert_eq!(
+        ids(seen.keyword_search("Doc", "body", "graph", 5)),
+        vec![b],
+        "the follower's keyword index scores the new text"
+    );
+    assert!(ids(seen.keyword_search("Doc", "body", "vector", 5)).is_empty());
 }

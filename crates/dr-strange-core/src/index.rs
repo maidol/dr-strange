@@ -53,11 +53,26 @@ struct Entry {
 #[derive(Default)]
 pub struct VectorRegistry {
     entries: AHashMap<IndexKey, Entry>,
+    /// Test-only fault seam: when set, the next `upsert` fails instead of
+    /// indexing. HNSW insertion has no failure of its own to provoke, and
+    /// the commit path's promise — a failed index event after a durable
+    /// commit is counted, logged and marks the registry diverged, never
+    /// turned into an `Err` — needs one to be tested through `commit()`.
+    #[cfg(test)]
+    fail_next_upsert: bool,
 }
 
 impl VectorRegistry {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Arm the fault seam: the next `upsert` returns an error (see the
+    /// field). Gated like its one caller, `api::index_divergence_tests`,
+    /// so the redb-only test build does not see an unused method.
+    #[cfg(all(test, feature = "native-backend"))]
+    pub(crate) fn fail_next_upsert(&mut self) {
+        self.fail_next_upsert = true;
     }
 
     /// Discards all indexes and rebuilds them from the declarations in `txn`
@@ -173,7 +188,11 @@ impl VectorRegistry {
                 },
             );
         }
-        Some(Self { entries })
+        // Built through `new` so the test-only fault seam (when compiled in)
+        // starts disarmed without a cfg-split initializer here.
+        let mut registry = Self::new();
+        registry.entries = entries;
+        Some(registry)
     }
 
     /// Declared indexes on `plane`, as `(label, property, metric)` — the
@@ -218,6 +237,12 @@ impl VectorRegistry {
         node: NodeId,
         vector: &[f32],
     ) -> Result<()> {
+        #[cfg(test)]
+        if std::mem::take(&mut self.fail_next_upsert) {
+            return Err(backend(std::io::Error::other(
+                "injected vector index fault",
+            )));
+        }
         if let Some(entry) = self
             .entries
             .get_mut(&(plane, label.to_string(), property.to_string()))
@@ -251,6 +276,14 @@ impl VectorRegistry {
             entry.index.remove(node.0)?;
         }
         Ok(())
+    }
+
+    /// Forget every index declared on `plane` (plane drop). The declarations
+    /// go with the plane's KV rows; this keeps the live registry — and the
+    /// sidecar saved from it — from carrying an index for a plane that no
+    /// longer exists.
+    pub fn drop_plane(&mut self, plane: PlaneId) {
+        self.entries.retain(|(p, _, _), _| *p != plane);
     }
 }
 

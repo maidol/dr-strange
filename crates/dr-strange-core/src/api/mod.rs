@@ -179,24 +179,38 @@ impl Engine {
     /// (native-only, via `begin_write_unchecked`) since restoring a snapshot
     /// is precisely how a `serve --follow` replica (arch/01 §9) bootstraps —
     /// the one write path a read-only-opened database is meant to accept.
+    ///
+    /// `f` also returns the sequence the write should land at (or above): on
+    /// the native engine the batch is committed at `max(next, that)`, so a
+    /// replica's store stands at its master's sequence once the restore is
+    /// in and the master's next live batch is accepted by `apply_replicated`
+    /// instead of being refused as a replay. The other engines have no
+    /// replication and allocate as usual.
     fn with_write_raw<T>(
         &self,
-        f: impl FnOnce(&mut dyn WriteTransaction) -> Result<T>,
+        f: impl FnOnce(&mut dyn WriteTransaction) -> Result<(T, u64)>,
     ) -> Result<T> {
-        macro_rules! run {
-            ($begin:expr) => {{
-                let mut txn = $begin?;
-                let out = f(&mut txn)?;
+        match self {
+            Engine::Memory(e) => {
+                let mut txn = e.begin_write()?;
+                let (out, _) = f(&mut txn)?;
                 txn.commit()?;
                 Ok(out)
-            }};
-        }
-        match self {
-            Engine::Memory(e) => run!(e.begin_write()),
+            }
             #[cfg(all(feature = "redb-backend", not(feature = "native-backend")))]
-            Engine::Redb(e) => run!(e.begin_write()),
+            Engine::Redb(e) => {
+                let mut txn = e.begin_write()?;
+                let (out, _) = f(&mut txn)?;
+                txn.commit()?;
+                Ok(out)
+            }
             #[cfg(feature = "native-backend")]
-            Engine::Native(e) => run!(e.begin_write_unchecked()),
+            Engine::Native(e) => {
+                let mut txn = e.begin_write_unchecked()?;
+                let (out, land_at) = f(&mut txn)?;
+                txn.commit_at_least(land_at)?;
+                Ok(out)
+            }
         }
     }
 
@@ -391,9 +405,11 @@ impl ChangeBuffer {
 pub struct Database {
     engine: Engine,
     /// In-memory vector indexes (arch/01 §5). On open, loaded from the `.hnsw`
-    /// sidecar when fresh, else rebuilt from the KV; read-locked during queries,
-    /// write-locked at commit to apply the coherence events a write transaction
-    /// buffered.
+    /// sidecar when fresh, else rebuilt from the KV; read-locked during queries
+    /// (for the whole terminal, so a plan sees one registry state), write-locked
+    /// at commit — after the KV is durable — to apply the coherence events a
+    /// write transaction buffered. A long query therefore delays a concurrent
+    /// commit's return, not its durability (arch/04 §3).
     indexes: RwLock<VectorRegistry>,
     /// In-memory BM25 keyword indexes (ROADMAP §2). Managed exactly like
     /// `indexes`: sidecar-loaded when fresh else rebuilt, write-locked at commit
@@ -408,6 +424,13 @@ pub struct Database {
     sidecar: Option<PathBuf>,
     /// The `.bm25` keyword sidecar beside the database, or `None` in-memory.
     keyword_sidecar: Option<PathBuf>,
+    /// Set when a vector-index event could not be applied after its commit
+    /// was already durable (see [`WriteTxn::commit`]). The KV is still the
+    /// truth; the in-memory HNSW registry is not, so it must not be persisted
+    /// as a sidecar stamped with the current sequence — a later open would
+    /// load the divergence back instead of rebuilding from the KV. Sticky
+    /// for the life of this handle; the next open rebuilds and clears it.
+    indexes_diverged: std::sync::atomic::AtomicBool,
     /// A commit-time change observer (ROADMAP §5), set by a host that wants a
     /// change feed (the web layer forwards it to WebSocket subscribers). `None`
     /// ⇒ commits skip building change sets entirely.
@@ -471,10 +494,25 @@ impl Database {
             Ok(seq) => seq,
             Err(_) => return, // no meta ⇒ nothing coherent to stamp
         };
-        if let Some(path) = self.sidecar.clone()
-            && let Err(e) = self.indexes().save_sidecar(&path, seq)
-        {
-            tracing::warn!(error = %e, path = %path.display(), "failed to write HNSW sidecar");
+        if let Some(path) = self.sidecar.clone() {
+            if self.indexes_diverged() {
+                // A diverged registry must not be persisted at this seq. The
+                // file on disk (if any) carries an older stamp and would be
+                // rejected anyway; removing it makes the rebuild certain
+                // rather than an accident of stamping.
+                tracing::warn!(
+                    path = %path.display(),
+                    "HNSW registry diverged from the KV after a commit; not saving the \
+                     sidecar so the next open rebuilds it"
+                );
+                if let Err(e) = std::fs::remove_file(&path)
+                    && e.kind() != std::io::ErrorKind::NotFound
+                {
+                    tracing::warn!(error = %e, path = %path.display(), "failed to remove stale HNSW sidecar");
+                }
+            } else if let Err(e) = self.indexes().save_sidecar(&path, seq) {
+                tracing::warn!(error = %e, path = %path.display(), "failed to write HNSW sidecar");
+            }
         }
         if let Some(path) = self.keyword_sidecar.clone()
             && let Err(e) = self.keywords().save_sidecar(&path, seq)
@@ -532,11 +570,85 @@ impl Database {
     /// which this replica may already have stamped entries at), so the cache
     /// is dropped after every applied batch: a replica's cache is warm between
     /// batches, never across one.
+    ///
+    /// The live HNSW and BM25 registries are mirrored too, from the raw ops:
+    /// the batch names the node rows it wrote, and their records after the
+    /// apply say what each declared index should hold for them. Without this
+    /// a follower's searches stayed frozen at whatever it rebuilt on open.
+    /// As on a local commit, a mirror failure after the durable apply is
+    /// logged and recorded as a divergence, never returned: the batch has
+    /// landed, and an `Err` here would make the follower resync for an
+    /// index the next open rebuilds anyway.
     #[cfg(feature = "native-backend")]
     pub fn apply_replicated(&self, batch: ReplicatedBatch) -> Result<()> {
+        let touched = ReplicatedIndexWork::from_ops(&batch.ops);
         self.engine.apply_replicated(batch)?;
         self.cache.invalidate_all();
+        if let Err(e) = self.mirror_replicated(touched) {
+            tracing::error!(
+                error = %e,
+                "mirroring a replicated batch into the index registries failed; \
+                 they have diverged from the KV and will be rebuilt on the next open"
+            );
+            self.note_index_divergence();
+        }
         Ok(())
+    }
+
+    /// Bring the live registries in step with a batch already applied to the
+    /// KV. A declaration change (rare) rebuilds both registries outright —
+    /// that is what the master did for the one it declared, and it keeps
+    /// the two databases' registries built the same way. Otherwise every
+    /// node row the batch wrote is re-derived: dropped from every index,
+    /// then re-inserted for each declared index its current record carries
+    /// the label and a fitting value for — the same rule `WriteTxn` applies
+    /// event by event, but computed from the landed state, which is the only
+    /// thing a raw batch tells us.
+    #[cfg(feature = "native-backend")]
+    fn mirror_replicated(&self, work: ReplicatedIndexWork) -> Result<()> {
+        if work.is_empty() {
+            return Ok(());
+        }
+        // Same lock order as `with_reader` (vectors, then keywords).
+        let mut vectors = self.indexes_mut();
+        let mut keywords = self.keywords_mut();
+        if work.declarations_changed {
+            return self.engine.with_read(|txn| {
+                vectors.rebuild_from(txn)?;
+                keywords.rebuild_from(txn)
+            });
+        }
+        for plane in &work.dropped_planes {
+            vectors.drop_plane(*plane);
+            keywords.drop_plane(*plane);
+        }
+        self.engine.with_read(|txn| {
+            for (plane, node) in &work.nodes {
+                vectors.remove_node(*node)?;
+                keywords.remove_node(*node);
+                let Some(record) = graph::get_node(txn, *plane, *node)? else {
+                    continue;
+                };
+                let has = |label: &str| record.labels.iter().any(|l| l == label);
+                for (label, property, _metric) in vectors.declared(*plane) {
+                    if has(&label)
+                        && let Some(PropValue::Vector(v)) =
+                            record.properties.get(&property).map(|p| &p.value)
+                    {
+                        vectors.upsert(*plane, &label, &property, *node, v)?;
+                    }
+                }
+                for (label, property, _language) in keywords.declared(*plane) {
+                    if has(&label)
+                        && let Some(PropValue::Str(text)) =
+                            record.properties.get(&property).map(|p| &p.value)
+                    {
+                        keywords.upsert(*plane, &label, &property, *node, text);
+                    }
+                }
+            }
+            Ok(())
+        })
     }
 
     /// Register a replication observer, invoked synchronously right after
@@ -577,27 +689,36 @@ impl Database {
         keyword_sidecar: Option<PathBuf>,
     ) -> Result<Self> {
         // The commit sequence of the data as last persisted — read BEFORE
-        // `graph::init`, since that runs a write transaction and every write
-        // bumps the sequence (arch/02 §3). This is the value the sidecar was
-        // stamped with on the previous drop. A brand-new database has no meta
-        // yet (read errors) and no sidecar to match anyway → `None`.
+        // any bootstrap write, since every write bumps the sequence (arch/02
+        // §3). This is the value the sidecar was stamped with on the previous
+        // drop. A brand-new database has no meta yet (read errors) and no
+        // sidecar to match anyway → `None`.
         let prior_seq = engine.with_read(|txn| graph::read_commit_seq(txn)).ok();
-        engine.with_write_bootstrap(|txn| graph::init(txn))?;
-        // Backfill: a database written before summary counters existed has
-        // no rows — count each such plane once, here, so every later
-        // dashboard read is a point lookup (arch/03 §5). A fresh database
-        // pays nothing (its planes are empty); an already-migrated one pays
-        // one row read per plane.
-        engine.with_write_bootstrap(|txn| {
-            for (plane, _name) in graph::list_planes(txn)? {
-                let key = crate::storage::keys::counters_key(plane);
-                if txn.get(TableId::Meta, &key)?.is_none() {
-                    let counted = catalog::count(txn, plane)?;
-                    txn.put(TableId::Meta, &key, &counted.encode())?;
+        // Open is idempotent: a database that is already initialised, at the
+        // current format, with a counters row per plane, is opened without a
+        // single write, so its commit sequence is exactly what the last
+        // writer left. That matters for a replica (`serve --follow`): its
+        // sequence is the master's, landed by `apply_replicated`, and a local
+        // bootstrap commit per open would run it ahead of the master's, so
+        // that the next replicated batch moves it backwards. Only what a
+        // read shows to be missing is written, in one commit.
+        let needs_bootstrap = engine.with_read(|txn| Self::needs_bootstrap(txn))?;
+        if needs_bootstrap {
+            engine.with_write_bootstrap(|txn| {
+                graph::init(txn)?;
+                // Backfill: a database written before summary counters
+                // existed has no rows — count each such plane once, here, so
+                // every later dashboard read is a point lookup (arch/03 §5).
+                for (plane, _name) in graph::list_planes(txn)? {
+                    let key = crate::storage::keys::counters_key(plane);
+                    if txn.get(TableId::Meta, &key)?.is_none() {
+                        let counted = catalog::count(txn, plane)?;
+                        txn.put(TableId::Meta, &key, &counted.encode())?;
+                    }
                 }
-            }
-            Ok(())
-        })?;
+                Ok(())
+            })?;
+        }
         // Vector indexes (arch/01 §5): load the HNSW sidecar when it is fresh
         // (its stamped commit sequence equals the data's), else rebuild from
         // the KV — the KV is always the source of truth, the sidecar only a
@@ -651,6 +772,7 @@ impl Database {
             cache: GraphCache::new(CACHE_BYTES),
             sidecar,
             keyword_sidecar,
+            indexes_diverged: std::sync::atomic::AtomicBool::new(false),
             change_observer: RwLock::new(None),
         })
     }
@@ -876,6 +998,52 @@ impl Database {
         Ok(lo)
     }
 
+    /// Whether opening this database has anything to write: no meta yet
+    /// (fresh), a format that is not the current one (bad magic and
+    /// unsupported versions included — `graph::init` is left to report
+    /// those from the write path), or a plane without a counters row. A
+    /// `false` means `init` commits nothing.
+    fn needs_bootstrap(txn: &dyn ReadTransaction) -> Result<bool> {
+        use crate::storage::keys;
+        if txn.get(TableId::Meta, keys::META_MAGIC)?.as_deref() != Some(keys::MAGIC) {
+            return Ok(true);
+        }
+        let current = graph::FORMAT_VERSION.to_be_bytes();
+        if txn
+            .get(TableId::Meta, keys::META_FORMAT_VERSION)?
+            .as_deref()
+            != Some(&current[..])
+        {
+            return Ok(true);
+        }
+        for (plane, _name) in graph::list_planes(txn)? {
+            if txn
+                .get(TableId::Meta, &keys::counters_key(plane))?
+                .is_none()
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// Whether a vector-index event failed to apply after its commit was
+    /// durable, leaving the in-memory HNSW registry behind the KV.
+    pub(crate) fn indexes_diverged(&self) -> bool {
+        self.indexes_diverged
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Record that the in-memory HNSW registry no longer mirrors the KV. From
+    /// here the registry is served as-is (it is still the better answer than
+    /// none) but never persisted: `save_sidecars` withholds the sidecar and
+    /// `snapshot` embeds a fresh rebuild, so no later open can inherit the
+    /// divergence.
+    pub(crate) fn note_index_divergence(&self) {
+        self.indexes_diverged
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+
     fn indexes(&self) -> std::sync::RwLockReadGuard<'_, VectorRegistry> {
         self.indexes
             .read()
@@ -935,10 +1103,32 @@ impl Database {
     /// already-absent plane id. Errors with `InvalidArgument` for
     /// `PlaneId::STARTUP`, which always exists.
     pub fn drop_plane(&self, id: PlaneId) -> Result<()> {
+        use crate::storage::keys;
         self.engine.with_write(|txn| {
             graph::drop_plane(txn, id)?;
-            txn.delete(TableId::Meta, &crate::storage::keys::counters_key(id))
+            // The plane's `meta` rows live under their own prefixes, not the
+            // plane key prefix the graph-level drop sweeps: the summary
+            // counters and the vector/keyword index declarations. Left
+            // behind, a declaration would resurrect an index on the next
+            // open — rebuilt over nothing, forever — and an id that is never
+            // reused would still be "indexed" in every catalog.
+            txn.delete(TableId::Meta, &keys::counters_key(id))?;
+            for (plane, label, property, _) in graph::list_vector_indexes(txn)? {
+                if plane == id {
+                    txn.delete(TableId::Meta, &keys::vindex_decl_key(id, &label, &property))?;
+                }
+            }
+            for (plane, label, property, _) in graph::list_keyword_indexes(txn)? {
+                if plane == id {
+                    txn.delete(TableId::Meta, &keys::kindex_decl_key(id, &label, &property))?;
+                }
+            }
+            Ok(())
         })?;
+        // The live registries mirror the declarations; plane ids are never
+        // reused, so a straggler could only waste memory and sidecar bytes.
+        self.indexes_mut().drop_plane(id);
+        self.keywords_mut().drop_plane(id);
         tracing::info!(id = id.0, "dropped plane");
         Ok(())
     }
@@ -2036,8 +2226,6 @@ impl WriteTxn<'_> {
         } = self;
         let index_events = events.len();
         // Commit the KV first; only then mirror into the in-memory indexes.
-        // If applying events somehow failed, the KV is still the source of
-        // truth and rebuild-from-KV on next open restores coherence.
         match inner {
             TxnInner::Memory(t) => (*t).commit()?,
             #[cfg(all(feature = "redb-backend", not(feature = "native-backend")))]
@@ -2045,10 +2233,29 @@ impl WriteTxn<'_> {
             #[cfg(feature = "native-backend")]
             TxnInner::Native(t) => (*t).commit()?,
         }
+        // From here the commit is durable and visible to other readers, so
+        // nothing below may turn into an `Err`: the caller would take a
+        // committed write for a failed one (and retry it, or roll back its
+        // own state). Every pending event is applied — one failure does not
+        // skip the rest — failures are logged, and a failed vector event
+        // marks the registry diverged so it is never persisted at this seq;
+        // the KV stays the source of truth and the next open rebuilds.
         if !events.is_empty() {
             let mut registry = db.indexes_mut();
+            let mut failed = 0usize;
             for event in events {
-                apply_index_event(&mut registry, plane, event)?;
+                if let Err(e) = apply_index_event(&mut registry, plane, event) {
+                    failed += 1;
+                    tracing::error!(
+                        plane = plane.0,
+                        error = %e,
+                        "vector index event failed after a durable commit; the HNSW \
+                         registry has diverged from the KV and will be rebuilt on the next open"
+                    );
+                }
+            }
+            if failed > 0 {
+                db.note_index_divergence();
             }
         }
         if !kw_events.is_empty() {
@@ -2195,6 +2402,60 @@ fn apply_kw_event(registry: &mut KeywordRegistry, plane: PlaneId, event: KwEvent
             node,
         } => registry.remove_one(plane, &label, &property, node),
         KwEvent::RemoveNode(node) => registry.remove_node(node),
+    }
+}
+
+/// What a replicated batch may have moved in the index registries, read off
+/// its raw ops before they are applied (`Database::apply_replicated`). Only
+/// key shapes are inspected — node rows by table, declarations and plane
+/// rows by prefix — never values: the landed KV is re-read for those.
+#[cfg(feature = "native-backend")]
+#[derive(Default)]
+struct ReplicatedIndexWork {
+    /// Node rows written or tombstoned, in batch order, deduplicated.
+    nodes: Vec<(PlaneId, NodeId)>,
+    /// A vector or keyword index was declared or dropped.
+    declarations_changed: bool,
+    /// Plane rows tombstoned (a `drop_plane` on the master).
+    dropped_planes: Vec<PlaneId>,
+}
+
+#[cfg(feature = "native-backend")]
+impl ReplicatedIndexWork {
+    fn from_ops(ops: &[crate::storage::engine::ReplicatedOp]) -> Self {
+        use crate::storage::keys;
+        let mut work = Self::default();
+        for op in ops {
+            match op.table {
+                TableId::Nodes => {
+                    // A node row with an unparseable key is not ours to mirror;
+                    // the engine already accepted it, so skipping is the only
+                    // option that keeps the apply infallible here.
+                    if let Ok(key) = keys::parse_node_key(&op.key)
+                        && !work.nodes.contains(&key)
+                    {
+                        work.nodes.push(key);
+                    }
+                }
+                TableId::Meta
+                    if op.key.starts_with(keys::VINDEX_PREFIX)
+                        || op.key.starts_with(keys::KINDEX_PREFIX) =>
+                {
+                    work.declarations_changed = true;
+                }
+                TableId::Planes if op.value.is_none() => {
+                    if let Ok(bytes) = <[u8; 4]>::try_from(op.key.as_slice()) {
+                        work.dropped_planes.push(PlaneId(u32::from_be_bytes(bytes)));
+                    }
+                }
+                _ => {}
+            }
+        }
+        work
+    }
+
+    fn is_empty(&self) -> bool {
+        self.nodes.is_empty() && !self.declarations_changed && self.dropped_planes.is_empty()
     }
 }
 
@@ -3662,5 +3923,157 @@ mod cache_stamp_tests {
             db.record_query("startup", "q", 10),
             Err(Error::ReadOnly(_))
         ));
+    }
+}
+
+#[cfg(all(test, feature = "native-backend"))]
+mod index_divergence_tests {
+    use super::*;
+    use crate::types::{PropDesc, PropValue};
+
+    fn embed(v: f32) -> Properties {
+        let mut p = Properties::new();
+        p.insert(
+            "embedding".into(),
+            PropDesc::new(PropValue::Vector(vec![v, 0.0])),
+        );
+        p
+    }
+
+    fn declared(db: &Database) -> Vec<(String, String, Metric)> {
+        db.plane("startup").unwrap().vector_indexes()
+    }
+
+    #[test]
+    fn a_failed_index_event_after_commit_is_absorbed_and_the_rest_still_apply() {
+        // The KV commit is durable before the registries are mirrored, so a
+        // failing vector event must not become an `Err` from `commit()` (the
+        // caller would take a landed write for a failed one), must not stop
+        // the remaining events, and must mark the registry diverged so it is
+        // never persisted at this seq.
+        use crate::text::Language;
+
+        let db = Database::in_memory().unwrap();
+        let plane = db.plane("startup").unwrap();
+        plane
+            .ensure_vector_index("Doc", "embedding", Metric::Cosine)
+            .unwrap();
+        plane
+            .ensure_keyword_index("Doc", "body", Language::English)
+            .unwrap();
+        fn doc(v: f32, body: &str) -> Properties {
+            let mut p = embed(v);
+            p.insert("body".into(), PropDesc::new(PropValue::Str(body.into())));
+            p
+        }
+
+        db.indexes_mut().fail_next_upsert();
+        let mut w = plane.write().unwrap();
+        let first = w.create_node(&["Doc"], doc(1.0, "graph one")).unwrap();
+        let second = w.create_node(&["Doc"], doc(0.9, "graph two")).unwrap();
+        w.commit()
+            .expect("a failed index event never fails a durable commit");
+
+        assert!(plane.node(first).unwrap().is_some() && plane.node(second).unwrap().is_some());
+        assert!(db.indexes_diverged(), "the failure was recorded");
+        // The first vector event was the one that failed; the second still
+        // applied, as did both keyword events.
+        let vector_hits = plane
+            .query()
+            .vector_top_k(Some("Doc"), "embedding", vec![1.0, 0.0], Metric::Cosine, 10)
+            .ids()
+            .unwrap();
+        assert_eq!(
+            vector_hits,
+            vec![second],
+            "later vector events were not skipped"
+        );
+        let mut keyword_hits: Vec<NodeId> = plane
+            .keyword_search("Doc", "body", "graph", 10)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        keyword_hits.sort();
+        assert_eq!(
+            keyword_hits,
+            vec![first, second],
+            "keyword events still applied"
+        );
+    }
+
+    #[test]
+    fn a_diverged_registry_is_never_persisted_and_the_next_open_rebuilds() {
+        // A vector-index event that fails after its commit is durable leaves
+        // the in-memory registry behind the KV. That registry must not reach
+        // the sidecar (or a snapshot) stamped with the current sequence, or
+        // the next open would load the divergence back instead of rebuilding.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("db");
+        {
+            let db = Database::open(&path).unwrap();
+            let plane = db.plane("startup").unwrap();
+            plane
+                .ensure_vector_index("Doc", "embedding", Metric::Cosine)
+                .unwrap();
+            let mut w = plane.write().unwrap();
+            w.create_node(&["Doc"], embed(1.0)).unwrap();
+            w.commit().unwrap();
+        }
+        assert!(
+            sidecar_path(&path).exists(),
+            "a clean close saves the sidecar"
+        );
+
+        let restored_path = dir.path().join("restored");
+        {
+            let db = Database::open(&path).unwrap();
+            let plane = db.plane("startup").unwrap();
+            let mut w = plane.write().unwrap();
+            w.create_node(&["Doc"], embed(0.9)).unwrap();
+            w.commit().unwrap();
+            // Stand in for the failed event: the live registry is now wrong
+            // (here: empty) and the database knows it.
+            *db.indexes_mut() = VectorRegistry::new();
+            db.note_index_divergence();
+            assert!(
+                declared(&db).is_empty(),
+                "the live registry really is diverged"
+            );
+
+            // A snapshot taken now embeds a rebuild from the KV, not the
+            // diverged registry: the restored database knows the index.
+            let mut bytes = Vec::new();
+            db.snapshot(&mut bytes).unwrap();
+            let restored = Database::open(&restored_path).unwrap();
+            restored.restore(bytes.as_slice()).unwrap();
+            assert_eq!(
+                declared(&restored).len(),
+                1,
+                "snapshot carried a fresh registry"
+            );
+        }
+        assert!(
+            !sidecar_path(&path).exists(),
+            "the diverged registry was not saved and the stale sidecar was removed"
+        );
+
+        {
+            let db = Database::open(&path).unwrap();
+            assert_eq!(
+                declared(&db).len(),
+                1,
+                "reopen rebuilt the index from the KV"
+            );
+            let hits = db
+                .plane("startup")
+                .unwrap()
+                .query()
+                .vector_top_k(Some("Doc"), "embedding", vec![1.0, 0.0], Metric::Cosine, 10)
+                .ids()
+                .unwrap();
+            assert_eq!(hits.len(), 2, "both committed nodes are indexed again");
+            assert!(!db.indexes_diverged(), "a fresh open starts clean");
+        }
+        assert!(sidecar_path(&path).exists(), "a clean handle saves again");
     }
 }

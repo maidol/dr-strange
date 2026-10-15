@@ -20,9 +20,28 @@ let paper = db.create_plane("paper-2406.01234", props! {
 })?;
 ```
 
+Opening is not a write. `Database::open` (and `open_read_only`) commits
+only what a read shows to be missing — the initial meta of a fresh database,
+a format migration, a counters row for a plane that predates them — and
+otherwise leaves the commit sequence exactly where the last writer put it.
+A replica (`serve --follow`) depends on this: its sequence is the master's,
+landed by `apply_replicated`, and a bootstrap commit per open would run it
+ahead so that the next replicated batch moved it backwards. `apply_replicated`
+also keeps the replica's live vector and keyword registries in step: the raw
+batch names the node rows it wrote, and each is re-derived from its landed
+record against the plane's declarations (a declaration change rebuilds both
+registries; a plane tombstone drops theirs). A follower's searches therefore
+track the master batch by batch rather than freezing at what it rebuilt on
+open.
+
 `Database` root carries only plane lifecycle (`create_plane`, `drop_plane`,
 `planes()`), cross-plane operations (`copy`, `move_`, stack reads), global
 catalog roll-up, and `stats()`. Everything else hangs off a `PlaneHandle`.
+`drop_plane` removes everything the plane owns, including the `meta` rows
+that sit outside its key prefix — the summary counters and the vector and
+keyword index declarations — and the matching live registry entries, so a
+dropped plane's indexes are neither listed nor rebuilt on the next open.
+Plane ids are never reused.
 
 ## 2. Writes
 
@@ -59,8 +78,12 @@ txn.commit()?;
   cache in invalidate-only mode) used by CLI import and MCP ingest tools.
   Node/edge id allocation is already batched under the hood (arch/01 §2) —
   `bulk()` mainly needs to batch *commits*, not ids.
-- Vector index management: `paper.ensure_vector_index("Person", "embedding",
-  Metric::Cosine)?` — declarative, idempotent, per plane.
+- Index management: `paper.ensure_vector_index("Person", "embedding",
+  Metric::Cosine)?` and `paper.ensure_keyword_index("Doc", "body",
+  Language::English)?` — declarative, idempotent, per plane. Only the
+  declaration is durable (a `meta` row); the index itself is rebuilt from the
+  KV on open unless a sidecar stamped with the current commit sequence is
+  found (01 §5).
 - The change feed (`Database::on_change`) is bounded at the source: a write
   txn tracks at most 256 distinct entities; a mutation of a further entity
   is not buffered, only noted, and the delivered `ChangeSet` is flagged
@@ -68,6 +91,16 @@ txn.commit()?;
   changed more than it can see. Entities within the cap still collapse
   (create-then-delete cancels). A bulk load of a million nodes buffers 256
   tuples, not a million.
+- `commit()` returns `Ok` exactly when the KV commit is durable. Everything
+  it does afterwards — mirroring buffered events into the in-memory vector
+  and keyword registries, building the change-feed set — is applied in full,
+  one failure never skipping the rest, and can only log: an `Err` here would
+  make the caller take a committed write for a failed one. A vector-index
+  event that fails marks the registry *diverged*: it keeps serving (still
+  the better answer than none) but is never persisted at the current
+  sequence — `save_sidecars` withholds the `.hnsw` sidecar and removes the
+  stale one, `snapshot` embeds a fresh rebuild — so the next open rebuilds
+  from the KV, which is always the truth.
 
 ## 3. Reads and queries
 
@@ -117,6 +150,19 @@ indexed one. Live reads have a narrower hazard: a writer publishes its KV
 commit before it updates the registries, so an index can briefly name a node
 the snapshot cannot decode; the reader drops such ids rather than surfacing a
 phantom row (02 §3).
+
+Registry locking, by design: a query terminal holds *read* guards on both
+registries for its whole run, so a plan's vector and keyword sources see one
+consistent registry state and the executor never re-locks mid-pipeline. A
+commit takes the *write* guards only after its KV commit is durable and only
+for the index mirroring, so a long-running query delays a concurrent
+writer's `commit()` return — never its durability, never its visibility to
+other readers — by at most that query's runtime; `std::sync::RwLock` on
+Linux does not prefer writers, so a steady stream of overlapping queries can
+extend that wait. Per-query registry snapshots (an `Arc` swapped at commit)
+would remove the wait at the cost of cloning or copy-on-write for every
+index event; not taken until a workload shows the wait, since queries
+already carry a deadline (`with_deadline`) that bounds it.
 
 Row values: `Row` exposes bound variables by name → `NodeRef`/`EdgeRef` with
 `id()`, `labels()`, `prop(key)`, `prop_desc(key)` (value + description),
