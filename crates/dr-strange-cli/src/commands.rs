@@ -558,11 +558,13 @@ fn write_agent_configs(
         )?;
     }
 
-    // Beyond Claude Code's `.mcp.json`, only add a file for an agent whose
-    // own marker (a directory it creates, or a config file it already owns)
-    // is already present — writing one for a tool nobody here uses would
-    // just be repo clutter.
-    if probe_and_write_cursor(dir, addr, token)? {
+    // Beyond Claude Code's `.mcp.json`, add a file for an agent this
+    // repository already carries a marker for, or that this machine has
+    // installed — a first `init` in a fresh checkout has only the second
+    // signal, and configuring the agent the user actually runs is the whole
+    // point of the command. A tool neither signal names is left alone rather
+    // than cluttering the repository.
+    if probe_and_write_cursor(dir, addr, token, user_has(".cursor"))? {
         writeln!(
             out,
             "  + Cursor: wrote {}",
@@ -571,7 +573,11 @@ fn write_agent_configs(
     }
     // The terminal clients' files predate `init` and are probably committed:
     // they get an environment reference, never the token itself.
-    if probe_and_write_opencode(dir, addr)? {
+    if probe_and_write_opencode(
+        dir,
+        addr,
+        user_has(".config/opencode") || user_has(".opencode.json"),
+    )? {
         writeln!(
             out,
             "  + OpenCode: wrote {} (no token inside it — export {CODEX_TOKEN_ENV_VAR}={token} \
@@ -579,7 +585,7 @@ fn write_agent_configs(
             dir.join(".opencode.json").display()
         )?;
     }
-    if probe_and_write_gemini(dir, addr)? {
+    if probe_and_write_gemini(dir, addr, user_has(".gemini"))? {
         writeln!(
             out,
             "  + Gemini CLI: wrote {} (no token inside it — export {CODEX_TOKEN_ENV_VAR}={token} \
@@ -587,7 +593,7 @@ fn write_agent_configs(
             dir.join(".gemini/settings.json").display()
         )?;
     }
-    if probe_and_write_codex(dir, addr)? {
+    if probe_and_write_codex(dir, addr, user_has(".codex"))? {
         writeln!(
             out,
             "  + Codex CLI: wrote {} (no token inside it — Codex reads the bearer from its \
@@ -979,7 +985,20 @@ fn upsert_json_mcp_entry(path: &Path, top_key: &str, entry_name: &str, entry: Va
         .ok_or_else(|| anyhow!("{}'s '{top_key}' key is not an object", path.display()))?;
     servers.insert(entry_name.to_string(), entry);
     let pretty = serde_json::to_string_pretty(&root)?;
+    create_parent(path)?;
     std::fs::write(path, pretty + "\n").with_context(|| format!("writing {}", path.display()))
+}
+
+/// Creates `path`'s parent directory. A machine-level probe fires in
+/// checkouts where the agent's own directory does not exist yet, so the
+/// marker can no longer be relied on to have made it.
+#[cfg(feature = "digest")]
+fn create_parent(path: &Path) -> Result<()> {
+    match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display())),
+        _ => Ok(()),
+    }
 }
 
 /// Upserts the `"drsg-watch"` entry under `dir`'s `.mcp.json`'s
@@ -1001,12 +1020,18 @@ fn write_mcp_json_entry(dir: &Path, addr: &std::net::SocketAddr, token: &str) ->
 }
 
 /// Cursor reads the identical shape from its own path instead of
-/// `.mcp.json`. Only written when `.cursor/` already exists — that's
+/// `.mcp.json`. Written when `.cursor/` is in the repository or `user`
+/// says this machine has Cursor — that's
 /// Cursor's own marker, created the first time someone opens this repo in
 /// it, regardless of MCP use.
 #[cfg(feature = "digest")]
-fn probe_and_write_cursor(dir: &Path, addr: &std::net::SocketAddr, token: &str) -> Result<bool> {
-    if !dir.join(".cursor").is_dir() {
+fn probe_and_write_cursor(
+    dir: &Path,
+    addr: &std::net::SocketAddr,
+    token: &str,
+    user: bool,
+) -> Result<bool> {
+    if !dir.join(".cursor").is_dir() && !user {
         return Ok(false);
     }
     upsert_json_mcp_entry(
@@ -1022,18 +1047,18 @@ fn probe_and_write_cursor(dir: &Path, addr: &std::net::SocketAddr, token: &str) 
     Ok(true)
 }
 
-/// OpenCode has no directory marker of its own (it's terminal-first, no
-/// rules/config dir it creates unprompted) — the only honest signal that
-/// this repo's contributors already use it is a pre-existing
-/// `.opencode.json`, so that's the marker, not something created fresh.
+/// OpenCode creates no marker directory inside a repository (it's
+/// terminal-first), so the repository signal is a pre-existing
+/// `.opencode.json`; the machine signal its caller passes is `~/.opencode.json`
+/// or an XDG `~/.config/opencode`.
 ///
-/// That file existed before `init` and is very likely committed, so no
-/// token goes into it: OpenCode substitutes `{env:NAME}` in its config, and
+/// A pre-existing file was there before `init` and is very likely committed,
+/// so no token goes into it: OpenCode substitutes `{env:NAME}` in its config, and
 /// the entry names [`CODEX_TOKEN_ENV_VAR`] the way the Codex entry does.
 /// The caller exports it before launching `opencode` here.
 #[cfg(feature = "digest")]
-fn probe_and_write_opencode(dir: &Path, addr: &std::net::SocketAddr) -> Result<bool> {
-    if !dir.join(".opencode.json").is_file() {
+fn probe_and_write_opencode(dir: &Path, addr: &std::net::SocketAddr, user: bool) -> Result<bool> {
+    if !dir.join(".opencode.json").is_file() && !user {
         return Ok(false);
     }
     upsert_json_mcp_entry(
@@ -1051,16 +1076,16 @@ fn probe_and_write_opencode(dir: &Path, addr: &std::net::SocketAddr) -> Result<b
 }
 
 /// Gemini CLI shares Claude Code's `mcpServers` key but names the URL field
-/// `httpUrl` instead of `url`, and has no `type` discriminator. Written
-/// only when `.gemini/` already exists.
+/// `httpUrl` instead of `url`, and has no `type` discriminator. Written when
+/// `.gemini/` is in the repository or `user` says this machine has it.
 ///
 /// `.gemini/settings.json` is a project's shared Gemini settings, committed
 /// as often as not, so the token is not written into it: Gemini CLI resolves
 /// `$NAME` in its settings from the environment, and the entry names
 /// [`CODEX_TOKEN_ENV_VAR`] as the Codex and OpenCode entries do.
 #[cfg(feature = "digest")]
-fn probe_and_write_gemini(dir: &Path, addr: &std::net::SocketAddr) -> Result<bool> {
-    if !dir.join(".gemini").is_dir() {
+fn probe_and_write_gemini(dir: &Path, addr: &std::net::SocketAddr, user: bool) -> Result<bool> {
+    if !dir.join(".gemini").is_dir() && !user {
         return Ok(false);
     }
     upsert_json_mcp_entry(
@@ -1087,14 +1112,15 @@ const CODEX_TOKEN_ENV_VAR: &str = "DRSG_TOKEN";
 /// Codex CLI's project-scoped MCP config, `.codex/config.toml`, is TOML —
 /// parsed and re-emitted as a generic table (like the JSON upserts above,
 /// this preserves every other *key* but not hand-written comments or
-/// formatting). Written only when `.codex/` already exists. Note this does
+/// formatting). Written when `.codex/` is in the repository or `user` says
+/// this machine has it. Note this does
 /// **not** set `trust_level = "trusted"`: Codex treats that as a deliberate
 /// user decision and ignores project-scoped MCP config for untrusted
 /// projects, so the caller still has to trust the project themselves.
 #[cfg(feature = "digest")]
-fn probe_and_write_codex(dir: &Path, addr: &std::net::SocketAddr) -> Result<bool> {
+fn probe_and_write_codex(dir: &Path, addr: &std::net::SocketAddr, user: bool) -> Result<bool> {
     let path = dir.join(".codex").join("config.toml");
-    if !dir.join(".codex").is_dir() {
+    if !dir.join(".codex").is_dir() && !user {
         return Ok(false);
     }
     let mut root: toml::Value = match std::fs::read_to_string(&path) {
@@ -1126,6 +1152,7 @@ fn probe_and_write_codex(dir: &Path, addr: &std::net::SocketAddr) -> Result<bool
     );
     mcp_servers.insert(MCP_SERVER_NAME.to_string(), toml::Value::Table(entry));
     let rendered = toml::to_string_pretty(&root)?;
+    create_parent(&path)?;
     std::fs::write(&path, rendered).with_context(|| format!("writing {}", path.display()))?;
     Ok(true)
 }
@@ -1169,7 +1196,19 @@ fn default_hooks_dir() -> Result<std::path::PathBuf> {
 /// Whether this user runs Claude Code at all: its per-user directory exists.
 #[cfg(feature = "digest")]
 fn user_has_claude_code() -> bool {
-    std::env::home_dir().is_some_and(|h| h.join(".claude").is_dir())
+    user_has(".claude")
+}
+
+/// Whether `$HOME` carries `marker` — the signal that this machine has the
+/// tool at all, as distinct from this repository already carrying its config.
+///
+/// Each agent probe accepts either signal. The repository marker says "the
+/// people working here use it"; this one says "whoever ran `init` does", and
+/// a first `init` in a fresh checkout has only the second to go on. `exists`
+/// rather than `is_dir` because one of the markers is a file.
+#[cfg(feature = "digest")]
+fn user_has(marker: &str) -> bool {
+    std::env::home_dir().is_some_and(|h| h.join(marker).exists())
 }
 
 /// Claude Code's hooks, in the repository's `.claude/settings.local.json` —
@@ -5632,10 +5671,10 @@ mod tests {
         let dir = scratch_dir("no-markers");
         let addr: std::net::SocketAddr = "127.0.0.1:12345".parse().unwrap();
 
-        assert!(!probe_and_write_cursor(&dir, &addr, "tok").unwrap());
-        assert!(!probe_and_write_opencode(&dir, &addr).unwrap());
-        assert!(!probe_and_write_gemini(&dir, &addr).unwrap());
-        assert!(!probe_and_write_codex(&dir, &addr).unwrap());
+        assert!(!probe_and_write_cursor(&dir, &addr, "tok", false).unwrap());
+        assert!(!probe_and_write_opencode(&dir, &addr, false).unwrap());
+        assert!(!probe_and_write_gemini(&dir, &addr, false).unwrap());
+        assert!(!probe_and_write_codex(&dir, &addr, false).unwrap());
         assert!(!dir.join(".cursor").exists());
         assert!(!dir.join(".opencode.json").exists());
         assert!(!dir.join(".gemini").exists());
@@ -5872,7 +5911,7 @@ mod tests {
         std::fs::create_dir_all(dir.join(".cursor")).unwrap();
         let addr: std::net::SocketAddr = "127.0.0.1:12345".parse().unwrap();
 
-        assert!(probe_and_write_cursor(&dir, &addr, "tok").unwrap());
+        assert!(probe_and_write_cursor(&dir, &addr, "tok", false).unwrap());
         let v: Value =
             serde_json::from_str(&std::fs::read_to_string(dir.join(".cursor/mcp.json")).unwrap())
                 .unwrap();
@@ -5889,6 +5928,56 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The machine signal alone configures an agent, which is what a first
+    /// `init` in a fresh checkout has to go on: no repository marker exists
+    /// yet, and the user still wants the agent they run to be set up.
+    #[cfg(feature = "digest")]
+    #[test]
+    fn the_machine_signal_alone_configures_each_agent() {
+        let dir = scratch_dir("machine-signal");
+        std::fs::create_dir_all(&dir).unwrap();
+        let addr: std::net::SocketAddr = "127.0.0.1:12345".parse().unwrap();
+
+        assert!(probe_and_write_cursor(&dir, &addr, "tok", true).unwrap());
+        assert!(probe_and_write_opencode(&dir, &addr, true).unwrap());
+        assert!(probe_and_write_gemini(&dir, &addr, true).unwrap());
+        assert!(probe_and_write_codex(&dir, &addr, true).unwrap());
+
+        for rel in [
+            ".cursor/mcp.json",
+            ".opencode.json",
+            ".gemini/settings.json",
+        ] {
+            let v: Value =
+                serde_json::from_str(&std::fs::read_to_string(dir.join(rel)).unwrap()).unwrap();
+            let entry = v
+                .get("mcpServers")
+                .or_else(|| v.get("mcp"))
+                .and_then(|m| m.get(MCP_SERVER_NAME))
+                .unwrap_or_else(|| panic!("{rel} has no {MCP_SERVER_NAME} entry"));
+            let url = entry.get("url").or_else(|| entry.get("httpUrl")).unwrap();
+            assert_eq!(url, "http://127.0.0.1:12345/mcp", "{rel}");
+        }
+        let codex = std::fs::read_to_string(dir.join(".codex/config.toml")).unwrap();
+        assert!(codex.contains("127.0.0.1:12345"), "{codex}");
+
+        // Only Cursor's file carries the literal token, and only that one is
+        // in the .gitignore block — the terminal clients name the env var.
+        let cursor = std::fs::read_to_string(dir.join(".cursor/mcp.json")).unwrap();
+        assert!(cursor.contains("Bearer tok"));
+        for rel in [
+            ".opencode.json",
+            ".gemini/settings.json",
+            ".codex/config.toml",
+        ] {
+            let written = std::fs::read_to_string(dir.join(rel)).unwrap();
+            assert!(!written.contains("Bearer tok"), "{rel} leaked the token");
+            assert!(written.contains(CODEX_TOKEN_ENV_VAR), "{rel}");
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[cfg(feature = "digest")]
     #[test]
     fn opencode_probe_only_fires_on_an_existing_opencode_json() {
@@ -5896,12 +5985,12 @@ mod tests {
         let addr: std::net::SocketAddr = "127.0.0.1:12345".parse().unwrap();
 
         // No pre-existing `.opencode.json`: nothing is created.
-        assert!(!probe_and_write_opencode(&dir, &addr).unwrap());
+        assert!(!probe_and_write_opencode(&dir, &addr, false).unwrap());
         assert!(!dir.join(".opencode.json").exists());
 
         // Once it exists, the entry is upserted under `mcp`, not `mcpServers`.
         std::fs::write(dir.join(".opencode.json"), "{}").unwrap();
-        assert!(probe_and_write_opencode(&dir, &addr).unwrap());
+        assert!(probe_and_write_opencode(&dir, &addr, false).unwrap());
         let v: Value =
             serde_json::from_str(&std::fs::read_to_string(dir.join(".opencode.json")).unwrap())
                 .unwrap();
@@ -5924,7 +6013,7 @@ mod tests {
         std::fs::create_dir_all(dir.join(".gemini")).unwrap();
         let addr: std::net::SocketAddr = "127.0.0.1:12345".parse().unwrap();
 
-        assert!(probe_and_write_gemini(&dir, &addr).unwrap());
+        assert!(probe_and_write_gemini(&dir, &addr, false).unwrap());
         let v: Value = serde_json::from_str(
             &std::fs::read_to_string(dir.join(".gemini/settings.json")).unwrap(),
         )
@@ -5954,7 +6043,7 @@ mod tests {
         std::fs::create_dir_all(dir.join(".codex")).unwrap();
         let addr: std::net::SocketAddr = "127.0.0.1:12345".parse().unwrap();
 
-        assert!(probe_and_write_codex(&dir, &addr).unwrap());
+        assert!(probe_and_write_codex(&dir, &addr, false).unwrap());
         let rendered = std::fs::read_to_string(dir.join(".codex/config.toml")).unwrap();
         let v: toml::Value = rendered.parse().unwrap();
         assert_eq!(

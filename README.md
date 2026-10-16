@@ -218,9 +218,10 @@ the working directory into a plane named after it, spawns `serve watch`
 detached on a freshly-picked address and bearer token, and writes
 `.mcp.json` — Claude Code's own convention, also read as-is by GitHub
 Copilot. It then writes a matching MCP config for Cursor, OpenCode, Gemini
-CLI, or Codex CLI, but only for a tool whose own marker (a directory it
-creates, or a config file it already owns) is already present in the
-repository.
+CLI, or Codex CLI — for a tool this repository already carries a marker for
+(a directory it creates, or a config file it already owns), or that your
+machine has installed, so a first run in a fresh checkout still configures the
+agent you actually use. A tool neither signal names is left alone.
 
 ```console
 $ drsg init
