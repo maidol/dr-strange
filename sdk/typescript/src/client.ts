@@ -193,6 +193,19 @@ export interface Subscription {
 }
 
 /** One endpoint's worth of config plus the JSON-RPC call primitive. */
+/**
+ * `url` without its trailing slashes.
+ *
+ * A scan rather than `/\/+$/`: that pattern backtracks quadratically on a
+ * string of many slashes, and the base URL comes from whoever constructs the
+ * client. Walking back from the end is linear and says the same thing.
+ */
+function stripTrailingSlashes(url: string): string {
+  let end = url.length;
+  while (end > 0 && url.charCodeAt(end - 1) === 47 /* "/" */) end--;
+  return url.slice(0, end);
+}
+
 export class Client {
   readonly baseUrl: string;
   readonly token?: string;
@@ -201,7 +214,7 @@ export class Client {
   private _id = 0;
 
   constructor(opts: DrsgOptions = {}) {
-    this.baseUrl = (opts.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
+    this.baseUrl = stripTrailingSlashes(opts.baseUrl ?? DEFAULT_BASE_URL);
     this.token = opts.token ?? envToken();
     this.timeoutMs = opts.timeoutMs ?? 30_000;
     const f = opts.fetch ?? (globalThis as { fetch?: FetchLike }).fetch;
