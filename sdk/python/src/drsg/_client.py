@@ -156,6 +156,19 @@ class _Client:
             ws.close()
 
 
+def _tls_context() -> ssl.SSLContext:
+    """A client TLS context that refuses anything below TLS 1.2.
+
+    `create_default_context` verifies certificates and hostnames, but leaves
+    the floor wherever the platform's OpenSSL puts it, which on older builds
+    still admits TLS 1.0 and 1.1. Both are withdrawn (RFC 8996), and this
+    client talks to a server we also ship, so there is nothing old to humour.
+    """
+    ctx = ssl.create_default_context()
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    return ctx
+
+
 class _WebSocket:
     """A minimal RFC 6455 text-frame client — just enough to consume the change
     feed (ROADMAP §5). Zero dependencies: raw stdlib sockets, since Python has no
@@ -187,11 +200,7 @@ class _WebSocket:
         authz = f"Authorization: Bearer {token}\r\n" if token else ""
 
         raw = socket.create_connection((host, port), timeout=timeout)
-        sock = (
-            ssl.create_default_context().wrap_socket(raw, server_hostname=host)
-            if secure
-            else raw
-        )
+        sock = _tls_context().wrap_socket(raw, server_hostname=host) if secure else raw
         key = base64.b64encode(os.urandom(16)).decode()
         handshake = (
             "GET /ws HTTP/1.1\r\n"
