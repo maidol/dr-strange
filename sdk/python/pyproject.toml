@@ -18,6 +18,10 @@ packages = ["src/drsg"]
 artifacts = ["src/drsg/py.typed"]
 
 [dependency-groups]
+# Not raised past PYSEC-2026-1845 (pytest's tmpdir handling, fixed in 9.0.3)
+# on purpose: pytest 9 needs Python 3.10, this package supports 3.9, and the
+# advisory is a local issue in a test runner that is never installed by a
+# consumer of this SDK. Revisit when `requires-python` moves to 3.10.
 dev = ["pytest>=8"]
 
 [tool.pytest.ini_options]
