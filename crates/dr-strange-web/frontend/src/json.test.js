@@ -35,12 +35,13 @@ describe('highlighting JSON', () => {
 
   test('the shape survives: what it highlights still parses', () => {
     const value = { a: [1, 2, { b: 'c' }], d: null }
+    // Decoded in one pass, mirroring the single-pass escape in `json.js`:
+    // unescaping entity by entity would turn `&amp;lt;` into `<`, which is
+    // the bug the production escape is written to avoid.
+    const ENTITIES = { '&amp;': '&', '&lt;': '<', '&gt;': '>', '&quot;': '"' }
     const plain = highlightJson(value)
-      .replace(/<[^>]+>/g, '')
-      .replace(/&quot;/g, '"')
-      .replace(/&amp;/g, '&')
-      .replace(/&lt;/g, '<')
-      .replace(/&gt;/g, '>')
+      .replace(/<\/?span[^>]*>/g, '')
+      .replace(/&(?:amp|lt|gt|quot);/g, (e) => ENTITIES[e])
     expect(JSON.parse(plain)).toEqual(value)
   })
 })
