@@ -4,7 +4,7 @@
 
 <h1 align="center">Dr Strange</h1>
 
-<p align="center"><em>一个 AI 原生的嵌入式图数据库，使用 Rust 编写。</em></p>
+<p align="center"><em>让你的编码智能体去问图，而不是翻文件。</em></p>
 
 <p align="center">
   <a href="https://github.com/wangyingsm/dr-strange/actions/workflows/ci.yml"><img src="https://github.com/wangyingsm/dr-strange/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
@@ -14,15 +14,55 @@
   <a href="LICENSE-MIT"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue" alt="License: MIT OR Apache-2.0"></a>
 </p>
 
+<p align="center">
+  <em>一条命令配好你正在用的那个智能体：</em><br>
+  <img src="https://img.shields.io/badge/Claude%20Code-ready-6d28d9" alt="Claude Code">
+  <img src="https://img.shields.io/badge/GitHub%20Copilot-ready-6d28d9" alt="GitHub Copilot">
+  <img src="https://img.shields.io/badge/Cursor-ready-6d28d9" alt="Cursor">
+  <img src="https://img.shields.io/badge/Codex%20CLI-ready-6d28d9" alt="Codex CLI">
+  <img src="https://img.shields.io/badge/Gemini%20CLI-ready-6d28d9" alt="Gemini CLI">
+  <img src="https://img.shields.io/badge/OpenCode-ready-6d28d9" alt="OpenCode">
+</p>
+
 <p align="center"><a href="README.md">English</a> · <strong>简体中文</strong></p>
 
 📖 **Dr Strange 手册** —— 完整教程与指南：
 [English](https://wangyingsm.github.io/dr-strange/en/book/introduction.html) ·
 [中文](https://wangyingsm.github.io/dr-strange/zh/book/introduction.html)。
 
+## 回答一个代码问题要花多少
+
+问智能体一句*改这里会影响什么*。没有图，它只能 grep 一个名字，再把匹配到的文件
+逐个读完——在本仓库上，这是中位 **53,720** 个 token。同一个问题交给已消化的图，是
+**925** 个：一次 `context` 调用，返回已解析的调用方与被调用方，不打开任何文件。
+
+| | |
+|---|---|
+| 消化本仓库——9.7 万行，13 个解析插件 | **3.1 秒**，全程无模型参与 |
+| 回答"谁调用了它、改动会波及到哪里" | token 用量为 **1/61**（中位，n=12） |
+
+两个数字都是实测而非估算，且都可复现。方法、脚本，以及为使第二个数字站得住脚而
+设的排除项，都记在
+[BENCHMARKS.md](BENCHMARKS.md#answering-a-code-question--graph-vs-text-search)
+里——若把 `new` 这样的名字也算进去，比值会变成 2,600 倍，所以通用名称的符号被排除
+在样本之外。
+
+## 三条命令
+
+```console
+$ curl -fsSL https://raw.githubusercontent.com/wangyingsm/dr-strange/master/scripts/install.sh | sh
+$ drsg plugin install          # 从官方目录中挑选解析器；0 表示全选
+$ drsg init                    # 消化、起服务，并写入你的智能体会读的 MCP 配置
+```
+
+`drsg init` 消化当前工作区，起一个把每次提交折叠进图的 watcher，写入 `.mcp.json`，
+并为本仓库或本机留有痕迹的那些智能体写好对应配置。此后你的智能体便拥有 `context`、
+`impact`、`trace`、`wire`、`grep` 等一组工具，每个都只需一次往返。以上全程不涉及
+任何模型。
+
 ## 简介
 
-Dr Strange 是一个从设计之初便面向 AI 工作负载的图数据库：向量嵌入（embedding）
+它同时也是一个图数据库——一个从设计之初便面向 AI 工作负载的图数据库：向量嵌入（embedding）
 是一等的值类型，相似度检索与图遍历并行工作，引擎直接向智能体（agent）暴露契合其
 需求的原语——自然语言查询、实时变更流与时间旅行——而非在传统图数据库之上事后叠加
 AI 功能。
@@ -31,8 +71,8 @@ AI 功能。
 运维独立的服务进程。但与 SQLite 不同，它同样可以**对外服务**——`drsg serve` 提供
 JSON-RPC 2.0 接口、浏览器控制台以及 WebSocket 变更流，并配有六种语言的客户端 SDK。
 
-它同时也是一台代码智能引擎。沙箱化的 wasm 解析器插件将一个代码仓库图化为符号与
-已解析关系——官方支持八种语言，全程无需模型参与——`drsg serve watch` 让这张图随
+上面那套代码智能正建立在同一台引擎之上。沙箱化的 wasm 解析器插件将一个代码仓库
+图化为符号与已解析关系——官方共十三个插件，其中八个是语言，全程无需模型参与——`drsg serve watch` 让这张图随
 每一次提交保持同步，一组紧凑的智能体工具则以单次往返回答结构性问题（谁调用了它、
 改动它会影响什么、X 如何到达 Y）。参见[面向编码智能体](#面向编码智能体)。
 
@@ -322,8 +362,9 @@ mounts may come from /home/me/repos
 
 **插件。** `drsg plugin install` 可以安装任何解析器插件——官方插件的名字、本地
 `.wasm` 文件或 URL——安装时验证其为合法组件并固定其 SHA-256，之后每次加载都会
-复查。官方目录覆盖八种语言（Rust、Go、TypeScript/JavaScript、Python、Java、C、
-web（HTML/CSS）、TOML）外加读取仓库历史的 `git`，它以 `catalog.json` 的形式放在
+复查。官方目录共十三个插件——八种语言（Rust、Go、TypeScript/JavaScript、Python、Java、
+C、Kotlin、C#）、三种标记与配置格式（web（HTML/CSS）、TOML、XML），外加读取依赖
+清单的 `deps` 与读取仓库历史的 `git`——它以 `catalog.json` 的形式放在
 [dr-strange-extension](https://github.com/wangyingsm/dr-strange-extension)
 仓库（[最新发布](https://github.com/wangyingsm/dr-strange-extension/releases)），
 而非编译进这个二进制——因此插件发布不需要 drsg 发布。每个条目固定制品哈希并在下载

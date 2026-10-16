@@ -4,7 +4,7 @@
 
 <h1 align="center">Dr Strange</h1>
 
-<p align="center"><em>An AI-native embedded graph database, written in Rust.</em></p>
+<p align="center"><em>Your coding agent asks the graph, not the files.</em></p>
 
 <p align="center">
   <a href="https://github.com/wangyingsm/dr-strange/actions/workflows/ci.yml"><img src="https://github.com/wangyingsm/dr-strange/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
@@ -14,15 +14,57 @@
   <a href="LICENSE-MIT"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue" alt="License: MIT OR Apache-2.0"></a>
 </p>
 
+<p align="center">
+  <em>One command configures the agent you already use:</em><br>
+  <img src="https://img.shields.io/badge/Claude%20Code-ready-6d28d9" alt="Claude Code">
+  <img src="https://img.shields.io/badge/GitHub%20Copilot-ready-6d28d9" alt="GitHub Copilot">
+  <img src="https://img.shields.io/badge/Cursor-ready-6d28d9" alt="Cursor">
+  <img src="https://img.shields.io/badge/Codex%20CLI-ready-6d28d9" alt="Codex CLI">
+  <img src="https://img.shields.io/badge/Gemini%20CLI-ready-6d28d9" alt="Gemini CLI">
+  <img src="https://img.shields.io/badge/OpenCode-ready-6d28d9" alt="OpenCode">
+</p>
+
 <p align="center"><strong>English</strong> · <a href="README.zh.md">简体中文</a></p>
 
 📖 **The Dr Strange Book** — the full tutorial and guide:
 [English](https://wangyingsm.github.io/dr-strange/en/book/introduction.html) ·
 [中文](https://wangyingsm.github.io/dr-strange/zh/book/introduction.html).
 
+## What it costs to answer a code question
+
+Ask an agent *what breaks if I change this*. Without a graph it greps a name
+and reads whatever files matched — on this repository, a median of **53,720
+tokens**. The same question against a digested graph is **925**: one `context`
+call that returns the resolved callers and callees, with no file opened.
+
+| | |
+|---|---|
+| Digest this repository — 97k lines, 13 parser plugins | **3.1 s**, no model in the loop |
+| Answer "who calls this, and what would a change reach?" | **61× fewer tokens** (median, n=12) |
+
+Both are measured rather than estimated, and both are reproducible.
+[BENCHMARKS.md](BENCHMARKS.md#answering-a-code-question--graph-vs-text-search)
+gives the method, the script, and the exclusions that keep the second number
+honest — grepping a bare `new` would have made it 2,600×, which is why symbols
+with generic names are left out.
+
+## Three commands
+
+```console
+$ curl -fsSL https://raw.githubusercontent.com/wangyingsm/dr-strange/master/scripts/install.sh | sh
+$ drsg plugin install          # choose parsers from the official catalog; 0 = all
+$ drsg init                    # digest, serve, and write the MCP config your agent reads
+```
+
+`drsg init` digests the working tree, spawns a watcher that folds every commit
+into the graph, and writes `.mcp.json` plus a matching config for whichever of
+the agents above this repository or your machine shows a sign of. Your agent then has
+`context`, `impact`, `trace`, `wire`, `grep` and the rest — one round trip each.
+No model is involved in any of it.
+
 ## Introduction
 
-Dr Strange is a graph database designed from the outset for AI workloads:
+It is also a graph database — one designed from the outset for AI workloads:
 embeddings are a first-class value type, similarity search operates alongside
 graph traversal, and the engine exposes primitives suited to agents — natural
 language queries, a live change feed, and time-travel — rather than adding AI
@@ -33,9 +75,9 @@ single on-disk database, with no server to operate. Unlike SQLite, it can also
 **serve** — `drsg serve` exposes a JSON-RPC 2.0 API, a browser dashboard, and a
 WebSocket change feed, with client SDKs in six languages.
 
-It is also a code-intelligence engine. Sandboxed wasm parser plugins digest a
-repository into a graph of symbols and resolved relationships — eight official
-languages, no model in the loop. `drsg serve watch` keeps that graph synced to
+The code intelligence above is built on the same engine. Sandboxed wasm parser
+plugins digest a repository into a graph of symbols and resolved relationships
+— thirteen official plugins, eight of them languages, no model in the loop. `drsg serve watch` keeps that graph synced to
 every commit, and a compact set of agent tools answers structural questions —
 who calls this, what breaks if it changes, how does X reach Y — in one round
 trip. See [For coding agents](#for-coding-agents).
@@ -80,7 +122,7 @@ agent's long-term memory, Dr Strange aims to be the single store for all of it.
 | **Natural-language query** | ask in plain language → plan → run |
 | **Time-travel** | read the graph *as of* a past commit or timestamp |
 | **Change feed** | subscribe to a plane and receive mutations live |
-| **Code digestion** | sandboxed wasm parser plugins turn a repository into a resolved call graph — 8 official languages, an SDK for community parsers |
+| **Code digestion** | sandboxed wasm parser plugins turn a repository into a resolved call graph — thirteen official plugins, an SDK for community parsers |
 | **Commit-synced watch** | `serve watch` folds every commit into the plane, convergent with a full re-digest |
 | **Agent tools** | `context` · `search` · `describe` · `grep` · `trace` · `impact` · `fathom` · `snippet` · `history` · `recall` · `wire` — one round trip each |
 | **Backup / restore** | consistent, id-faithful whole-database snapshots |
@@ -423,9 +465,11 @@ opened by this process, and a plane in it names a tree `grep` would then read.
 
 **Plugins.** `drsg plugin install` installs any parser plugin — an official
 plugin's name, a local `.wasm` file, or a URL — validating it as a component
-and pinning its SHA-256, re-checked at every load. The official catalog covers
-eight languages (Rust, Go, TypeScript/JavaScript, Python, Java, C, web
-(HTML/CSS), TOML) plus `git` for a repository's history, and lives as
+and pinning its SHA-256, re-checked at every load. The official catalog holds
+thirteen plugins — eight languages (Rust, Go, TypeScript/JavaScript, Python,
+Java, C, Kotlin, C#), three markup and config formats (web (HTML/CSS), TOML,
+XML), plus `deps` for dependency manifests and `git` for a repository's
+history — and lives as
 `catalog.json` in the
 [dr-strange-extension](https://github.com/wangyingsm/dr-strange-extension)
 repository rather than compiled into this binary — so a plugin release needs
