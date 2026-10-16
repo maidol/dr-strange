@@ -38,6 +38,79 @@ Cross-engine comparison of dr-strange against an embedded graph DB (Kùzu), the 
 - **Maturity differs.** dr-strange is a young from-scratch engine; the others are mature. Where we're slower (e.g. bulk load vs columnar `COPY`), that's the point of measuring — it says where to invest next.
 - **Synthetic data.** A uniform-random graph with average degree ~5; real workloads have skew/hubs that stress traversal differently.
 
+## Digesting a repository
+
+What it costs to turn a working tree into a graph, measured on this repository
+(97,308 lines of code, 355 files read after `.gitignore` withheld 377 of 732),
+with all thirteen catalog plugins installed:
+
+| | |
+|---|---|
+| Wall time | **3.1 s** (3.06 / 3.13 / 3.27 over three runs) |
+| Result | 10,237 nodes, 44,927 edges, plus 1,440 history nodes |
+| On disk | 27 MB |
+| Model calls | none |
+
+Measured with `drsg digest <path> --apply --code-only` on an i9-14900HX,
+unpinned, each run against a **fresh** database — which is what a first run
+costs. Re-digesting into a database whose planes were dropped is slower (10–15 s
+here) because the dropped space is not reclaimed until compaction; that is a
+different measurement, not this one.
+
+`--code-only` matters: without it the run also routes files no plugin claims
+(`.json`, `.sh`, `.svelte`, …) to the document path, which needs an LLM key and
+fails without one. Nothing in the figures above involves a model.
+
+## Answering a code question — graph vs text search
+
+The question is the one an agent asks before changing anything: *what calls this
+symbol, and what would a change reach?* Two ways to answer it about the same
+symbols, counted in tiktoken `cl100k_base` tokens, not estimated:
+
+- **graph** — one `drsg context <key>` call.
+- **text** — `rg -nw <name>`, then reading every file that matched, which is
+  what an agent without a graph must do to see the call sites.
+
+| | graph | text |
+|---|---|---|
+| Median tokens | **925** | **53,720** |
+| Median ratio | — | **61× more** |
+| Range over the sample | — | 7× – 473× |
+
+n = 12, selected by rule rather than by hand: functions this repository defines
+with a recorded in-degree of 5–40 — the ones someone might actually be about to
+change — sorted by key and sampled at a fixed stride. Reproduce with
+`benchmarks/token_cost.py`, which prints the per-symbol table.
+
+### Why the sample excludes some symbols
+
+Three exclusions, each of which *lowers* the ratio, and without which this
+number would be dishonest:
+
+- **Test functions.** Nobody asks what calls a test.
+- **Language-generic names** — `new`, `open`, `run` and the like. The text
+  baseline would have to grep that bare word; `new` matches 206 files here, and
+  the ratio for such symbols reaches 2,600×. No developer searches that way, so
+  counting it would be measuring a straw man.
+- **Names under five characters**, for the same reason.
+
+What remains is the case text search handles *well*: a distinctive identifier,
+grepped with word boundaries, finding every real call site plus some noise.
+
+### Caveats
+
+- **The two answers are not identical.** `context` returns resolved edges — it
+  knows which `parse` is meant; grep returns every lexical match and leaves the
+  reading to the agent. Where a call is unresolved (dynamic dispatch, untyped
+  receivers) the graph omits it and says so, while grep would have found the
+  text. The comparison is of cost to reach a usable answer, not of recall.
+- **Whole-file reads are the charitable baseline.** An agent that reads only
+  the matching hunk would spend less; one that reads a file per hit and then
+  follows callers would spend more. Reading each matched file once is the
+  middle of that range.
+- **One repository.** A codebase with shorter files, or one where names are
+  less distinctive, will give a different ratio. Run the script on yours.
+
 ## Takeaways for dr-strange
 
 - **Strong — low-latency point & graph queries.** The embedded KV design gives microsecond point lookups and single-digit-µs 1-hop expansion, on par with SQLite and orders of magnitude below the query-engine round-trips of Kùzu/Neo4j. That's the embedded, agent-in-the-loop sweet spot dr-strange is built for.
