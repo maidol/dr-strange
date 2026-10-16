@@ -41,10 +41,11 @@ jobs:
             build-mode: none
           - language: python
             build-mode: none
-          # Rust is compiled, so the database comes from a real build; `none`
-          # is not offered for every compiled language.
+          # Rust is compiled, but its extractor is buildless: CodeQL refuses
+          # `autobuild` for it outright ("Rust does not support the autobuild
+          # build mode"), so nothing here compiles the workspace.
           - language: rust
-            build-mode: autobuild
+            build-mode: none
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Initialize
