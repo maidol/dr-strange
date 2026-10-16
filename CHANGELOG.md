@@ -4,6 +4,43 @@ All notable changes to Dr Strange are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.20.6] - 2026-10-16
+
+Documentation and the SDK manifests only; no shipped crate changed, so the
+binary behaves exactly as 2.20.5's.
+
+### Changed
+
+- **The six SDKs state the workspace version.** They carried `2.0.0a0` and
+  `2.0.0-alpha` while the workspace was at 2.20.x; each manifest — Python's
+  `pyproject.toml` and `__version__`, TypeScript's `package.json`, Java's
+  `pom.xml` — now says the version this repository is at, and `sdk/README.md`
+  says so too. None of them is published to a registry, so a checkout is still
+  how you get one; what changes is that the number no longer contradicts the
+  tree it came from.
+- **The SDK chapter says how to depend on each client.** It said only "vendor
+  the directory or depend on it in place". It now gives the step per language —
+  `pip install …/sdk/python`, a `replace` directive for Go, `./mvnw install`
+  then `io.github.wangyingsm:drsg:<version>`, `bun run build` then a `file:`
+  dependency — and states plainly that no registry release exists yet.
+
+### Fixed
+
+- **The contract documents describe what ships.** `arch/04`, `arch/05`,
+  `arch/06`, `arch/08` and the book's MCP, web-UI, getting-started, appendix
+  and query-language chapters record the behaviour the hardening releases
+  actually landed: what an MCP tool confirms before it destroys, that `grep`
+  and `snippet` read only inside the tree they belong to and how that differs
+  between the stdio and shared servers, that every tool call carries one
+  deadline covering its wait and its run, which bind addresses require a token
+  and where that token goes, that a wrong token more than five times earns a
+  `429` with a doubling `Retry-After`, which provider a request may name, and
+  why `digest.run` over JSON-RPC is deliberately *not* confirm-gated the way
+  the MCP tool is.
+- **Both editions of the book say the same thing.** Four passages had reached
+  the English edition only; the Chinese ones are written, each against the code
+  it describes rather than translated on faith.
+
 ## [2.20.5] - 2026-10-16
 
 Like 2.20.4, nothing under `crates/` that ships changed: `release.yml` builds
