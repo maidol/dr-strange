@@ -16,6 +16,7 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.net.http.HttpTimeoutException;
 import java.net.http.WebSocket;
 import java.time.Duration;
 import java.util.Set;
@@ -385,7 +386,12 @@ public class Client implements AutoCloseable {
                     .join();
         } catch (CompletionException e) {
             Throwable cause = e.getCause() != null ? e.getCause() : e;
-            String why = cause instanceof TimeoutException
+            // Two timers are armed with the configured duration — this
+            // client's own handshake deadline and the JDK's connectTimeout —
+            // and either may win. Both mean the same thing, so both name the
+            // duration rather than leaving the JDK's bare "request timed
+            // out" to reach a caller who set it.
+            String why = cause instanceof TimeoutException || cause instanceof HttpTimeoutException
                     ? "no handshake within " + timeout
                     : cause.getMessage();
             throw new DrsgException(-32000, "websocket connect failed: " + why, null);
