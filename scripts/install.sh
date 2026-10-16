@@ -16,13 +16,34 @@
 #   --version <vX.Y.Z|latest>   release to install        (DRSG_VERSION,      default latest)
 #   --dir <path>                installation directory    (DRSG_INSTALL_DIR,  default ~/.local/bin)
 #   --insecure-skip-checksum    install without verifying (DRSG_INSECURE_SKIP_CHECKSUM=1)
+#   --mirror <base-url>         download from a mirror    (DRSG_MIRROR)
+#   --no-mirror                 never fall back to one    (DRSG_NO_MIRROR=1)
 set -eu
 
 REPO=wangyingsm/dr-strange
+
+# A mirror holding the same layout as the GitHub release:
+# <base>/<version>/<archive> and <base>/<version>/<archive>.sha256.
+#
+# Releases are served from GitHub, which is reachable but slow from some
+# networks — roughly 100 KB/s from mainland China, where a first install can
+# look like a hang. When a mirror is configured, GitHub is still tried first
+# and the mirror takes over only if that is failing or crawling; the checksum
+# is verified either way, so a mirror cannot substitute a different binary.
+#
+# Empty until a mirror is published; set DRSG_MIRROR to use one today.
+DEFAULT_MIRROR=''
+
+# Below this many bytes/second, sustained for SLOW_AFTER seconds, a transfer
+# is treated as not going to finish and the mirror is tried instead.
+SLOW_BELOW_BPS=51200
+SLOW_AFTER=20
 BIN=${DRSG_INSTALL_BIN:-drsg}
 VERSION=${DRSG_VERSION:-latest}
 INSTALL_DIR=${DRSG_INSTALL_DIR:-}
 SKIP_CHECKSUM=${DRSG_INSECURE_SKIP_CHECKSUM:-}
+MIRROR=${DRSG_MIRROR:-$DEFAULT_MIRROR}
+NO_MIRROR=${DRSG_NO_MIRROR:-}
 
 info() { printf '%s\n' "$*" >&2; }
 err() {
@@ -42,6 +63,9 @@ Dr Strange installer for Linux and macOS.
   --dir <path>                installation directory  (DRSG_INSTALL_DIR, default ~/.local/bin)
   --insecure-skip-checksum    install without verifying the archive's SHA-256
                               (DRSG_INSECURE_SKIP_CHECKSUM=1) — insecure, as it says
+  --mirror <base-url>         download from this mirror when GitHub is slow or
+                              unreachable (DRSG_MIRROR); the SHA-256 is still verified
+  --no-mirror                 never fall back to a mirror (DRSG_NO_MIRROR=1)
 EOF
     exit 0
 }
@@ -52,6 +76,8 @@ while [ $# -gt 0 ]; do
         --version) VERSION=${2:?--version needs a value} && shift 2 ;;
         --dir) INSTALL_DIR=${2:?--dir needs a value} && shift 2 ;;
         --insecure-skip-checksum) SKIP_CHECKSUM=1 && shift ;;
+        --mirror) MIRROR=${2:?--mirror needs a value} && shift 2 ;;
+        --no-mirror) NO_MIRROR=1 && shift ;;
         -h | --help) usage ;;
         *) err "unknown option: $1 (try --help)" ;;
     esac
@@ -66,12 +92,43 @@ esac
 have curl || have wget || err 'neither curl nor wget is available'
 have tar || err 'tar is required to unpack the release archive'
 
-# fetch <url> <destination>; "-" writes to stdout.
+# fetch <url> <destination> [guard]; "-" writes to stdout.
+#
+# With a non-empty third argument, a transfer crawling below SLOW_BELOW_BPS is
+# given up on so the caller can try elsewhere. Only the caller knows whether
+# there is an "elsewhere": without a mirror, a slow download still beats no
+# download, so the guard is off and curl is left to finish however long it
+# takes.
 fetch() {
     if have curl; then
-        curl -fsSL "$1" -o "$2"
+        if [ -n "${3:-}" ]; then
+            curl -fsSL --speed-limit "$SLOW_BELOW_BPS" --speed-time "$SLOW_AFTER" "$1" -o "$2"
+        else
+            curl -fsSL "$1" -o "$2"
+        fi
+    elif [ -n "${3:-}" ]; then
+        wget -q --read-timeout="$SLOW_AFTER" --tries=1 -O "$2" "$1"
     else
         wget -qO "$2" "$1"
+    fi
+}
+
+# fetch_release <archive-name> <destination>: GitHub first, then the mirror.
+#
+# The mirror is a fallback, never the default — it is one more party to trust
+# for availability, and the checksum step that follows is what makes trusting
+# it for *content* unnecessary.
+fetch_release() {
+    if [ -n "$MIRROR" ] && [ -z "$NO_MIRROR" ]; then
+        # A failure here is a step on the way, not the outcome: its message
+        # would say "404" where the install is about to succeed.
+        if fetch "$base/$1" "$2" guard 2>/dev/null; then
+            return 0
+        fi
+        info "  GitHub was unreachable or too slow — retrying from $MIRROR"
+        fetch "$MIRROR/$VERSION/$1" "$2"
+    else
+        fetch "$base/$1" "$2"
     fi
 }
 
@@ -91,7 +148,7 @@ if [ "$VERSION" = latest ]; then
     # Resolve through the /releases/latest redirect rather than the API, which
     # is rate-limited for unauthenticated callers.
     if have curl; then
-        located=$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
+        located=$(curl -fsSLI -o /dev/null -w '%{url_effective}' --max-time 15 \
             "https://github.com/$REPO/releases/latest")
     else
         located=$(wget -qS --spider "https://github.com/$REPO/releases/latest" 2>&1 |
@@ -100,7 +157,9 @@ if [ "$VERSION" = latest ]; then
     VERSION=${located##*/}
     case $VERSION in
         v*) ;;
-        *) err "could not determine the latest release; pass --version vX.Y.Z" ;;
+        # The redirect is GitHub's alone: a mirror holds release files, not
+        # the "what is latest" answer, so there is nothing to fall back to.
+        *) err "could not determine the latest release; pass --version vX.Y.Z (or --mirror with an explicit --version)" ;;
     esac
 fi
 
@@ -120,7 +179,7 @@ trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 
 info "Dr Strange $VERSION ($target)"
 info "  downloading $archive"
-fetch "$base/$archive" "$tmp/$archive" ||
+fetch_release "$archive" "$tmp/$archive" ||
     err "download failed — $VERSION may not ship an asset for $target: $base/$archive"
 
 # Anything but empty or 0 opts out; the check is otherwise mandatory.
@@ -129,7 +188,7 @@ case ${SKIP_CHECKSUM:-0} in
     *) verify= ;;
 esac
 if [ -n "$verify" ]; then
-    fetch "$base/$archive.sha256" "$tmp/$archive.sha256" 2>/dev/null ||
+    fetch_release "$archive.sha256" "$tmp/$archive.sha256" 2>/dev/null ||
         err "no checksum published for $archive ($base/$archive.sha256) — refusing to install an unverified archive (pass --insecure-skip-checksum to override)"
     expected=$(cut -d' ' -f1 <"$tmp/$archive.sha256")
     case $expected in

@@ -27,13 +27,28 @@
 .PARAMETER InsecureSkipChecksum
   Install even when the archive's .sha256 sidecar is missing or does not
   match. Insecure, as the name says; DRSG_INSECURE_SKIP_CHECKSUM=1 is the same.
+
+.PARAMETER Mirror
+  Base URL of a mirror holding the same release layout, used when GitHub is
+  unreachable or too slow. The SHA-256 is verified whichever source answers.
+  DRSG_MIRROR is the same.
+
+.PARAMETER NoMirror
+  Never fall back to a mirror. DRSG_NO_MIRROR=1 is the same.
 #>
 param(
     [ValidateSet('drsg', 'drsg-mcp', 'all')]
     [string]$Bin = $(if ($env:DRSG_INSTALL_BIN) { $env:DRSG_INSTALL_BIN } else { 'drsg' }),
     [string]$Version = $(if ($env:DRSG_VERSION) { $env:DRSG_VERSION } else { 'latest' }),
     [string]$Dir = $(if ($env:DRSG_INSTALL_DIR) { $env:DRSG_INSTALL_DIR } else { "$env:LOCALAPPDATA\Programs\drsg\bin" }),
-    [switch]$InsecureSkipChecksum = $($env:DRSG_INSECURE_SKIP_CHECKSUM -and $env:DRSG_INSECURE_SKIP_CHECKSUM -ne '0')
+    [switch]$InsecureSkipChecksum = $($env:DRSG_INSECURE_SKIP_CHECKSUM -and $env:DRSG_INSECURE_SKIP_CHECKSUM -ne '0'),
+    # A mirror holding the same layout as the GitHub release:
+    # <base>/<version>/<archive>. Releases are served from GitHub, which is
+    # reachable but slow from some networks; GitHub is still tried first and
+    # the checksum is verified either way, so a mirror cannot substitute a
+    # different binary. Empty until a mirror is published.
+    [string]$Mirror = $(if ($env:DRSG_MIRROR) { $env:DRSG_MIRROR } else { '' }),
+    [switch]$NoMirror = $($env:DRSG_NO_MIRROR -and $env:DRSG_NO_MIRROR -ne '0')
 )
 
 $ErrorActionPreference = 'Stop'
@@ -42,6 +57,20 @@ $ProgressPreference = 'SilentlyContinue'  # a visible progress bar makes Invoke-
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
 $repo = 'wangyingsm/dr-strange'
+
+# Fetch a release file: GitHub first, then the mirror if one is configured.
+# The mirror is a fallback, never the default — the checksum step that follows
+# is what makes trusting it for content unnecessary.
+function Get-ReleaseFile($name, $destination) {
+    try {
+        Invoke-WebRequest -Uri "$base/$name" -OutFile $destination -UseBasicParsing
+        return
+    } catch {
+        if (-not $Mirror -or $NoMirror) { throw }
+    }
+    Write-Host "  GitHub was unreachable or too slow - retrying from $Mirror"
+    Invoke-WebRequest -Uri "$Mirror/$Version/$name" -OutFile $destination -UseBasicParsing
+}
 $bins = if ($Bin -eq 'all') { @('drsg', 'drsg-mcp') } else { @($Bin) }
 
 # --- target triple ----------------------------------------------------------
@@ -70,7 +99,7 @@ try {
     Write-Host "Dr Strange $Version ($target)"
     Write-Host "  downloading $archive"
     try {
-        Invoke-WebRequest -Uri "$base/$archive" -OutFile (Join-Path $tmp $archive) -UseBasicParsing
+        Get-ReleaseFile $archive (Join-Path $tmp $archive)
     } catch {
         throw "download failed - $Version may not ship an asset for ${target}: $base/$archive"
     }
@@ -80,7 +109,7 @@ try {
     } else {
         $sumFile = Join-Path $tmp "$archive.sha256"
         try {
-            Invoke-WebRequest -Uri "$base/$archive.sha256" -OutFile $sumFile -UseBasicParsing
+            Get-ReleaseFile "$archive.sha256" $sumFile
         } catch {
             throw "no checksum published for $archive ($base/$archive.sha256) - refusing to install an unverified archive (pass -InsecureSkipChecksum to override)"
         }

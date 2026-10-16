@@ -117,6 +117,13 @@ PS> & ([scriptblock]::Create((irm https://raw.githubusercontent.com/wangyingsm/d
 指定安装目录（默认 `~/.local/bin`，Windows 上为 `%LOCALAPPDATA%\Programs\drsg\bin`）。
 在 Windows 上对应的参数为 `-Bin`、`-Version` 与 `-Dir`。
 
+**网络较慢时。** 发行版由 GitHub 提供，而从某些网络访问它虽然通，却慢到看起来像
+卡死。`--mirror <base-url>`（`DRSG_MIRROR`，Windows 上为 `-Mirror`）用于指定一个
+布局相同的镜像：仍然先试 GitHub，当这一次尝试失败或龟速时，再由镜像接手。无论由
+哪一方应答，SHA-256 都会被校验——因此镜像只被信任其可用性，而从不被信任其内容。
+`--no-mirror` 可禁止这一回退。未配置镜像时行为不变：慢的下载会被留着跑完，而不是
+被中断。
+
 **保持最新。** `drsg update` 会向 GitHub 询问最新发行版本；若当前构建落后，就把
 进程交给上面那个安装脚本——并指向 `drsg` 自身所在的目录，因此升级替换的是你
 `PATH` 上的那一份，而不是在别处多出第二份。同一目录下的 `drsg-mcp` 会随之一并

@@ -133,6 +133,15 @@ PS> & ([scriptblock]::Create((irm https://raw.githubusercontent.com/wangyingsm/d
 `%LOCALAPPDATA%\Programs\drsg\bin` on Windows). On Windows the flags are
 `-Bin`, `-Version`, and `-Dir`.
 
+**On a slow network.** GitHub serves the releases, and from some networks that
+is reachable but slow enough to look like a hang. `--mirror <base-url>`
+(`DRSG_MIRROR`, `-Mirror` on Windows) names a mirror holding the same layout:
+GitHub is tried first, and the mirror takes over if that attempt is failing or
+crawling. The SHA-256 is verified whichever source answers, so a mirror is
+trusted for availability and never for content. `--no-mirror` forbids the
+fallback. Without a mirror configured nothing changes — a slow download is
+left to finish rather than abandoned.
+
 **Staying current.** `drsg update` asks GitHub for the latest release and, if
 this build is behind it, hands the process over to the installer above —
 pointed at the directory `drsg` is running from, so the copy on your `PATH` is
