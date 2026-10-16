@@ -6,6 +6,11 @@
 *.drsg.jsonl
 *.drsg.hnsw
 *.drsg.bm25
+# Both sidecars are written to a `.tmp` beside themselves and renamed into
+# place, so a running server leaves one in the tree for a moment — long
+# enough for `git status` to show it, and for `git add -A` to take it.
+*.drsg.hnsw.tmp
+*.drsg.bm25.tmp
 
 # Runtime logs from dr-strange-log (DRSG_LOG_DIR, default ./logs) — the server
 # writes ./logs relative to its cwd, so ignore the dir anywhere.
