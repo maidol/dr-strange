@@ -192,6 +192,13 @@ gate-features:
 gate-frontend:
     cd crates/dr-strange-web/frontend && bun install --frozen-lockfile && bun run lint && bun run build && bun test
 
+# Lay out the six npm packages for a release, ready to publish; see
+# packaging/npm/README.md. `src` is a directory of release archives already
+# downloaded (`gh release download v<version> --dir <src>`), which is both
+# faster and the only workable path on a slow link to GitHub.
+npm-build version src:
+    python3 packaging/npm/build.py {{version}} --from {{src}}
+
 # CI's `docs` job: both editions of the book must build, every local
 # reference must name a file, and the two READMEs must match in shape.
 gate-docs:

@@ -1,0 +1,3 @@
+# Built packages: ~290 MB of prebuilt binaries, rebuilt from a release by
+# `just npm-build` whenever they are needed.
+dist/
