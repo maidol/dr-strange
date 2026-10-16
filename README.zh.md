@@ -86,16 +86,16 @@ JSON-RPC 2.0 接口、浏览器控制台以及 WebSocket 变更流，并配有�
 
 <table>
   <tr>
-    <td width="50%"><a href="screenshots/00.jpg"><img src="screenshots/00.jpg" width="100%" alt="Dashboard —— 实时统计、平面与已安装的解析器插件"></a><br><sub><b>Dashboard</b> —— 实时统计、平面管理与已安装的解析器插件</sub></td>
-    <td width="50%"><a href="screenshots/01.jpg"><img src="screenshots/01.jpg" width="100%" alt="Explore —— 交互式图谱与节点详情"></a><br><sub><b>Explore</b> —— 交互式图谱与节点详情</sub></td>
+    <td width="50%"><a href="screenshots/00.png"><img src="screenshots/00.png" width="100%" alt="Dashboard —— 实时统计、平面与已安装的解析器插件"></a><br><sub><b>Dashboard</b> —— 跨每个平面的实时统计、平面管理，以及已安装的解析器插件</sub></td>
+    <td width="50%"><a href="screenshots/01.png"><img src="screenshots/01.png" width="100%" alt="Explore —— 交互式图谱与节点详情"></a><br><sub><b>Explore</b> —— 此刻的图，并打开其中一个节点：文件、行号、签名，以及断言它的插件</sub></td>
   </tr>
   <tr>
-    <td width="50%"><a href="screenshots/02.jpg"><img src="screenshots/02.jpg" width="100%" alt="Algorithms —— 图上的最短路径"></a><br><sub><b>Algorithms</b> —— PageRank、社区发现与最短路径</sub></td>
-    <td width="50%"><a href="screenshots/03.jpg"><img src="screenshots/03.jpg" width="100%" alt="AIgest —— LLM 文档摄取，抽取实体与关系"></a><br><sub><b>AIgest</b> —— LLM 文档摄取，抽取实体与关系</sub></td>
+    <td width="50%"><a href="screenshots/04.png"><img src="screenshots/04.png" width="100%" alt="Algorithms —— 两个符号之间的最短路径"></a><br><sub><b>最短路径</b> —— 两个符号之间的路线、跳数与代价，画在它所穿过的邻域之上</sub></td>
+    <td width="50%"><a href="screenshots/05.png"><img src="screenshots/05.png" width="100%" alt="Hybrid —— 融合向量、关键词与图邻近度的检索"></a><br><sub><b>混合检索</b> —— 融合向量 + 关键词 + 图邻近度，每条命中都标明各通道的贡献</sub></td>
   </tr>
   <tr>
-    <td width="50%"><a href="screenshots/04.jpg"><img src="screenshots/04.jpg" width="100%" alt="Explore —— 已图化代码平面上一个模块的导入邻域"></a><br><sub><b>代码图</b> —— 已图化平面上一个模块的导入邻域</sub></td>
-    <td width="50%"><a href="screenshots/05.jpg"><img src="screenshots/05.jpg" width="100%" alt="Explore —— 整个代码平面，每条事实都带文件、行号与生成它的插件"></a><br><sub><b>代码平面</b> —— 整张图一览；每条事实都带文件、行号、签名与解析它的插件</sub></td>
+    <td width="50%"><a href="screenshots/06.png"><img src="screenshots/06.png" width="100%" alt="Ask —— 自然语言问题转为计划并绘出结果"></a><br><sub><b>Ask</b> —— 一个自然语言问题被转成只读计划，先展示、再执行</sub></td>
+    <td width="50%"><a href="screenshots/07.png"><img src="screenshots/07.png" width="100%" alt="Time-travel —— 图在较早某次提交时的样子"></a><br><sub><b>时间旅行</b> —— 同一个平面在较早某次提交时的样子，由一条覆盖其历史的滑块控制</sub></td>
   </tr>
 </table>
 
