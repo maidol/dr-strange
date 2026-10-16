@@ -1,6 +1,6 @@
 <script>
   import { onMount } from 'svelte'
-  import { rpc, liveStats, authHeaders } from './rpc.js'
+  import { rpc, rpcBatch, liveStats, authHeaders } from './rpc.js'
   import CreatePlane from './CreatePlane.svelte'
   import Icon from './Icon.svelte'
 
@@ -13,6 +13,12 @@
 
   let stats = $state(null) // live db.stats (planes/nodes/edges/file_size/memory)
   let planes = $state([]) // plane cards
+  // `db.mounts`: the databases this process also serves, and the mount each
+  // served plane came from. A plane's own `mount` arrives on `plane.list`.
+  let mounts = $state([])
+  let mountRoot = $state(null)
+  // plane name -> the planes it may ask (`plane.attach`), one batch for all.
+  let attached = $state({})
   import extensionLogo from './assets/extension-logo.svg'
 
   let plugins = $state([]) // installed preprocessor plugins
@@ -50,6 +56,28 @@
 
   async function loadPlanes() {
     planes = await rpc('plane.list')
+    await loadAttachments()
+  }
+
+  // One batch rather than a call per card: a plane that attaches nothing is
+  // the common case, and a failed read leaves that card without the row
+  // instead of failing the page.
+  async function loadAttachments() {
+    const names = planes.map((p) => p.name)
+    if (!names.length) return
+    const answers = await rpcBatch(names.map((plane) => ({ method: 'plane.attachments', params: { plane } })))
+    const next = {}
+    answers.forEach((a, i) => {
+      const list = a.result?.attachments
+      if (Array.isArray(list) && list.length) next[names[i]] = list
+    })
+    attached = next
+  }
+
+  async function loadMounts() {
+    const m = await rpc('db.mounts')
+    mounts = m?.mounts ?? []
+    mountRoot = m?.mount_root ?? null
   }
 
   async function afterCreate(name) {
@@ -207,6 +235,9 @@
       .catch((e) => (error = e.message))
     loadPlanes().catch((e) => (error = e.message))
     loadPlugins().catch((e) => (error = e.message))
+    // A server with nothing mounted answers with an empty list, so this is
+    // not an error worth a banner — the section simply does not appear.
+    loadMounts().catch(() => {})
     rpc('plugin.catalog')
       .then((c) => {
         catalog = c.plugins ?? []
@@ -284,6 +315,25 @@
           <span>{p.nodes} nodes</span>
           <span>{p.edges} edges</span>
         </div>
+        {#if p.mount || attached[p.name]}
+          <div class="provenance">
+            {#if p.mount}
+              <span class="tag mounted" title="Served from the mounted database `{p.mount}` — this process serves it alongside its own planes">
+                <Icon name="mounted" size={11} /> {p.mount}
+              </span>
+            {/if}
+            {#each attached[p.name] ?? [] as a (a.name)}
+              <span
+                class="tag attached"
+                title={a.url
+                  ? `Attaches ${a.plane} on ${a.url} as “${a.name}” — asked over the network`
+                  : `Attaches the local plane ${a.plane} as “${a.name}”`}
+              >
+                <Icon name="attached" size={11} /> {a.name}{#if a.url}<span class="remote">remote</span>{/if}
+              </span>
+            {/each}
+          </div>
+        {/if}
       </button>
       <div class="card-actions">
         <button
@@ -333,6 +383,37 @@
     <span class="new-card-label">New plane</span>
   </button>
 </section>
+
+{#if mounts.length}
+  <h2>Mounted databases</h2>
+  <p class="mounts-note">
+    Other stores this process serves alongside its own. Their planes keep their
+    own names and appear above, tagged with the mount they came from; nothing is
+    copied and nothing is re-digested.
+    {#if mountRoot}<span class="mount-root">Mounts are confined to <code>{mountRoot}</code>.</span>{/if}
+  </p>
+  <section class="mounts">
+    {#each mounts as m (m.name)}
+      <article class="mount">
+        <h3><Icon name="mounted" size={14} /> {m.name}</h3>
+        <p class="path" title={m.path}>{m.path}</p>
+        <div class="counts">
+          <span>{m.planes?.length ?? 0} {(m.planes?.length ?? 0) === 1 ? 'plane' : 'planes'}</span>
+          {#if m.prefixed}
+            <span title="Two mounts offered a plane of the same name, so this one's planes carry `{m.name}:` in front">prefixed</span>
+          {/if}
+        </div>
+        {#if m.planes?.length}
+          <div class="mount-planes">
+            {#each m.planes as name (name)}
+              <button class="tag" onclick={() => onSelectPlane(name)} title="Select {name}">{name}</button>
+            {/each}
+          </div>
+        {/if}
+      </article>
+    {/each}
+  </section>
+{/if}
 
 <h2>Extensions</h2>
 {#if catalogNote}

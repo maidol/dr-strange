@@ -234,6 +234,93 @@ h2 {
   gap: 0.75rem;
 }
 
+/* Where a plane came from: the mount serving it, and the planes it may ask. */
+.card .provenance {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin-top: 0.5rem;
+}
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.08rem 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.74rem;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+.tag.mounted {
+  border-color: color-mix(in oklab, var(--accent) 45%, var(--border));
+  color: color-mix(in oklab, var(--accent) 70%, var(--fg));
+}
+.tag .remote {
+  margin-left: 0.2rem;
+  opacity: 0.75;
+  font-size: 0.68rem;
+}
+
+/* The mounted stores themselves, below the planes they contribute. */
+.mounts-note {
+  margin: -0.35rem 0 0.7rem;
+  color: var(--muted);
+  font-size: 0.88rem;
+  max-width: 72ch;
+}
+.mounts-note .mount-root {
+  display: block;
+}
+.mounts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+.mount {
+  padding: 0.7rem 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+}
+.mount h3 {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin: 0 0 0.3rem;
+  font-size: 0.98rem;
+}
+.mount .path {
+  margin: 0 0 0.45rem;
+  color: var(--muted);
+  font-family: ui-monospace, monospace;
+  font-size: 0.78rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mount .counts {
+  display: flex;
+  gap: 0.6rem;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+.mount-planes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin-top: 0.5rem;
+}
+.mount-planes .tag {
+  cursor: pointer;
+}
+.mount-planes .tag:hover {
+  color: var(--fg);
+  border-color: var(--fg);
+}
+
 .vec-msg {
   position: absolute;
   bottom: 0.35rem;
