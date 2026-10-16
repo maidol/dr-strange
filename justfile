@@ -252,8 +252,8 @@ _rust-matches-ci:
         exit 1
     fi
 
-# Thirteen files, and the count is the reason this exists: the seven the
-# workspace has always needed, plus the six SDK manifests and docs that now
+# Fourteen files, and the count is the reason this exists: the seven the
+# workspace has always needed, plus the seven SDK manifests and docs that now
 # state their version "in step with the workspace" (sdk/README.md). A release
 # that bumps seven and forgets six publishes SDKs claiming a version that was
 # never cut, and nothing in CI would say so — none of them is on a registry,
@@ -286,6 +286,9 @@ bump-version old new:
     # The SDKs, which state the workspace version rather than one of their own.
     sed -i 's/^version = "{{old}}"$/version = "{{new}}"/' sdk/python/pyproject.toml
     sed -i 's/^__version__ = "{{old}}"$/__version__ = "{{new}}"/' sdk/python/src/drsg/__init__.py
+    # uv.lock mirrors pyproject in its own `drsg` entry; left behind, the next
+    # `uv run` rewrites it mid-gate and the bump looks like someone else's edit.
+    sed -i '/^name = "drsg"$/{n;s/^version = ".*"$/version = "{{new}}"/}' sdk/python/uv.lock
     sed -i 's/"version": "{{old}}",/"version": "{{new}}",/' sdk/typescript/package.json
     sed -i 's|<version>{{old}}</version>|<version>{{new}}</version>|' sdk/java/pom.xml
     sed -i 's/drsg:{{old}}/drsg:{{new}}/; s|<version>{{old}}</version>|<version>{{new}}</version>|' sdk/java/README.md
