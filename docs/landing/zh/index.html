@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="zh-Hans">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dr Strange —— 面向编码智能体的代码图</title>
+<meta name="description" content="Dr Strange 把一个代码仓库消化为已解析的调用图，回答谁调用了它、改动会波及到哪里、哪些 HTTP 路由彼此对应——每个问题一次往返，全程无模型参与。">
+<link rel="icon" href="../magic-circle.svg">
+<link rel="stylesheet" href="../style.css">
+<link rel="alternate" hreflang="en" href="../">
+<link rel="alternate" hreflang="zh-Hans" href="./">
+</head>
+<body>
+
+<div class="wrap">
+  <header class="top">
+    <svg width="30" height="30" viewBox="0 0 64 64" fill="none" stroke="#d9a441" stroke-width="2" stroke-linejoin="round" aria-hidden="true">
+      <circle cx="32" cy="32" r="30"/>
+      <circle cx="32" cy="32" r="25.5" stroke-width="3" stroke-dasharray="1.2 3"/>
+      <rect x="16" y="16" width="32" height="32"/>
+      <rect x="16" y="16" width="32" height="32" transform="rotate(45 32 32)"/>
+      <circle cx="32" cy="32" r="11"/>
+      <circle cx="32" cy="32" r="3.5" fill="#d9a441" stroke="none"/>
+    </svg>
+    <h1>Dr <b>STRANGE</b></h1>
+    <nav>
+      <a href="../zh/book/introduction.html">文档</a>
+      <a href="https://github.com/wangyingsm/dr-strange">GitHub</a>
+      <a href="../">English</a>
+    </nav>
+  </header>
+
+  <div class="hero">
+    <h2>让你的编码智能体去问图，<br>而不是翻文件。</h2>
+    <p class="lede">
+      Dr Strange 把一个代码仓库消化为符号与已解析关系构成的图，并回答智能体在动手
+      改动之前会问的那些问题——谁调用了它、改动会波及到哪里、一个符号如何到达另一
+      个、哪些 HTTP 路由彼此对应——每个问题一次往返，全程没有模型参与。
+    </p>
+    <div class="cta">
+      <a class="btn" href="#install">安装</a>
+      <a class="btn ghost" href="https://github.com/wangyingsm/dr-strange">在 GitHub 上查看源码</a>
+    </div>
+  </div>
+
+  <div class="numbers">
+    <div class="num">
+      <div class="big">3.1<small>&nbsp;秒</small></div>
+      <p>消化本仓库——9.7 万行、13 个解析插件——得到 10,237 个符号与 44,927 条
+         已解析的边。没有任何模型调用。</p>
+    </div>
+    <div class="num">
+      <div class="big">1/61<small>&nbsp;的 token</small></div>
+      <p>回答「谁调用了它、改动会波及到哪里」的中位开销是 925 个 token；grep 名字
+         再把匹配到的文件读完则是 53,720 个。</p>
+    </div>
+  </div>
+  <p style="margin:-1rem 0 0;color:var(--muted);font-size:0.9rem">
+    两个数字都是实测而非估算，且都可复现——方法、脚本，以及为使第二个数字站得住脚
+    而设的排除项，都记在
+    <a class="src" href="https://github.com/wangyingsm/dr-strange/blob/master/BENCHMARKS.md">BENCHMARKS.md</a> 里。
+  </p>
+
+  <section id="install">
+    <h3>安装</h3>
+    <p>一行命令，无需工具链。安装脚本会在解包前校验发行归档的 SHA-256。</p>
+    <pre class="sh"><span class="c"># Linux 与 macOS</span>
+<span class="p">$</span> curl -fsSL https://raw.githubusercontent.com/wangyingsm/dr-strange/master/scripts/install.sh | sh
+
+<span class="c"># Windows（PowerShell）</span>
+<span class="p">PS&gt;</span> irm https://raw.githubusercontent.com/wangyingsm/dr-strange/master/scripts/install.ps1 | iex
+
+<span class="c"># 然后，在你希望智能体理解的那个仓库里：</span>
+<span class="p">$</span> drsg plugin install   <span class="c"># 挑选解析器；0 表示全选</span>
+<span class="p">$</span> drsg init             <span class="c"># 消化、起服务、写入 MCP 配置</span></pre>
+    <p style="margin-top:1rem">
+      从国内访问 GitHub 较慢时，<code>--mirror &lt;base-url&gt;</code> 可让镜像接手；
+      无论由哪一方应答，校验和都会被核对。发行归档同时附带
+      <a class="src" href="https://github.com/wangyingsm/dr-strange/blob/master/SECURITY.md#what-ships-and-how-to-check-it">已签名的构建来源证明</a>。
+    </p>
+  </section>
+
+  <section>
+    <h3>一条命令，配好你正在用的那个智能体</h3>
+    <p><code>drsg init</code> 消化当前工作区，起一个把每次提交折叠进图的 watcher，
+       并为本仓库或本机留有痕迹的那些智能体写好 MCP 配置。</p>
+    <div class="agents">
+      <span class="agent">Claude Code</span>
+      <span class="agent">GitHub Copilot</span>
+      <span class="agent">Cursor</span>
+      <span class="agent">Codex CLI</span>
+      <span class="agent">Gemini CLI</span>
+      <span class="agent">OpenCode</span>
+    </div>
+  </section>
+
+  <section>
+    <h3>十一个动词，每个一次往返</h3>
+    <p>这十一个既是 <code>drsg serve</code> 上的 MCP 工具，也都是命令行子命令。</p>
+    <div class="verbs">
+      <div class="verb"><code>context</code><span>关于一个符号的一切——首选动词</span></div>
+      <div class="verb"><code>impact</code><span>改动会波及到哪里，按距离分组</span></div>
+      <div class="verb"><code>trace</code><span>两个符号之间图中记录的最短调用路径</span></div>
+      <div class="verb"><code>wire</code><span>谁在提供某个 HTTP 路径，谁在请求它</span></div>
+      <div class="verb"><code>grep</code><span>在被监视的树上检索，每个命中标出所在符号</span></div>
+      <div class="verb"><code>search</code><span>「我不知道名字」：语义 top-k</span></div>
+      <div class="verb"><code>snippet</code><span>一个符号的源码，或文件的某个行区间</span></div>
+      <div class="verb"><code>describe</code><span>一个符号的属性，只看节点</span></div>
+      <div class="verb"><code>fathom</code><span>一个符号身处怎样的区域，以及其中的枢纽</span></div>
+      <div class="verb"><code>history</code><span>代码背后的那个仓库</span></div>
+      <div class="verb"><code>recall</code><span>同一份代码在任意提交时的样子</span></div>
+    </div>
+  </section>
+
+  <section>
+    <h3>这些回答凭什么可信</h3>
+    <ul class="plain">
+      <li><b>没有模型解析你的代码。</b>沙箱化的 wasm 解析器插件——官方目录共十三个，
+          其中八个是语言——产出这些事实。LLM 是可选的，且从不参与解析。</li>
+      <li><b>歧义的名字从不猜测。</b>回答是一份候选清单，由调用方挑选。</li>
+      <li><b>调用清单是一个明示的下界。</b>解析器无法解析的部分会连同原因保留，并且
+          回答会说明这一点。错误的边比缺失的边更糟。</li>
+      <li><b>图就是已提交的代码。</b><code>serve watch</code> 逐个提交地跟进仓库，
+          每个回答开头都会说明它读的是哪个提交。</li>
+    </ul>
+  </section>
+
+  <footer>
+    Dr Strange 是自由软件，采用 MIT 或 Apache-2.0 许可 ·
+    <a href="../zh/book/introduction.html">文档</a> ·
+    <a href="https://github.com/wangyingsm/dr-strange">GitHub</a> ·
+    <a href="../">English</a>
+  </footer>
+</div>
+
+</body>
+</html>

@@ -1,0 +1,138 @@
+/* The landing page, sharing the dashboard's palette (crates/dr-strange-web/
+   frontend/src/app.css) so the site and the product read as one thing.
+
+   Self-contained on purpose: no font CDN, no framework. A visitor on the
+   network that made `--mirror` necessary should not wait on a third party to
+   see what this is. */
+
+:root {
+  --bg: #f6f6f4;
+  --panel: #ffffff;
+  --fg: #23232a;
+  --muted: #6b7280;
+  --border: #e6e4e0;
+  --accent: #6d28d9;
+  --ok: #15803d;
+  --gold: #d9a441;
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #16161c;
+    --panel: #1f1f27;
+    --fg: #ececf1;
+    --muted: #a6adbb;
+    --border: #30303c;
+    --accent: #b79cf6;
+    --ok: #5ed67f;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans",
+    "PingFang SC", "Microsoft YaHei", Helvetica, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+code, pre, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+
+.wrap { max-width: 960px; margin: 0 auto; padding: 0 1.25rem; }
+
+/* ---- header ------------------------------------------------------------ */
+header.top {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 1.25rem 0;
+  flex-wrap: wrap;
+}
+header.top svg { flex: none; }
+header.top h1 { margin: 0; font-size: 1.15rem; letter-spacing: 0.01em; }
+header.top h1 b { font-weight: 800; }
+header.top nav { margin-left: auto; display: flex; gap: 1rem; flex-wrap: wrap; }
+header.top nav a { color: var(--muted); text-decoration: none; font-size: 0.92rem; }
+header.top nav a:hover { color: var(--fg); }
+
+/* ---- hero -------------------------------------------------------------- */
+.hero { padding: 2.5rem 0 1rem; }
+.hero h2 {
+  margin: 0 0 0.75rem;
+  font-size: clamp(1.9rem, 5vw, 2.9rem);
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+}
+.hero p.lede { margin: 0 0 1.5rem; font-size: 1.1rem; color: var(--muted); max-width: 62ch; }
+
+.cta { display: flex; gap: 0.6rem; flex-wrap: wrap; align-items: center; }
+.btn {
+  display: inline-block;
+  padding: 0.55rem 1rem;
+  border-radius: 8px;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #fff;
+  text-decoration: none;
+  font-weight: 600;
+  font-size: 0.95rem;
+}
+@media (prefers-color-scheme: dark) { .btn { color: #16161c; } }
+.btn.ghost { background: transparent; color: var(--accent); }
+
+/* ---- the two numbers --------------------------------------------------- */
+.numbers { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.9rem; margin: 2rem 0; }
+@media (max-width: 640px) { .numbers { grid-template-columns: 1fr; } }
+.num {
+  padding: 1.1rem 1.2rem;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.num .big { font-size: 2rem; font-weight: 700; letter-spacing: -0.02em; }
+.num .big small { font-size: 1rem; font-weight: 600; color: var(--muted); }
+.num p { margin: 0.3rem 0 0; color: var(--muted); font-size: 0.92rem; }
+
+/* ---- sections ---------------------------------------------------------- */
+section { padding: 2rem 0; border-top: 1px solid var(--border); }
+section h3 { margin: 0 0 0.5rem; font-size: 1.3rem; letter-spacing: -0.01em; }
+section > p { margin: 0 0 1.2rem; color: var(--muted); max-width: 70ch; }
+
+.agents { display: flex; flex-wrap: wrap; gap: 0.45rem; }
+.agent {
+  padding: 0.3rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel);
+  font-size: 0.88rem;
+}
+
+pre.sh {
+  margin: 0;
+  padding: 0.9rem 1rem;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow-x: auto;
+  font-size: 0.88rem;
+  line-height: 1.75;
+}
+pre.sh .c { color: var(--muted); }
+pre.sh .p { color: var(--accent); user-select: none; }
+
+.verbs { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 0.5rem 1.4rem; }
+.verb { display: flex; gap: 0.5rem; font-size: 0.93rem; align-items: baseline; }
+.verb code { color: var(--accent); font-weight: 600; flex: none; }
+.verb span { color: var(--muted); }
+
+ul.plain { margin: 0; padding-left: 1.1rem; color: var(--muted); }
+ul.plain li { margin: 0.3rem 0; }
+ul.plain b { color: var(--fg); font-weight: 600; }
+
+footer { padding: 2rem 0 3rem; border-top: 1px solid var(--border); color: var(--muted); font-size: 0.9rem; }
+footer a { color: var(--accent); }
+a.src { color: var(--accent); }

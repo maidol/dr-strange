@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dr Strange — a code graph for coding agents</title>
+<meta name="description" content="Dr Strange digests a repository into a resolved call graph and answers who calls this, what a change reaches, and which HTTP routes meet — one round trip each, no model in the loop.">
+<link rel="icon" href="magic-circle.svg">
+<link rel="stylesheet" href="style.css">
+<link rel="alternate" hreflang="zh-Hans" href="./zh/">
+<link rel="alternate" hreflang="en" href="./">
+</head>
+<body>
+
+<div class="wrap">
+  <header class="top">
+    <svg width="30" height="30" viewBox="0 0 64 64" fill="none" stroke="#d9a441" stroke-width="2" stroke-linejoin="round" aria-hidden="true">
+      <circle cx="32" cy="32" r="30"/>
+      <circle cx="32" cy="32" r="25.5" stroke-width="3" stroke-dasharray="1.2 3"/>
+      <rect x="16" y="16" width="32" height="32"/>
+      <rect x="16" y="16" width="32" height="32" transform="rotate(45 32 32)"/>
+      <circle cx="32" cy="32" r="11"/>
+      <circle cx="32" cy="32" r="3.5" fill="#d9a441" stroke="none"/>
+    </svg>
+    <h1>Dr <b>STRANGE</b></h1>
+    <nav>
+      <a href="./en/book/introduction.html">Documentation</a>
+      <a href="https://github.com/wangyingsm/dr-strange">GitHub</a>
+      <a href="./zh/">简体中文</a>
+    </nav>
+  </header>
+
+  <div class="hero">
+    <h2>Your coding agent asks the graph,<br>not the files.</h2>
+    <p class="lede">
+      Dr Strange digests a repository into a graph of symbols and resolved
+      relationships, then answers the questions an agent asks before it changes
+      anything — who calls this, what a change would reach, how one symbol
+      reaches another, which HTTP routes meet — one round trip each, with no
+      model in the loop.
+    </p>
+    <div class="cta">
+      <a class="btn" href="#install">Install</a>
+      <a class="btn ghost" href="https://github.com/wangyingsm/dr-strange">Source on GitHub</a>
+    </div>
+  </div>
+
+  <div class="numbers">
+    <div class="num">
+      <div class="big">3.1<small>&nbsp;seconds</small></div>
+      <p>to digest this repository — 97k lines across 13 parser plugins —
+         into 10,237 symbols and 44,927 resolved edges. No model call.</p>
+    </div>
+    <div class="num">
+      <div class="big">61&times;<small>&nbsp;fewer tokens</small></div>
+      <p>to answer “who calls this, and what would a change reach?” — a median
+         925 against 53,720 for grepping the name and reading what matched.</p>
+    </div>
+  </div>
+  <p style="margin:-1rem 0 0;color:var(--muted);font-size:0.9rem">
+    Both measured, not estimated, and reproducible — the method, the script and
+    the exclusions that keep the second number honest are in
+    <a class="src" href="https://github.com/wangyingsm/dr-strange/blob/master/BENCHMARKS.md">BENCHMARKS.md</a>.
+  </p>
+
+  <section id="install">
+    <h3>Install</h3>
+    <p>One line, no toolchain. The installer verifies the release archive's
+       SHA-256 before unpacking it.</p>
+    <pre class="sh"><span class="c"># Linux and macOS</span>
+<span class="p">$</span> curl -fsSL https://raw.githubusercontent.com/wangyingsm/dr-strange/master/scripts/install.sh | sh
+
+<span class="c"># Windows (PowerShell)</span>
+<span class="p">PS&gt;</span> irm https://raw.githubusercontent.com/wangyingsm/dr-strange/master/scripts/install.ps1 | iex
+
+<span class="c"># Then, in the repository you want your agent to understand:</span>
+<span class="p">$</span> drsg plugin install   <span class="c"># choose parsers; 0 = all</span>
+<span class="p">$</span> drsg init             <span class="c"># digest, serve, write the MCP config</span></pre>
+    <p style="margin-top:1rem">
+      On a slow link to GitHub, <code>--mirror &lt;base-url&gt;</code> lets a
+      mirror take over; the checksum is verified whichever source answers.
+      Release archives also carry
+      <a class="src" href="https://github.com/wangyingsm/dr-strange/blob/master/SECURITY.md#what-ships-and-how-to-check-it">signed build provenance</a>.
+    </p>
+  </section>
+
+  <section>
+    <h3>One command configures the agent you already use</h3>
+    <p><code>drsg init</code> digests the working tree, spawns a watcher that
+       folds every commit into the graph, and writes the MCP configuration for
+       whichever of these your repository or your machine shows a sign of.</p>
+    <div class="agents">
+      <span class="agent">Claude Code</span>
+      <span class="agent">GitHub Copilot</span>
+      <span class="agent">Cursor</span>
+      <span class="agent">Codex CLI</span>
+      <span class="agent">Gemini CLI</span>
+      <span class="agent">OpenCode</span>
+    </div>
+  </section>
+
+  <section>
+    <h3>Eleven verbs, one round trip each</h3>
+    <p>All eleven are MCP tools on <code>drsg serve</code>, and all eleven are
+       CLI subcommands.</p>
+    <div class="verbs">
+      <div class="verb"><code>context</code><span>everything about one symbol — the primary verb</span></div>
+      <div class="verb"><code>impact</code><span>what a change would reach, by distance</span></div>
+      <div class="verb"><code>trace</code><span>the shortest recorded call path between two</span></div>
+      <div class="verb"><code>wire</code><span>what serves an HTTP path, and what asks for it</span></div>
+      <div class="verb"><code>grep</code><span>text over the watched tree; each hit names its symbol</span></div>
+      <div class="verb"><code>search</code><span>“I don't know the name”: semantic top-k</span></div>
+      <div class="verb"><code>snippet</code><span>a symbol's source, or a range of a file</span></div>
+      <div class="verb"><code>describe</code><span>one symbol's properties, node only</span></div>
+      <div class="verb"><code>fathom</code><span>the region a symbol sits in, and its hubs</span></div>
+      <div class="verb"><code>history</code><span>the repository behind the code</span></div>
+      <div class="verb"><code>recall</code><span>the same code as it was, at any commit</span></div>
+    </div>
+  </section>
+
+  <section>
+    <h3>What makes the answers worth trusting</h3>
+    <ul class="plain">
+      <li><b>No model parses your code.</b> Sandboxed wasm parser plugins — thirteen
+          in the official catalog, eight of them languages — produce the facts.
+          An LLM is optional and never in the parsing path.</li>
+      <li><b>An ambiguous name is never guessed at.</b> The reply is a list of
+          candidates to pick from.</li>
+      <li><b>A call listing is a stated lower bound.</b> What the parser could not
+          resolve is kept with its reason, and the answer says so. A wrong edge is
+          worse than a missing one.</li>
+      <li><b>The graph is the code as committed.</b> <code>serve watch</code> follows
+          the repository commit by commit, and every answer opens by naming the
+          commit it read.</li>
+    </ul>
+  </section>
+
+  <footer>
+    Dr Strange is free software under MIT or Apache-2.0 ·
+    <a href="./en/book/introduction.html">Documentation</a> ·
+    <a href="https://github.com/wangyingsm/dr-strange">GitHub</a> ·
+    <a href="./zh/">简体中文</a>
+  </footer>
+</div>
+
+</body>
+</html>
