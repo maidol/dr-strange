@@ -1,0 +1,58 @@
+# CodeQL: GitHub's static analysis, reading each language for the bug classes a
+# linter does not look for — injection, path traversal, unsafe deserialization.
+# Clippy already guards Rust style and many correctness traps; this answers a
+# different question, and findings land in the Security tab beside Scorecard's.
+name: CodeQL
+
+on:
+  push:
+    branches: [master]
+  schedule:
+    - cron: "41 5 * * 2" # Tuesdays, offset from the Scorecard run
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Analyze ${{ matrix.language }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      security-events: write # file the results against this repository
+      contents: read
+      actions: read
+    strategy:
+      # One language failing must not cancel the rest: they are independent
+      # analyses, and a partial result is worth more than none.
+      fail-fast: false
+      matrix:
+        include:
+          # `actions` reads the workflows themselves — the most relevant
+          # language in the tree for a supply-chain question.
+          - language: actions
+            build-mode: none
+          - language: javascript-typescript
+            build-mode: none
+          - language: python
+            build-mode: none
+          # Rust is compiled, so the database comes from a real build; `none`
+          # is not offered for every compiled language.
+          - language: rust
+            build-mode: autobuild
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - name: Initialize
+        uses: github/codeql-action/init@ce5e7eeac396d720fe2d802714996c8ce561e311 # v3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+      - name: Analyze
+        uses: github/codeql-action/analyze@ce5e7eeac396d720fe2d802714996c8ce561e311 # v3
+        with:
+          category: /language:${{ matrix.language }}
