@@ -1,0 +1,58 @@
+# Dependency updates. Grouped and weekly: this repository is usually moved by
+# one person, and an ungrouped daily feed is a feed nobody reads.
+#
+# Added after an OpenSSF Scorecard run found nine advisories sitting in the
+# dashboard's transitive build dependencies — the kind of thing that accrues
+# silently between releases, which is exactly what a bot is for.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      cargo:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  - package-ecosystem: npm
+    directory: /crates/dr-strange-web/frontend
+    schedule:
+      interval: weekly
+    groups:
+      frontend:
+        patterns: ["*"]
+
+  - package-ecosystem: npm
+    directory: /sdk/typescript
+    schedule:
+      interval: weekly
+    groups:
+      sdk-typescript:
+        patterns: ["*"]
+
+  - package-ecosystem: pip
+    directory: /sdk/python
+    schedule:
+      interval: weekly
+    groups:
+      sdk-python:
+        patterns: ["*"]
+
+  - package-ecosystem: gomod
+    directory: /sdk/go
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: maven
+    directory: /sdk/java
+    schedule:
+      interval: weekly
