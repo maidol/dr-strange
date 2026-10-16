@@ -221,6 +221,19 @@ $ drsg --db graph.drsg serve
 $ DRSG_TOKEN=please-change-me drsg --db graph.drsg serve
 ```
 
+监听回环以外的任何地址时令牌是*必需*的：未设置 `DRSG_TOKEN`（或 `[server] token`）
+的 `drsg serve --addr 0.0.0.0:7700` 会拒绝启动，因为离开回环后同源检查不再构成任何
+保护。在这类地址上，提供的仪表盘页面也不携带令牌——浏览器每个标签页会询问一次
+（见 Web 界面一章），且仪表盘自身的来源须列入 `allowed_origins`。HTTP 上以
+`Authorization: Bearer <token>` 发送令牌，WebSocket 升级请求也优先如此；`/ws` 上的
+`?token=` 仅为无法设置请求头的浏览器而设，查询字符串往往会被代理和浏览器记录。
+
+连续五次以上出示错误令牌的对端会收到 `429` 与一个逐次加倍、至多五分钟的
+`Retry-After`；一次正确的令牌即清除它。
+
+经由 API 指定提供方时，名字只能是某个预设，或恰好是服务端已配置的那个
+`embed_provider`；base URL 只从 CLI 与配置文件接受，绝不从请求接受。
+
 ### 配置文件
 
 服务、日志与提供方设置也可以通过一个 TOML 配置文件提供，而非逐个使用命令行标志与
@@ -238,6 +251,7 @@ retain_commits = 20                         # 时间旅行可回溯的提交数�
 source_root = "/srv/myrepo"                 # grep/snippet 智能体工具读取的源码树（serve watch 会用 --dir 设置它）
 mount_root = "/srv/repos"                   # `drsg mount` 可以从哪一个目录下打开数据库（默认：你的主目录）；该目录内平面所记录的树也因此可被 grep/snippet 读取
 allowed_origins = ["https://app.example.com"]  # 额外允许的浏览器来源
+# 把 /mcp 放到域名后面：DRSG_ALLOWED_HOSTS=memory.example.com（环境变量；仅在设置了 token 时生效，见 MCP 一章）
 
 [server.tls]                                # 存在此节 ⇒ 以 HTTPS 提供服务
 cert = "/etc/drsg/cert.pem"                 # PEM 证书链
@@ -284,7 +298,9 @@ no_proxy = ".internal, 192.168.1.10"        # NO_PROXY 形式的绕行清单；�
 导入处于开启状态（默认如此）时，客户端可以指定一个地址，而后由**服务端**去连接它。
 服务端在网络中所处的位置通常更为特权，因此系统会拒绝一切不可路由的地址：回环地址、
 RFC-1918 私有网段、链路本地地址（`169.254.0.0/16`，云实例元数据服务在此应答凭据）
-等等。检查针对的是**解析之后的地址**而非主机名，并在每一次重定向跳转时重新执行。
+等等。检查针对的是**解析之后的地址**而非主机名，并在每一次重定向跳转时重新执行；
+一个内部携带 IPv4 地址的 IPv6 地址（v4-mapped、6to4、Teredo、NAT64 的
+`64:ff9b::/96`）按那个 IPv4 地址判定。
 
 `allow_private` 用来重新放行特定的 CIDR 网段（例如设为 `["10.0.0.0/8"]`，以便
 读取内网 wiki）。它是上述规则唯一经过深思的例外，而**不是**关闭这层防护的开关：

@@ -249,6 +249,23 @@ authorized to call the API. To permit programmatic access from the SDKs or
 $ DRSG_TOKEN=please-change-me drsg --db graph.drsg serve
 ```
 
+A token is *required* for any bind address other than loopback: `drsg serve
+--addr 0.0.0.0:7700` without `DRSG_TOKEN` (or `[server] token`) refuses to
+start, because off loopback the same-origin check is no protection at all. On
+such an address the served dashboard does not carry the token either — the
+browser asks for it once per tab (see the Web UI chapter) — and the dashboard's
+own origin must be named in `allowed_origins`. Send the token as
+`Authorization: Bearer <token>` on HTTP and, preferably, on the WebSocket
+upgrade as well; `?token=` on `/ws` exists for browsers, which cannot set
+headers there, and a query string is what proxies and browsers tend to log.
+A peer that presents a wrong token more than five times is answered `429`
+with a `Retry-After` that doubles up to five minutes; a correct token clears
+it.
+
+Over the API a provider name is one of the presets or exactly the server's
+configured `embed_provider`; a base URL is accepted from the CLI and the
+configuration file, never from a request.
+
 ### Configuration file
 
 Server, logging, and provider settings may be supplied through a TOML
@@ -318,7 +335,8 @@ network is usually the more privileged one, so every non-routable address is
 refused: loopback, RFC-1918 private space, link-local (`169.254.0.0/16`, where
 cloud instance metadata services answer credentials), and the rest. The check is
 made on the **resolved address**, not the hostname, and repeated at every
-redirect hop.
+redirect hop; an IPv6 address that carries an IPv4 one inside it (v4-mapped,
+6to4, Teredo, NAT64's `64:ff9b::/96`) is judged as that IPv4 address.
 
 `allow_private` re-permits specific CIDR blocks — `["10.0.0.0/8"]` to read an
 intranet wiki — and is the one deliberate exception to that. It is not a switch

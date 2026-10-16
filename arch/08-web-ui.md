@@ -195,6 +195,14 @@ server enforces where the line is (shipped 2026-09, `server::run`,
 8. **A cost knob has a ceiling the request cannot move.** `plane.ask`'s
    `max_attempts` defaults to and is capped at the llm crate's
    `ASK_DEFAULT_ATTEMPTS` (20), its `limit` at `ASK_MAX_LIMIT` (1000);
+   `digest.run` with `apply: true` is **not** confirm-gated the way the MCP
+   `digest` tool is (arch/06 §3), by decision rather than omission: a
+   JSON-RPC caller is an authenticated program presenting a write token, and
+   `apply` is the explicit choice it made — a second flag would be the same
+   choice spelled twice. The MCP gate exists because there the caller is a
+   model, and the cost of an unintended apply (rewriting a plane) is what
+   the confirmation buys back. The dashboard's own digest page keeps the
+   review-then-apply flow in its UI.
    `digest.run`'s `concurrency` and `chunk_chars` are clamped to
    `DIGEST_MAX_CONCURRENCY` (32) / `DIGEST_MAX_CHUNK_CHARS` (32 000) or the
    operator's own `[digest]` default, whichever is larger. `/export`
@@ -232,6 +240,16 @@ server enforces where the line is (shipped 2026-09, `server::run`,
     same-origin UI, and a rebinding page impersonating it is what a
     loopback-only `Host` defeats. The list is never empty — rmcp reads an
     empty list as "any host".
+11. **Background work is bounded and single-flight.** A stale plugin
+    catalog starts one refresh (`methods::refresh_catalog_once`, a flag
+    plus the runtime's blocking pool), however many panels ask while it
+    runs. A follower's replication queue holds `follow::REPLICATION_QUEUE`
+    (1024) batches; when it is full the socket reader waits, the master's
+    broadcast lags the follower out, and the design's answer — a full
+    resync — happens visibly instead of after memory runs out. The fetch
+    guard judges an IPv6 address carrying an IPv4 one (v4-mapped, 6to4,
+    Teredo, NAT64 `64:ff9b::/96`) as that IPv4 address, and refuses the
+    local-use NAT64 block `64:ff9b:1::/48` whole.
 
 ### 4.2 v2 — many agents, many machines, one database
 
@@ -300,9 +318,11 @@ concept.
    access when no token is configured, and it keys off *allowed origin*, not
    *loopback*. Once an operator adds the LAN UI to `DRSG_ALLOWED_ORIGINS` — which
    requirement 1 forces — an unset `DRSG_TOKEN` means any LAN browser has
-   unauthenticated write access. Gate the fallback on a loopback bind.
+   unauthenticated write access. *Shipped* (§4.1): the fallback is gated on a
+   loopback bind, and a tokenless server refuses to bind anywhere else.
 3. **`DRSG_ALLOWED_ORIGINS` must name the ops UI origin**, or the dashboard
-   cannot call its own backend.
+   cannot call its own backend. The page the LAN UI loads carries no token
+   (§4.1); the browser asks for it and sends it as a bearer credential.
 
 **Accepted limits.** One process owns the database, so it is a single point of
 failure and a throughput ceiling for *writes* — `write_gate` serializes them,
