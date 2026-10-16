@@ -251,3 +251,46 @@ _rust-matches-ci:
         echo "gate: cargo runs rustc $have, CI runs stable $latest — 'rustup default stable'" >&2
         exit 1
     fi
+
+# Thirteen files, and the count is the reason this exists: the seven the
+# workspace has always needed, plus the six SDK manifests and docs that now
+# state their version "in step with the workspace" (sdk/README.md). A release
+# that bumps seven and forgets six publishes SDKs claiming a version that was
+# never cut, and nothing in CI would say so — none of them is on a registry,
+# so no publish step would fail.
+#
+# `old` is passed explicitly rather than read from Cargo.toml, so a half-applied
+# bump cannot be made worse by a second run: every edit is old -> new or no
+# edit at all. Verify with `git diff --stat` before committing; `just gate`
+# still runs separately.
+#
+# Set the version everywhere it is written down, for a release commit.
+bump-version old new:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    test "{{old}}" != "{{new}}" || { echo "bump: old and new are both {{new}}" >&2; exit 1; }
+    # The workspace, the wire protocol's own version, and the two READMEs.
+    sed -i 's/^version = "{{old}}"$/version = "{{new}}"/' Cargo.toml
+    sed -i 's/"version": "{{old}}",/"version": "{{new}}",/' crates/dr-strange-web/openrpc.json
+    sed -i 's/drsg {{old}} is the latest release/drsg {{new}} is the latest release/' README.md README.zh.md
+    # The book's `drsg update` transcript: the example moves one release on.
+    for f in docs/en/src/getting-started.md docs/zh/src/getting-started.md; do
+        sed -i "s/drsg {{old}} is the latest release/drsg {{new}} is the latest release/; \
+                s/-> {{old}}\$/-> {{new}}/; \
+                s|/v{{old}}/scripts/install.sh|/v{{new}}/scripts/install.sh|; \
+                s/--version 'v{{old}}'/--version 'v{{new}}'/; \
+                s/Dr Strange v{{old}} (/Dr Strange v{{new}} (/; \
+                s/dr-strange-v{{old}}-x86_64/dr-strange-v{{new}}-x86_64/" "$f"
+        sed -i "s/drsg [0-9.]* -> {{new}}/drsg {{old}} -> {{new}}/" "$f"
+    done
+    # The SDKs, which state the workspace version rather than one of their own.
+    sed -i 's/^version = "{{old}}"$/version = "{{new}}"/' sdk/python/pyproject.toml
+    sed -i 's/^__version__ = "{{old}}"$/__version__ = "{{new}}"/' sdk/python/src/drsg/__init__.py
+    sed -i 's/"version": "{{old}}",/"version": "{{new}}",/' sdk/typescript/package.json
+    sed -i 's|<version>{{old}}</version>|<version>{{new}}</version>|' sdk/java/pom.xml
+    sed -i 's/drsg:{{old}}/drsg:{{new}}/; s|<version>{{old}}</version>|<version>{{new}}</version>|' sdk/java/README.md
+    sed -i 's/drsg:{{old}}/drsg:{{new}}/; s/versioned `{{old}}`/versioned `{{new}}`/' sdk/README.md
+    sed -i 's/all at version {{old}}/all at version {{new}}/; s/drsg:{{old}}/drsg:{{new}}/' docs/en/src/sdk.md
+    sed -i 's/均为 {{old}}/均为 {{new}}/; s/drsg:{{old}}/drsg:{{new}}/' docs/zh/src/sdk.md
+    cargo check -q
+    echo "bump: {{old}} -> {{new}} — review 'git diff --stat', then commit the lockfile with it"
