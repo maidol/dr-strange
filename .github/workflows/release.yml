@@ -141,6 +141,71 @@ jobs:
           # marker; flag the GitHub release to match, so nobody does it by hand.
           prerelease: ${{ contains(github.ref_name, '-') }}
 
+  npm:
+    name: npm packages
+    # After the GitHub release exists, not beside it: the packages carry the
+    # same binaries, and a published npm version pointing at a release that
+    # failed to appear is the one ordering that cannot be undone.
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # npm provenance, which attests these came from this workflow
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: "22"
+          registry-url: https://registry.npmjs.org
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          pattern: dist-*
+          merge-multiple: true
+          path: dist
+      # A fork, or a clone of this repository before the secret is added, has
+      # no token. That skips the job rather than failing the release — npm is
+      # one distribution channel, and the binaries are already published.
+      - name: Is a token configured?
+        id: token
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: echo "present=${NPM_TOKEN:+yes}" >> "$GITHUB_OUTPUT"
+      - name: Build the packages
+        if: steps.token.outputs.present == 'yes'
+        run: python3 packaging/npm/build.py "${GITHUB_REF_NAME#v}" --from dist
+      - name: Publish
+        if: steps.token.outputs.present == 'yes'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          # A hyphen is semver's pre-release marker, as the release job reads
+          # it: such a version must not become what `npm install drsg` gets.
+          tag=latest
+          case "$version" in *-*) tag=next ;; esac
+          # The wrapper goes last: its optionalDependencies pin this exact
+          # version, so publishing it first leaves a window where installing
+          # drsg resolves to packages that do not exist yet.
+          for pkg in drsg-linux-x64 drsg-linux-arm64 drsg-darwin-x64 \
+                     drsg-darwin-arm64 drsg-win32-x64 drsg; do
+            # Re-running a release must not fail on what it already did. Only
+            # a real 404 means "not published": any other failure is the
+            # registry being unreachable, and guessing "publish" there would
+            # hand npm a conflict and report it as the wrong problem.
+            if out=$(npm view "$pkg@$version" version 2>&1); then
+              echo "$pkg@$version is already published — skipping"
+              continue
+            elif ! grep -q 'E404' <<<"$out"; then
+              echo "$out" >&2
+              echo "could not ask the registry about $pkg@$version" >&2
+              exit 1
+            fi
+            (cd "packaging/npm/dist/$pkg" \
+              && npm publish --access public --provenance --tag "$tag")
+          done
+
   docker:
     name: Docker image → GHCR
     # Reuse the natively-built linux binaries instead of recompiling Rust under
