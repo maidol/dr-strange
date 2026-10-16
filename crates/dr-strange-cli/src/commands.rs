@@ -133,6 +133,11 @@ const GITIGNORE_PATTERNS: &[&str] = &[
     "*.drsg.jsonl",
     "*.drsg.hnsw",
     "*.drsg.bm25",
+    // Each sidecar is written to a `.tmp` beside itself and renamed into
+    // place, so a running server leaves one in the tree for a moment — long
+    // enough for `git status` to show it and for `git add -A` to take it.
+    "*.drsg.hnsw.tmp",
+    "*.drsg.bm25.tmp",
     "logs/",
     // The two files `init` writes a literal bearer token into. Cursor is a
     // desktop app: it is launched from a dock with no shell environment to
