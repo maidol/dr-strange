@@ -457,6 +457,118 @@ fn time_bulk_load(db: &Database, data: &Path, engine: &str) -> Result<OpResult> 
     ))
 }
 
+/// The vector half: a dedicated plane, the HNSW build, the timed top-k,
+/// and the untimed recall@k the top-k is only worth its latency against.
+///
+/// Lifted out of `run_pass` for the same reason `time_bulk_load` was —
+/// the recall pass took it past the hundred-line limit this repository
+/// holds itself to.
+fn time_vectors(
+    db: &Database,
+    data: &Path,
+    k: u64,
+    recall_queries: u64,
+    engine: &str,
+) -> Result<Vec<OpResult>> {
+    let mut results: Vec<OpResult> = Vec::new();
+    // ---- vectors: separate plane, index build, top-k ----------------------
+    let vec_lines = read_lines(&data.join("vectors.csv"))?;
+    let n_vecs = (vec_lines.len() - 1) as u64;
+    // Load embedding nodes into a dedicated plane (keeps vector cost out
+    // of the graph-load numbers).
+    if db.plane("vec").is_err() {
+        db.create_plane("vec", Properties::new())?;
+    }
+    let plane = db.plane("vec")?;
+    // Row i of vectors.csv ↔ the node it became, so ANN results can be
+    // scored against the oracle's row indices. The vectors themselves
+    // are kept only to brute-force an oracle when the dataset has none.
+    let mut row_of: AHashMap<dr_strange_core::NodeId, usize> =
+        AHashMap::with_capacity(n_vecs as usize);
+    let mut vectors: Vec<Vec<f32>> = Vec::with_capacity(n_vecs as usize);
+    {
+        let mut txn = plane.write()?;
+        for (row, line) in vec_lines.iter().skip(1).enumerate() {
+            let (id, rest) = line.split_once(',').unwrap();
+            let v = parse_vector(rest);
+            vectors.push(v.clone());
+            let mut props: Properties = BTreeMap::new();
+            props.insert("embedding".into(), prop(PropValue::Vector(v)));
+            let nid = txn.create_node_with_key(&format!("v{id}"), &["Item"], props)?;
+            row_of.insert(nid, row);
+        }
+        txn.commit()?;
+    }
+
+    // Build the vector index (HNSW) and time it.
+    let t = Instant::now();
+    db.plane("vec")?
+        .ensure_vector_index("Item", "embedding", Metric::Cosine)?;
+    results.push(throughput_result(
+        engine,
+        "vector_build",
+        n_vecs,
+        t.elapsed().as_secs_f64() * 1000.0,
+    ));
+
+    // Top-k queries.
+    let qs = read_lines(&data.join("queries/vector_queries.csv"))?;
+    let plane = db.plane("vec")?;
+    let mut micros = Vec::with_capacity(qs.len());
+    let t = Instant::now();
+    for line in &qs {
+        let q = parse_vector(line);
+        let s = Instant::now();
+        let _ = plane
+            .query()
+            .vector_top_k(Some("Item"), "embedding", q, Metric::Cosine, k)
+            .scored_nodes()?;
+        micros.push(s.elapsed().as_secs_f64() * 1e6);
+    }
+    results.push(latency_result(engine, "vector_topk", &micros, t.elapsed()));
+
+    // Recall@k on a sample of the same queries, untimed: the ANN answer
+    // above is only worth its latency if it is also right. The oracle
+    // is the dataset's exact top-K when `gen` wrote one (shared with
+    // compare.py), else brute-forced here from the loaded vectors.
+    let sample = (recall_queries as usize).min(qs.len());
+    let exact = match read_exact_topk(data)? {
+        Some(e) => e,
+        None => qs
+            .iter()
+            .take(sample)
+            .map(|line| brute_force_top_k(&vectors, &parse_vector(line), k as usize))
+            .collect(),
+    };
+    let sample = sample.min(exact.len());
+    if sample > 0 {
+        let t = Instant::now();
+        let mut sum = 0.0;
+        for (line, exact_ids) in qs.iter().zip(&exact).take(sample) {
+            let q = parse_vector(line);
+            let got: Vec<usize> = plane
+                .query()
+                .vector_top_k(Some("Item"), "embedding", q, Metric::Cosine, k)
+                .scored_nodes()?
+                .iter()
+                .filter_map(|(n, _)| row_of.get(&n.id).copied())
+                .collect();
+            let want = &exact_ids[..(k as usize).min(exact_ids.len())];
+            sum += recall_at_k(want, &got);
+        }
+        let mut r = throughput_result(
+            engine,
+            "vector_recall",
+            sample as u64,
+            t.elapsed().as_secs_f64() * 1000.0,
+        );
+        r.recall = Some(sum / sample as f64);
+        r.k = Some(k);
+        results.push(r);
+    }
+    Ok(results)
+}
+
 fn run_pass(data: &Path, db_path: &Path, k: u64, recall_queries: u64) -> Result<Vec<OpResult>> {
     let engine = "dr-strange".to_string();
     let mut results: Vec<OpResult> = Vec::new();
@@ -528,103 +640,7 @@ fn run_pass(data: &Path, db_path: &Path, k: u64, recall_queries: u64) -> Result<
         ));
     }
 
-    // ---- vectors: separate plane, index build, top-k ----------------------
-    let vec_lines = read_lines(&data.join("vectors.csv"))?;
-    let n_vecs = (vec_lines.len() - 1) as u64;
-    {
-        // Load embedding nodes into a dedicated plane (keeps vector cost out
-        // of the graph-load numbers).
-        if db.plane("vec").is_err() {
-            db.create_plane("vec", Properties::new())?;
-        }
-        let plane = db.plane("vec")?;
-        // Row i of vectors.csv ↔ the node it became, so ANN results can be
-        // scored against the oracle's row indices. The vectors themselves
-        // are kept only to brute-force an oracle when the dataset has none.
-        let mut row_of: AHashMap<dr_strange_core::NodeId, usize> =
-            AHashMap::with_capacity(n_vecs as usize);
-        let mut vectors: Vec<Vec<f32>> = Vec::with_capacity(n_vecs as usize);
-        {
-            let mut txn = plane.write()?;
-            for (row, line) in vec_lines.iter().skip(1).enumerate() {
-                let (id, rest) = line.split_once(',').unwrap();
-                let v = parse_vector(rest);
-                vectors.push(v.clone());
-                let mut props: Properties = BTreeMap::new();
-                props.insert("embedding".into(), prop(PropValue::Vector(v)));
-                let nid = txn.create_node_with_key(&format!("v{id}"), &["Item"], props)?;
-                row_of.insert(nid, row);
-            }
-            txn.commit()?;
-        }
-
-        // Build the vector index (HNSW) and time it.
-        let t = Instant::now();
-        db.plane("vec")?
-            .ensure_vector_index("Item", "embedding", Metric::Cosine)?;
-        results.push(throughput_result(
-            &engine,
-            "vector_build",
-            n_vecs,
-            t.elapsed().as_secs_f64() * 1000.0,
-        ));
-
-        // Top-k queries.
-        let qs = read_lines(&data.join("queries/vector_queries.csv"))?;
-        let plane = db.plane("vec")?;
-        let mut micros = Vec::with_capacity(qs.len());
-        let t = Instant::now();
-        for line in &qs {
-            let q = parse_vector(line);
-            let s = Instant::now();
-            let _ = plane
-                .query()
-                .vector_top_k(Some("Item"), "embedding", q, Metric::Cosine, k)
-                .scored_nodes()?;
-            micros.push(s.elapsed().as_secs_f64() * 1e6);
-        }
-        results.push(latency_result(&engine, "vector_topk", &micros, t.elapsed()));
-
-        // Recall@k on a sample of the same queries, untimed: the ANN answer
-        // above is only worth its latency if it is also right. The oracle
-        // is the dataset's exact top-K when `gen` wrote one (shared with
-        // compare.py), else brute-forced here from the loaded vectors.
-        let sample = (recall_queries as usize).min(qs.len());
-        let exact = match read_exact_topk(data)? {
-            Some(e) => e,
-            None => qs
-                .iter()
-                .take(sample)
-                .map(|line| brute_force_top_k(&vectors, &parse_vector(line), k as usize))
-                .collect(),
-        };
-        let sample = sample.min(exact.len());
-        if sample > 0 {
-            let t = Instant::now();
-            let mut sum = 0.0;
-            for (line, exact_ids) in qs.iter().zip(&exact).take(sample) {
-                let q = parse_vector(line);
-                let got: Vec<usize> = plane
-                    .query()
-                    .vector_top_k(Some("Item"), "embedding", q, Metric::Cosine, k)
-                    .scored_nodes()?
-                    .iter()
-                    .filter_map(|(n, _)| row_of.get(&n.id).copied())
-                    .collect();
-                let want = &exact_ids[..(k as usize).min(exact_ids.len())];
-                sum += recall_at_k(want, &got);
-            }
-            let mut r = throughput_result(
-                &engine,
-                "vector_recall",
-                sample as u64,
-                t.elapsed().as_secs_f64() * 1000.0,
-            );
-            r.recall = Some(sum / sample as f64);
-            r.k = Some(k);
-            results.push(r);
-        }
-    }
+    results.extend(time_vectors(&db, data, k, recall_queries, &engine)?);
 
     Ok(results)
 }
