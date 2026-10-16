@@ -87,18 +87,13 @@ agent's long-term memory, Dr Strange aims to be the single store for all of it.
 
 ## Web UI screenshots
 
+`drsg serve` ships a browser console. More of it in the [Web UI
+chapter](https://wangyingsm.github.io/dr-strange/en/book/web-ui.html).
+
 <table>
   <tr>
     <td width="50%"><a href="screenshots/00.png"><img src="screenshots/00.png" width="100%" alt="Dashboard — live counts, planes, and installed parser plugins"></a><br><sub><b>Dashboard</b> — live counts across every plane, plane management, and the installed parser plugins</sub></td>
     <td width="50%"><a href="screenshots/01.png"><img src="screenshots/01.png" width="100%" alt="Explore — interactive graph with a node inspector"></a><br><sub><b>Explore</b> — the graph as it stands, with one node open: file, line, signature, and the plugin that asserted it</sub></td>
-  </tr>
-  <tr>
-    <td width="50%"><a href="screenshots/08.png"><img src="screenshots/08.png" width="100%" alt="Query — a projecting query returned as a table"></a><br><sub><b>Query</b> — a projection comes back as a table — row and column counts, timing, and copy-as-TSV</sub></td>
-    <td width="50%"><a href="screenshots/09.png"><img src="screenshots/09.png" width="100%" alt="AIgest — LLM ingestion of a crawled URL into entities and relations"></a><br><sub><b>AIgest</b> — documents or a crawled URL turned into entities &amp; relations, previewed before anything is written</sub></td>
-  </tr>
-  <tr>
-    <td width="50%"><a href="screenshots/02.png"><img src="screenshots/02.png" width="100%" alt="Algorithms — PageRank over a code plane"></a><br><sub><b>PageRank</b> — importance as size and colour, over the whole plane</sub></td>
-    <td width="50%"><a href="screenshots/03.png"><img src="screenshots/03.png" width="100%" alt="Algorithms — Louvain communities coloured on the graph"></a><br><sub><b>Communities</b> — Louvain groups, one colour each</sub></td>
   </tr>
   <tr>
     <td width="50%"><a href="screenshots/04.png"><img src="screenshots/04.png" width="100%" alt="Algorithms — shortest path between two symbols"></a><br><sub><b>Shortest path</b> — the route between two symbols, its hops and cost, drawn over the neighbourhood it crosses</sub></td>
@@ -136,44 +131,30 @@ no model at all. See [Appendix C](https://wangyingsm.github.io/dr-strange/en/boo
 ## Install
 
 One line, no toolchain. The installer downloads the released binary for your
-platform, verifies its SHA-256, and puts it on your `PATH`. Two binaries are
-available: the CLI and server, `drsg`, and the MCP server for LLM agents,
-`drsg-mcp`.
+platform, verifies its SHA-256, and puts it on your `PATH`. Two binaries ship:
+the CLI and server `drsg`, and the stdio MCP server `drsg-mcp`.
 
-**Linux**
-
-```console
-# CLI and server — drsg
-$ curl -fsSL https://raw.githubusercontent.com/wangyingsm/dr-strange/master/scripts/install.sh | sh
-
-# MCP server — drsg-mcp
-$ curl -fsSL https://raw.githubusercontent.com/wangyingsm/dr-strange/master/scripts/install.sh | sh -s -- --bin drsg-mcp
-```
-
-**macOS** (the same script; Apple silicon and Intel)
+**Linux and macOS** (Apple silicon and Intel)
 
 ```console
-# CLI and server — drsg
 $ curl -fsSL https://raw.githubusercontent.com/wangyingsm/dr-strange/master/scripts/install.sh | sh
-
-# MCP server — drsg-mcp
-$ curl -fsSL https://raw.githubusercontent.com/wangyingsm/dr-strange/master/scripts/install.sh | sh -s -- --bin drsg-mcp
 ```
 
 **Windows** (PowerShell)
 
 ```console
-# CLI and server — drsg
 PS> irm https://raw.githubusercontent.com/wangyingsm/dr-strange/master/scripts/install.ps1 | iex
-
-# MCP server — drsg-mcp (run as a block: a piped script cannot take arguments)
-PS> & ([scriptblock]::Create((irm https://raw.githubusercontent.com/wangyingsm/dr-strange/master/scripts/install.ps1))) -Bin drsg-mcp
 ```
 
-`--bin all` installs both binaries; `--version v1.1.0` pins a release, and
-`--dir <path>` chooses the destination (default `~/.local/bin`, or
-`%LOCALAPPDATA%\Programs\drsg\bin` on Windows). On Windows the flags are
-`-Bin`, `-Version`, and `-Dir`.
+`--bin drsg-mcp` installs the MCP server instead, `--bin all` both;
+`--version vX.Y.Z` pins a release and `--dir <path>` chooses the destination
+(default `~/.local/bin`, or `%LOCALAPPDATA%\Programs\drsg\bin`). On Windows
+the flags are `-Bin`, `-Version`, `-Dir`, and passing any of them needs the
+script run as a block rather than piped to `iex`:
+
+```console
+PS> & ([scriptblock]::Create((irm https://raw.githubusercontent.com/wangyingsm/dr-strange/master/scripts/install.ps1))) -Bin drsg-mcp
+```
 
 **On a slow network.** GitHub serves the releases, and from some networks that
 is reachable but slow enough to look like a hang. `--mirror <base-url>`
@@ -181,34 +162,22 @@ is reachable but slow enough to look like a hang. `--mirror <base-url>`
 GitHub is tried first, and the mirror takes over if that attempt is failing or
 crawling. The SHA-256 is verified whichever source answers, so a mirror is
 trusted for availability and never for content. `--no-mirror` forbids the
-fallback. Without a mirror configured nothing changes — a slow download is
+fallback; without a mirror configured nothing changes, and a slow download is
 left to finish rather than abandoned.
 
 **Staying current.** `drsg update` asks GitHub for the latest release and, if
 this build is behind it, hands the process over to the installer above —
-pointed at the directory `drsg` is running from, so the copy on your `PATH` is
-replaced rather than joined by a second one. A `drsg-mcp` in that directory is
-updated with it. A build already current, or newer than the latest release, is
-told so and nothing is downloaded.
+pointed at the directory `drsg` runs from, so the copy on your `PATH` is
+replaced rather than joined by a second one, and a `drsg-mcp` beside it is
+updated with it. A build already current is told so and nothing is downloaded.
 
-```console
-$ drsg update
-drsg 2.21.0 is the latest release — nothing to do
-```
+Alternatives: the container image `ghcr.io/wangyingsm/dr-strange:latest`, the
+archives and checksums on the [releases
+page](https://github.com/wangyingsm/dr-strange/releases), or from source with a
+[Rust toolchain](https://rustup.rs) — `cargo build --release -p dr-strange-cli`,
+after `just web-build` ([bun](https://bun.sh)), since the dashboard is embedded
+at compile time and the binary otherwise ships a placeholder page.
 
-Alternatives: the container image, `ghcr.io/wangyingsm/dr-strange:latest`, or the
-archives and checksums on the
-[releases page](https://github.com/wangyingsm/dr-strange/releases).
-
-**From source** — a last resort, for platforms with no published binary or to
-build a working copy. Requires a [Rust toolchain](https://rustup.rs); the
-dashboard is embedded at compile time, so build the SPA first (`just web-build`,
-which needs [bun](https://bun.sh)) or the binary ships a placeholder page.
-
-```console
-$ cargo build --release -p dr-strange-cli   # → target/release/drsg
-$ cargo build --release -p dr-strange-mcp   # → target/release/drsg-mcp
-```
 
 ## Getting Started
 
@@ -234,261 +203,108 @@ Dr Strange treats a codebase the way it treats any other knowledge: as a
 graph. Parser plugins — sandboxed wasm components, one per language — turn
 source files into symbols and resolved relationships (CALLS with call sites,
 REFERENCES, IMPORTS, EXTENDS, …), with no model in the loop. `serve watch`
-then follows the repository commit by commit, so the graph an agent queries
-is the code as committed — and each answer opens by saying which commit
+then follows the repository commit by commit, so the graph an agent queries is
+the code as committed — and each answer opens by saying which commit
 (`synced: commit <sha>`).
 
-```console
-# Install parser plugins: a name from the official catalog, no argument for
-# an interactive chooser over it (0 = all), or any .wasm path or URL.
-$ drsg plugin install
-
-# Digest a repository into a plane named after it
-$ drsg --db codes.drsg digest ~/src/myrepo --apply --no-embed
-
-# Serve the API + MCP surface and keep the plane synced to every commit
-$ drsg --db codes.drsg serve watch --dir ~/src/myrepo
-
-# One symbol's whole neighborhood, one call
-$ drsg --db codes.drsg context 'WriteTxn::delete_node' --plane myrepo
-```
-
-`--no-embed` skips embeddings — parsing needs no model. Run `drsg vectorize`
-later to make the plane semantically searchable.
-
-**Agent-side tooling.** The Claude Code hooks, the shared long-term memory
-daemon, and the router that puts several repositories' graphs behind one MCP
-surface are maintained outside this repository, in
-[`drsg-harness-kit`](https://github.com/maidol/drsg-harness-kit) (Linux, Claude
-Code only). It installs next to a drsg binary and releases on its own cadence —
-drsg itself stays client-neutral and depends on none of it.
-
-**`drsg init`** collapses the digest-and-serve steps into one command, run
-from the repository itself (plugins still need installing first): it digests
-the working directory into a plane named after it, spawns `serve watch`
-detached on a freshly-picked address and bearer token, and writes
-`.mcp.json` — Claude Code's own convention, also read as-is by GitHub
-Copilot. It then writes a matching MCP config for Cursor, OpenCode, Gemini
-CLI, or Codex CLI — for a tool this repository already carries a marker for
-(a directory it creates, or a config file it already owns), or that your
-machine has installed, so a first run in a fresh checkout still configures the
-agent you actually use. A tool neither signal names is left alone.
-
-```console
-$ drsg init
-plane 'myrepo' bootstrapped — serve watch pid 48213, http://127.0.0.1:51900/mcp
-  history → plane 'myrepo_git', current with every commit — `drsg history --plane myrepo`
-  + wrote ./.mcp.json
-  + Cursor: wrote ./.cursor/mcp.json
-```
-
-**Run `drsg init` again whenever the server is gone.** It spawns `serve
-watch` detached and records that process's address and bearer token in
-`.mcp.json`, but nothing ever restarts it: an MCP `http` entry tells a client
-where to connect, not what to launch, so no agent relaunches it and it does
-not survive a reboot, a crash, or a kill. Re-running `init` is the way back,
-and it is safe at any time — it probes the recorded endpoint first, leaves a
-live server alone without opening the database (so it cannot collide with the
-running one), and restarts a dead one on the *same* address and token,
-skipping the re-parse because the plane resumes from its recorded commit.
-Every agent's configuration stays valid across the restart.
+`drsg init` is the one-command path: it digests the tree, spawns `serve watch`
+detached, and writes the MCP config. It is safe to re-run and is the way back
+whenever the server is gone — nothing restarts it, since an MCP `http` entry
+says where to connect, not what to launch. A live server is left alone; a dead
+one comes back on the *same* address and token, so every agent's configuration
+stays valid and the plane resumes from its recorded commit instead of
+re-parsing.
 
 ```console
 $ drsg init                       # already up: nothing to do
 drsg is already serving . at http://127.0.0.1:51900/mcp — reusing it, the plane is untouched
-
-$ drsg init                       # after a reboot: same address, same token
-plane 'myrepo' restarted — serve watch pid 51002, http://127.0.0.1:51900/mcp
 ```
 
-Once per repository, then again whenever the server is gone. Pinning `addr`
-and `token` under `[server]` in `drsg.toml` keeps the endpoint byte-identical
-across restarts even if the recorded port is taken by then.
+Pinning `addr` and `token` under `[server]` in `drsg.toml` keeps the endpoint
+byte-identical across restarts. The longer path — digest, serve and query as
+separate steps — is in the [Coding Agent
+chapter](https://wangyingsm.github.io/dr-strange/en/book/coding-agent.html).
 
 Eleven verbs answer an agent's questions, one round trip each, as compact
 one-fact-per-line text. All eleven are MCP tools on `drsg serve`, and all
-eleven are CLI subcommands (`grep` and `snippet` read the tree the plane was
-parsed from, which `--root` names when the plane records none of its own;
-`recall` reads the repository's own object store).
+eleven are CLI subcommands.
 
 | Verb | The question it answers |
 |---|---|
 | `context` | everything about one symbol — definition, callers with call sites, callees, references — the primary verb |
 | `search` | "I don't know the name": semantic top-k over the plane's embeddings |
 | `describe` | one symbol's properties — the lightweight node-only view |
-| `grep` | text over the watched source tree — literal or regex, path-scoped, with context lines; each hit names the symbol it falls in; bounded and counted |
+| `grep` | text over the watched source tree — literal or regex, path-scoped, with context lines; each hit names the symbol it falls in |
 | `trace` | how one symbol reaches another: the shortest recorded call path |
 | `impact` | blast radius: everything reaching a symbol, grouped by distance — and, asked `--across`, which other repositories it reaches |
 | `fathom` | what kind of place a symbol sits in: the region within a few hops, by label and edge type, with its hubs |
 | `snippet` | a symbol's source text, or a range of a file (`path:start-end`) — the `sed -n` an agent no longer needs |
 | `history` | the repository behind the code: HEAD, branches, tags, rebases and the newest commits |
-| `recall` | the same code as it was: a file, a directory, a symbol's declaration then, a search of the old tree, or what changed since an older revision |
+| `recall` | the same code as it was: a file, a symbol's declaration then, a search of the old tree, or what changed since an older revision |
 | `wire` | what serves an HTTP path and what asks for it — matched across every language in the plane, and across the planes it attaches |
 
-Two disciplines run through every tool. An ambiguous name is never
-guessed at: the reply is a list of candidates to pick from. And a call
-listing is a stated lower bound: what the parser could not resolve is kept
-as `UnresolvedRef` facts with reasons, and the answer says so — a wrong edge
-is worse than a missing one.
+Two disciplines run through every tool. An ambiguous name is never guessed at:
+the reply is a list of candidates to pick from. And a call listing is a stated
+lower bound — what the parser could not resolve is kept as `UnresolvedRef`
+facts with reasons, and the answer says so. A wrong edge is worse than a
+missing one.
 
-**History, too.** Digesting a directory that is a git checkout also reads the
-repository's **history** into a plane of its own, `<plane>_git`: commits,
-branches, tags, merges (`order = 1` is the line a commit was made on), and
-the rebases only the reflog remembers — what each replayed, and the tips it
-rewrote away. Facts only, never a model call, and no `git` binary is run: the
-`git` plugin reads the object store itself, inside the sandbox. Two planes
-because they answer different questions and have different lifetimes — the
-code plane is the tree *now*, history only grows — and a second digest of an
-unchanged repository writes nothing at all. `serve watch` keeps it current
-commit by commit, so `drsg init` bootstraps both planes; `drsg history` (and
-the MCP tool of the same name) reads one back:
+**History, too.** Digesting a git checkout also reads the repository's history
+into a plane of its own, `<plane>_git`: commits, branches, tags, merges, and
+the rebases only the reflog remembers. Facts only, no model call and no `git`
+binary — the `git` plugin reads the object store itself, inside the sandbox.
+Two planes, because the code plane is the tree *now* while history only grows.
+`--no-git` turns the stage off.
 
-```console
-$ drsg history --plane myrepo
-429 commit(s), 11 of them merges; 7 branch(es), 15 tag(s), 2 rebase(s)
-branches (7 shown of 7):
-  * master         5cb5d79  chore(release): bump version to 2.1.1
-    origin/master  5cb5d79  chore(release): bump version to 2.1.1
-rebases (2):
-    master  2026-08-11  onto 7bf6b9a, 3 commit(s), replaced 1c0b734
-commits (newest 15 of 429):
-  5cb5d79  2026-08-25  crabis  chore(release): bump version to 2.1.1
-  …
-```
+**Routes, across repositories.** A page calls `/api/v1/orders/42`; a controller
+declares `@GetMapping("/api/v1/orders/{id}")`; the graph holds both files and
+no connection between them. The Go, Java, Python, Rust and TypeScript plugins
+record the routes a symbol states — `serves` for a declaration, `requests` for
+a call — in one vocabulary, `GET /api/v1/orders/{}`, whatever framework wrote
+it. `wire` computes the correspondence when asked, stores nothing, and says
+what it could not match. Frontend and backend are usually different
+repositories, so `drsg attach` records the one fact that joins them, *this
+plane may ask that one* — a plane on this instance, or one another drsg serves
+at a URL, read over the `plane.query` every drsg already has.
 
-`--no-git` turns the whole stage off, on `digest` and on `serve watch` alike.
+**A shared library and its dependents.** "Which business repositories would
+this change break?" is `impact --across`, answered through two keys both sides
+already state: the coordinate a build declares, and the symbol a dependent's
+source stands in for. Nothing is derived and no plugin needed changing — a
+library's own `pom.xml` says which coordinate it publishes. `--across` reads
+the planes this one attaches; `--across all` reads every plane the instance
+holds, so a machine handed thirty repositories needs no setup to be asked
+across them.
 
-**Routes, and the repositories on the other side of them.** A page calls
-`/api/v1/orders/42`; a controller declares `@GetMapping("/api/v1/orders/{id}")`;
-the graph holds both files and no connection between them. The Go, Java,
-Python, Rust and TypeScript plugins record the routes a symbol states —
-`serves` for a declaration, `requests` for a call — in one vocabulary,
-`GET /api/v1/orders/{}`, whatever framework wrote it. `wire` computes the
-correspondence when it is asked, stores nothing, and says what it could not
-match: a request that reaches no handler, an endpoint nothing asks for, a
-prefix the source never states.
-
-Frontend and backend are usually different repositories, so they are different
-planes — and `drsg attach` records the one fact that joins them, *this plane may
-ask that one*. It carries no question of its own; every verb that crosses
-graphs reads it. For a pair of planes on one drsg,
-`drsg attach fe --plane be --both` records the way back in the same call; a
-plane another drsg serves takes the URL it is served at.
-
-```console
-$ drsg attach front --plane be --url http://127.0.0.1:36500 --as fe
-$ drsg wire /api/v1/orders/{} --plane be
-across  be, front
-path  /api/v1/orders/{}
-  serves    GET     app.orders.one  Function  api/app/orders.py:7-8
-  serves    GET     com.acme.Orders.one  Method  backend/src/main/java/com/acme/Orders.java:7
-  serves    GET     web/src/routes/orders.one  Function  node/src/routes/orders.ts:1  in front
-  requests  GET     web/src/client.loadOne  Function  node/src/client.ts:3  in front
-1 path(s); 1 request(s) matched a declaration, 0 reached none; 0 declaration(s) nothing asks for
-matched on verb + path, computed for this call and never stored; `*` matches every verb
-```
-
-An attachment on another drsg is read over `plane.query`, the read method every
-drsg already serves, so crossing instances adds no protocol and no new SDK
-method. One that cannot be reached is named with the reason rather than skipped,
-and `drsg attachments --probe` asks each one whether it answers now. `attach`,
-`detach` and `attachments` are CLI subcommands and MCP tools — so an agent can
-wire two repositories together inside one session — and, as plane lifecycle,
-`plane.attach`/`plane.detach`/`plane.attachments` on the JSON-RPC surface.
-
-**A shared library, and the repositories that depend on it.** "Which business
-repositories would this change break?" is `impact`, asked one repository out.
-`impact --across` answers it in the other graphs too, by two keys both sides
-already state: the **coordinate** a build declares (`Manifest.declares` here,
-a `DEPENDS_ON` edge carrying `version` and `scope` there) and the **symbol** a
-dependent's source stands in for (the same key, labelled `External`). Neither
-is derived and no plugin needed changing — a Maven coordinate and a Java
-package cannot be mapped to one another without a guess, but standing in the
-library there is nothing to guess: its own `pom.xml` says which coordinate it
-publishes.
-
-```console
-$ drsg impact com.acme.common.BaseEntity --plane commonlib --across all
-…
-across  commonlib, svcorders, svcbilling
-in svcorders
-  declares  com.acme:common-base  2.4.1  [runtime]  pom.xml
-  com.acme.common.Dated  ← 1
-    com.acme.orders.Order  Class  src/main/java/com/acme/orders/Order.java:5-8  [EXTENDS]
-in svcbilling
-  declares  com.acme:common-base  2.3.0  [runtime]  pom.xml
-2 graph(s) read, 2 hold(s) something: 2 declare(s) a dependency, 1 reach(es) it in code
-1 of the 2 key(s) offered are referenced elsewhere
-```
-
-`--across` alone reads the planes this one attaches; `--across all` reads every
-plane this instance holds, so a machine handed thirty repositories needs no
-setup to be asked across them. Without the flag the answer is unchanged, byte
-for byte: a radius is complete within one repository, and adding graphs changes
-what the total counts, so the caller says how far to look.
-
-**One server, many repositories.** A machine with thirty-four repositories ends
-up with thirty-four databases — and serving each cost a process, a port and its
-own cache, while a client configured for one port reached one of them.
-`drsg mount` serves another database's planes on a **running** drsg, keeping the
-planes' own names, so `--plane svc-orders` works exactly as before:
-
-```console
-$ drsg mount ~/repos/svc-orders        # on the fly; `--as` prefixes its planes
-mounted 'svc-orders' from /home/me/repos/svc-orders
-  serves  svc-orders
-  held, not served: startup
-$ drsg mounts
-svc-orders  /home/me/repos/svc-orders  (1 plane(s))
-svc-billing  /home/me/repos/svc-billing  (1 plane(s))
-  startup  here
-  svc-orders  in svc-orders  /home/me/repos/svc-orders
-  svc-billing  in svc-billing  /home/me/repos/svc-billing
-mounts may come from /home/me/repos
-```
-
-Nothing is copied or re-digested: each store keeps its own files, **its own
-writer** (so thirty-four `serve watch` folds run in parallel rather than
-queueing behind one gate) and its own lifecycle — dropping a repository is an
-unmount, not a range-delete inside a shared file. A mount is written down, so a
-restart serves it again; `serve watch` gives each mounted repository a watcher
-on the tree its own plane records, which is what retires the other
-thirty-three processes. A store another process still holds is refused, by the
-engine's own lock, saying so.
-
-Every verb follows, because a plane name is resolved once per request: `context`,
-`grep` and `snippet` answer per repository, and `impact --across all` crosses
-all of them in one process — the cross-repository question with no attachment
-setup at all. `db.mount` is admin-tier and confined to the one directory
-`[server] mount_root` grants (your home directory by default): the path is
-opened by this process, and a plane in it names a tree `grep` would then read.
+**One server, many repositories.** Thirty-four repositories would otherwise be
+thirty-four databases, each costing a process, a port and its own cache.
+`drsg mount` serves another database's planes on a **running** drsg, keeping
+their names, so `--plane svc-orders` works as before. Nothing is copied or
+re-digested: each store keeps its own files, **its own writer** — so the folds
+run in parallel rather than queueing behind one gate — and its own lifecycle.
+Mounts are written down and served again after a restart, and are confined to
+the one directory `[server] mount_root` grants.
 
 **Plugins.** `drsg plugin install` installs any parser plugin — an official
-plugin's name, a local `.wasm` file, or a URL — validating it as a component
-and pinning its SHA-256, re-checked at every load. The official catalog holds
-thirteen plugins — eight languages (Rust, Go, TypeScript/JavaScript, Python,
-Java, C, Kotlin, C#), three markup and config formats (web (HTML/CSS), TOML,
-XML), plus `deps` for dependency manifests and `git` for a repository's
-history — and lives as
-`catalog.json` in the
+plugin's name, a local `.wasm`, or a URL — validating it as a component and
+pinning its SHA-256, re-checked at every load. The catalog lives in
 [dr-strange-extension](https://github.com/wangyingsm/dr-strange-extension)
-repository rather than compiled into this binary — so a plugin release needs
-no drsg release. Each entry pins the artifact's hash, checked on download, and
-says which hosts it is for; one this build cannot run is listed with the
-reason rather than hidden. `drsg plugin list --available` prints the catalog
-tagged against what is installed. The same repository carries the plugin SDKs:
-the parser contract is an open WIT interface, and a community parser built
-against it installs and runs in the same sandbox as an official one.
+rather than compiled in, so a plugin release needs no drsg release. The same
+repository carries the plugin SDK: the parser contract is a public WIT
+interface, and a community parser is a first-class citizen of the catalog.
 
-**How it compares.** In agent-task benchmarks against a ripgrep-driven
-workflow and two open-source code-graph MCP tools, drsg completed every task
-shape — callers, impact, flow, and a compound audit — in 2–4 tool calls at
-the lowest marginal token cost, and was the only tool whose answers state
-their own bounds. Methodology and the full tables:
-[AGENT-BENCHMARKS.md](AGENT-BENCHMARKS.md) (the prompts and per-arm
-ledgers behind them are not published; that document says so). Design notes:
-[arch/07-llm.md](arch/07-llm.md) (digestion, plugins, watch) and
-[arch/06-mcp.md](arch/06-mcp.md) (the MCP surface).
+**Agent-side tooling.** The Claude Code hooks, the shared long-term memory
+daemon, and the router that puts several repositories behind one MCP surface
+live in
+[`drsg-harness-kit`](https://github.com/maidol/drsg-harness-kit) (Linux, Claude
+Code only) — drsg itself stays client-neutral and depends on none of it.
+
+**How it compares.** In agent-task benchmarks against a ripgrep-driven workflow
+and two open-source code-graph MCP tools, drsg completed every task shape in
+2–4 tool calls at the lowest marginal token cost, and was the only tool whose
+answers state their own bounds:
+[AGENT-BENCHMARKS.md](AGENT-BENCHMARKS.md).
+
 
 ## Documentation
 
@@ -529,10 +345,18 @@ above the core.
 
 ## Benchmarks
 
-A cross-engine comparison against an embedded graph DB (Kùzu), the universal
-embedded baseline (SQLite), and the industry-standard server (Neo4j). Every
-engine loads the **same** deterministic dataset — 100 K nodes, 500 K edges,
-128-dim vectors — and runs the **same** query sets on its own optimal path.
+Two measurements, both reproducible, both with their method and caveats in
+**[BENCHMARKS.md](BENCHMARKS.md)**.
+
+**As a code graph.** Digesting this repository — 97k lines, 13 parser plugins —
+takes 3.1 s and no model call, and answering "who calls this, and what would a
+change reach?" costs a median 925 tokens against 53,720 for grepping the name
+and reading the files that matched.
+
+**As a graph database**, against an embedded graph DB (Kùzu), the universal
+embedded baseline (SQLite), and the industry-standard server (Neo4j) — the same
+deterministic dataset (100 K nodes, 500 K edges, 128-dim vectors) through each
+engine's own optimal path:
 
 | Operation (median latency, ↓ better) | dr-strange | Kùzu | SQLite | Neo4j |
 |---|---|---|---|---|
@@ -541,16 +365,12 @@ engine loads the **same** deterministic dataset — 100 K nodes, 500 K edges,
 | 2-hop reachable set | **26.8 µs** | 6.72 ms | 64.8 µs | 842.9 µs |
 | Vector top-k query | **290.0 µs** | 7.43 ms | — | 2.43 ms |
 
-The embedded KV design keeps every graph query in single-digit-to-tens of
-microseconds — point lookup effectively tied with SQLite, expansion and
-multi-hop traversal fastest of the field — and vector search is where it pulls
-away: top-k ~8× below Neo4j and ~26× below Kùzu, with index build several
-times faster than both (full table in BENCHMARKS.md). Bulk load still trails the mature columnar
-engines. Every figure is the median of three measurement passes, all engines
-pinned to the same cores on one machine — **indicative, not a leaderboard**.
-Methodology, caveats, per-op spreads, the load-throughput figures, and how to
-re-run (`just bench-compare`, or `just benchmark` for dr-strange alone) are in
-**[BENCHMARKS.md](BENCHMARKS.md)**.
+The embedded KV design keeps graph queries in single-digit-to-tens of
+microseconds, and vector search is where it pulls away; bulk load still trails
+the mature columnar engines. Every figure is the median of three passes with
+all engines pinned to the same cores on one machine — **indicative, not a
+leaderboard**. Re-run with `just bench-compare`.
+
 
 ## License
 
