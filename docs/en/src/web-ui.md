@@ -79,6 +79,19 @@ The Dashboard presents database health and plane management.
   node/edge counts. A card selects the plane (the app-wide context), exports it
   as JSONL (a download the CLI's `import` reads back), or deletes it behind a
   type-to-confirm dialog. A "New plane" card creates one.
+- **Provenance.** A card states where its plane came from and what it may ask.
+  A plane served from a mounted database carries the mount's name; a plane that
+  attaches others (`plane.attach`) carries one tag per attachment, those on
+  another instance marked *remote* with the URL in the tooltip. A plane that is
+  neither mounted nor attaching anything shows no such row.
+- **Mounted databases.** When this process serves other stores alongside its
+  own (`db.mount`), a section below the plane cards lists each one: its name,
+  the path it was opened from, how many planes it contributes, and whether
+  those planes carry the mount's name as a prefix — which they do only when two
+  mounts offered the same plane name. Each plane is a button that selects it.
+  Nothing is copied and nothing is re-digested; the planes keep their own names
+  and appear among the cards above. The section states the directory mounts are
+  confined to, and is absent when nothing is mounted.
 
 ## Explore
 
