@@ -4,6 +4,33 @@ All notable changes to Dr Strange are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.21.0] - 2026-10-16
+
+The web UI shows what the database already knew: where each plane came from,
+and which of the routes a plane states actually meet. Both read existing
+JSON-RPC methods, so `openrpc.json` is unchanged and no SDK goes stale.
+
+### Added
+
+- **The dashboard states each plane's provenance.** A plane served from a
+  mounted database carries the mount's name; a plane that attaches others
+  carries one tag per attachment, those on another instance marked *remote*.
+  `plane.list` already returned the mount and `plane.attachments` the rest —
+  the dashboard simply never showed them.
+- **A "Mounted databases" section.** When this process serves other stores
+  alongside its own (`db.mount`), each is listed with its path, the planes it
+  contributes, and whether those planes carry the mount's name as a prefix,
+  together with the directory mounts are confined to. Absent when nothing is
+  mounted.
+- **A Wires tab in Explore.** It reads the routes a plane states — `serves` on
+  a handler, `requests` on a caller — and pairs them, over the same selection
+  the `wire` verb uses. A request nothing answers is marked rather than hidden.
+  Routes are shown both normalized and as written, filtered by verb or path
+  substring, and every symbol centers that node on the canvas. The matching
+  rule is core's own (equal paths; verbs equal or either one `*`) and is pinned
+  by its own tests so the browser's copy cannot drift from `Stated::answers` in
+  silence.
+
 ## [2.20.6] - 2026-10-16
 
 Documentation and the SDK manifests only; no shipped crate changed, so the
