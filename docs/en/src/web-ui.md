@@ -204,6 +204,36 @@ that is, and `db.stats` reports the setting as `retain_commits`. Raise it
 before you need the depth — versions past the floor are reclaimed at
 compaction and cannot be reached afterwards.
 
+## Wires
+
+An HTTP route is the one reference a parser cannot turn into an edge: the
+handler and the caller are often in different languages, in different
+repositories, and between them there is only a string. So the preprocessor
+plugins record what each side *states* — `serves` on a handler, `requests` on a
+caller, both as `VERB /path/{}` with every variable segment reduced — and the
+match is computed when someone asks rather than stored.
+
+Explore's **Wires** tab reads those statements for the current plane and pairs
+them. Reading the routes runs the same selection the `wire` verb does — every
+node stating either side, and nothing else — so a plane of any size answers
+with its routes rather than with itself.
+
+- **Matched** lists each request beside every declaration that answers it.
+  A request nothing answers is listed too, marked and tinted rather than
+  hidden: it is the more interesting half, and usually means the handler lives
+  in a repository this graph does not hold.
+- **Requests** and **Serves** list one side on its own, each route shown both
+  normalized and *as written*, so `/api/orders/{}` can be read back against the
+  `/api/orders/{id}` the source spells.
+- A verb filter and a path-substring filter narrow all three, and every symbol
+  is a link that centers that node on the canvas with its neighborhood.
+
+Two sides match on verb and path: the paths must be equal, and the verbs equal
+or either one `*` — a side that names no verb matches every verb on that path.
+Paths compare exactly, because the plugins normalized them when the graph was
+built; a route recorded by no plugin, or written in a form other than `VERB
+path`, is skipped rather than guessed at.
+
 ## Live feed
 
 Explore's **Live** tab opens a `plane.watch` subscription over the WebSocket and
