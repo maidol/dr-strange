@@ -33,6 +33,106 @@ export class DrsgAuthError extends DrsgError {
   }
 }
 
+/**
+ * A request did not complete within `timeoutMs`.
+ *
+ * Distinct from the other transport failures (which report as
+ * `connection failed: …`) because the right reaction differs: a timeout is
+ * often worth retrying or raising `timeoutMs` for, a refused connection is not.
+ * Code `-32000` like the rest of the transport errors.
+ */
+export class DrsgTimeoutError extends DrsgError {
+  readonly timeoutMs: number;
+
+  constructor(timeoutMs: number) {
+    super(-32000, `request timed out after ${timeoutMs} ms`);
+    this.name = "DrsgTimeoutError";
+    this.timeoutMs = timeoutMs;
+  }
+}
+
+// The public types below are deliberately structural rather than `typeof
+// fetch` / `typeof WebSocket`: those names come from whichever ambient
+// library the *SDK* was compiled against (bun's, or `lib: DOM`), and the
+// emitted `.d.ts` would then only type-check for a consumer with the same
+// ambients. Describing just the members the client uses lets the platform
+// `fetch` and `WebSocket` of Bun, Node and browsers — and a test double —
+// all satisfy them, with `AbortSignal` the only global type referenced.
+
+/** The subset of a `fetch` `Response` the client reads. */
+export interface ResponseLike {
+  ok: boolean;
+  status: number;
+  statusText: string;
+  json(): Promise<unknown>;
+}
+
+/** The request the client sends; a subset of `RequestInit`. */
+export interface RequestLike {
+  method: string;
+  headers: Record<string, string>;
+  body: string;
+  signal: AbortSignal;
+}
+
+/** A `fetch`-shaped function: the platform one, or a test double. */
+export type FetchLike = (url: string, init: RequestLike) => Promise<ResponseLike>;
+
+/** The one message field the change feed reads. */
+export interface MessageEventLike {
+  data: unknown;
+}
+
+// Method-style declaration so handler parameters are checked bivariantly,
+// as the DOM's own `WebSocket.onmessage` (typed with `MessageEvent`) and a
+// consumer's narrower handler must both be assignable to the slot.
+type Handler<E> = { bivarianceHack(ev: E): void }["bivarianceHack"];
+
+/** The subset of a WebSocket the change feed uses. */
+export interface WebSocketLike {
+  send(data: string): void;
+  close(): void;
+  onopen: Handler<unknown> | null;
+  onmessage: Handler<MessageEventLike> | null;
+  onclose: Handler<unknown> | null;
+  onerror: Handler<unknown> | null;
+}
+
+/** Handshake options a non-browser WebSocket accepts (Bun, Node >= 22's
+ *  undici, the `ws` package): extra headers on the upgrade request. */
+export interface WebSocketInit {
+  headers?: Record<string, string>;
+}
+
+/** A WebSocket constructor: the global one, or e.g. the `ws` package's.
+ *  Outside a browser the client also passes a second `WebSocketInit`
+ *  argument carrying the bearer header; the type names only the first
+ *  parameter so the browser's `(url, protocols?)` constructor still fits. */
+export type WebSocketConstructor = new (url: string) => WebSocketLike;
+
+/** The two-argument form the client actually invokes when it has a header to
+ *  send (see `WebSocketConstructor`). */
+type WebSocketConstructorWithInit = new (url: string, init: WebSocketInit) => WebSocketLike;
+
+/** Whether `g`'s global `WebSocket` takes a `{ headers }` init on the upgrade.
+ *  Only Bun's and Node's (undici, >= 22) do; the standard constructor's second
+ *  argument is a protocol list, so a browser window or worker would coerce the
+ *  init to the bogus subprotocol "[object Object]" and throw, and Deno's has
+ *  never accepted headers (denoland/deno#3452). Detection is therefore by
+ *  capability — a Bun or Node marker — not by the absence of `document`,
+ *  which a Web Worker also lacks. Deno is checked first because its Node
+ *  compatibility layer also exposes `process.versions.node`. */
+export function wsAcceptsHeaders(g: object = globalThis): boolean {
+  const env = g as {
+    Deno?: unknown;
+    Bun?: unknown;
+    process?: { versions?: { node?: unknown } };
+  };
+  if (typeof env.Deno !== "undefined") return false;
+  if (typeof env.Bun !== "undefined") return true;
+  return typeof env.process?.versions?.node === "string";
+}
+
 export interface DrsgOptions {
   /** Endpoint base, default `http://127.0.0.1:7700`. */
   baseUrl?: string;
@@ -41,7 +141,7 @@ export interface DrsgOptions {
   /** Per-request timeout in milliseconds, default 30000. */
   timeoutMs?: number;
   /** Override the `fetch` implementation (e.g. for tests). */
-  fetch?: typeof fetch;
+  fetch?: FetchLike;
 }
 
 /** One node or edge that changed in a commit (the change feed — ROADMAP §5). */
@@ -76,7 +176,15 @@ export interface WatchOptions {
    *  commits that landed while disconnected. */
   reconnect?: boolean;
   /** WebSocket implementation, when there is no global one (Node < 21). */
-  WebSocket?: typeof WebSocket;
+  WebSocket?: WebSocketConstructor;
+  /** Send the token as `?token=` on the URL instead of an `Authorization`
+   *  header. Defaults to `false` under Bun and Node, whose WebSocket takes a
+   *  `headers` init, and `true` everywhere else (browser windows and workers,
+   *  Deno), where the standard constructor cannot set headers. Set it
+   *  explicitly for a custom `WebSocket` implementation — `false` for one
+   *  that honours the `headers` init (the `ws` package), `true` for one that
+   *  ignores it. */
+  tokenInQuery?: boolean;
 }
 
 /** A live change-feed subscription; call `close()` to stop it. */
@@ -89,16 +197,14 @@ export class Client {
   readonly baseUrl: string;
   readonly token?: string;
   readonly timeoutMs: number;
-  private readonly _fetch: typeof fetch;
+  private readonly _fetch: FetchLike;
   private _id = 0;
 
   constructor(opts: DrsgOptions = {}) {
     this.baseUrl = (opts.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
-    const envToken =
-      typeof process !== "undefined" ? process.env?.DRSG_TOKEN : undefined;
-    this.token = opts.token ?? envToken;
+    this.token = opts.token ?? envToken();
     this.timeoutMs = opts.timeoutMs ?? 30_000;
-    const f = opts.fetch ?? globalThis.fetch;
+    const f = opts.fetch ?? (globalThis as { fetch?: FetchLike }).fetch;
     if (typeof f !== "function") {
       throw new Error("no global `fetch`; pass one via `fetch` in DrsgOptions");
     }
@@ -121,8 +227,12 @@ export class Client {
     if (this.token) headers.authorization = `Bearer ${this.token}`;
 
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), this.timeoutMs);
-    let resp: Response;
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      ctrl.abort();
+    }, this.timeoutMs);
+    let resp: ResponseLike;
     try {
       resp = await this._fetch(`${this.baseUrl}/rpc`, {
         method: "POST",
@@ -131,6 +241,8 @@ export class Client {
         signal: ctrl.signal,
       });
     } catch (e) {
+      // Our own abort is the timeout; anything else is the transport's.
+      if (timedOut) throw new DrsgTimeoutError(this.timeoutMs);
       const why = e instanceof Error ? e.message : String(e);
       throw new DrsgError(-32000, `connection failed: ${why}`);
     } finally {
@@ -169,24 +281,29 @@ export class Client {
     onChange: (event: ChangeEvent) => void,
     opts: WatchOptions = {},
   ): Subscription {
-    const WS = opts.WebSocket ?? (globalThis as { WebSocket?: typeof WebSocket }).WebSocket;
+    const WS = opts.WebSocket ?? (globalThis as { WebSocket?: WebSocketConstructor }).WebSocket;
     if (typeof WS !== "function") {
       throw new Error("no global WebSocket; pass one via `WebSocket` in WatchOptions");
     }
-    // http→ws, https→wss; the browser WS API can't set headers, so the token
-    // rides the query string (the server reads `?token=` there).
-    const url =
-      this.baseUrl.replace(/^http/, "ws") +
-      "/ws" +
-      (this.token ? `?token=${encodeURIComponent(this.token)}` : "");
+    // http→ws, https→wss. The server prefers `Authorization: Bearer` on the
+    // upgrade (arch/08-web-ui §4.1) and a URL credential lands in proxy and
+    // access logs, so where the WebSocket takes a headers init (Bun, Node)
+    // the token is a header and the URL is bare. The standard constructor
+    // (browser window or worker, Deno) cannot set headers; there the token
+    // rides the query string, which the server accepts for that reason.
+    const base = this.baseUrl.replace(/^http/, "ws") + "/ws";
+    const inBrowser = opts.tokenInQuery ?? !wsAcceptsHeaders();
+    const url = this.token && inBrowser ? `${base}?token=${encodeURIComponent(this.token)}` : base;
+    const init: WebSocketInit | undefined =
+      this.token && !inBrowser ? { headers: { authorization: `Bearer ${this.token}` } } : undefined;
 
     const reconnect = opts.reconnect ?? true;
     let closed = false;
-    let sock: WebSocket | null = null;
+    let sock: WebSocketLike | null = null;
     let backoff = 500;
 
     const open = (): void => {
-      const ws = new WS(url);
+      const ws = init ? new (WS as unknown as WebSocketConstructorWithInit)(url, init) : new WS(url);
       sock = ws;
       ws.onopen = (): void => {
         backoff = 500;
@@ -195,7 +312,7 @@ export class Client {
         if (opts.label) params.label = opts.label;
         ws.send(JSON.stringify({ jsonrpc: "2.0", method: "plane.watch", params, id: 1 }));
       };
-      ws.onmessage = (ev: MessageEvent): void => {
+      ws.onmessage = (ev: MessageEventLike): void => {
         let msg: { method?: string; params?: ChangeEvent };
         try {
           msg = JSON.parse(typeof ev.data === "string" ? ev.data : String(ev.data));
@@ -232,4 +349,11 @@ export class Client {
       },
     };
   }
+}
+
+/** `$DRSG_TOKEN` where there is a `process.env` (Node, Bun, Deno); else nothing. */
+function envToken(): string | undefined {
+  const proc = (globalThis as { process?: { env?: Record<string, string | undefined> } })
+    .process;
+  return proc?.env?.DRSG_TOKEN;
 }

@@ -10,9 +10,16 @@
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
+#include <sys/socket.h>
 #include <unistd.h>
 
 static int failures = 0;
+
+static int set_fail(drsg_error *err) {
+    err->code = 0;
+    snprintf(err->message, sizeof err->message, "client_new returned NULL");
+    return -1;
+}
 
 #define CHECK(cond, msg)                              \
     do {                                              \
@@ -81,6 +88,47 @@ static void *watch_thread(void *arg) {
         drsg_client_free(wc);
     }
     return NULL;
+}
+
+/* ---- hostile-peer and cancellation scaffolding --------------------------- */
+
+static int on_change_never(struct json_object *event, void *userdata) {
+    (void)event;
+    (void)userdata;
+    return 0;
+}
+
+struct cancel_args {
+    const char *base;
+    const char *token;
+    drsg_watch_ctl *ctl;
+    volatile int returned;
+    int rc;
+    drsg_error err;
+};
+
+/* Watches the real server with a ctl; nothing is ever committed, so only a
+ * cancel from the main thread can make this return. */
+static void *cancel_thread(void *arg) {
+    struct cancel_args *ca = arg;
+    drsg_client *wc = drsg_client_new(ca->base, ca->token);
+    if (wc) {
+        ca->rc = drsg_watch_cancellable(wc, "startup", NULL, on_change_never, NULL, ca->ctl, &ca->err);
+        drsg_client_free(wc);
+    }
+    ca->returned = 1;
+    return NULL;
+}
+
+/* Run drsg_watch against fake_ws.py with a token that selects its script. */
+static int fake_watch(const char *token, drsg_error *err) {
+    drsg_client *fc = drsg_client_new(getenv("DRSG_FAKE_URL"), token);
+    if (!fc) {
+        return set_fail(err);
+    }
+    int rc = drsg_watch(fc, "startup", NULL, on_change_never, NULL, err);
+    drsg_client_free(fc);
+    return rc;
 }
 
 /* Nodes and edges: create, relate, update, read back, and delete with the
@@ -232,6 +280,105 @@ int main(void) {
         json_object_put(wd);
     } else {
         CHECK(0, "pthread_create for watch");
+    }
+
+    /* Cancellation from another thread: the watch blocks on a feed that never
+     * fires, and drsg_watch_ctl_cancel must make it return 0 promptly. */
+    {
+        struct cancel_args ca = {getenv("DRSG_BASE_URL"), getenv("DRSG_TOKEN"),
+                                 drsg_watch_ctl_new(), 0, -2, {0}};
+        pthread_t cth;
+        CHECK(ca.ctl, "drsg_watch_ctl_new");
+        if (ca.ctl && pthread_create(&cth, NULL, cancel_thread, &ca) == 0) {
+            usleep(300000); /* let it connect and subscribe */
+            drsg_watch_ctl_cancel(ca.ctl);
+            for (int i = 0; i < 150 && !ca.returned; i++) {
+                usleep(20000); /* up to ~3s */
+            }
+            CHECK(ca.returned, "cancel: drsg_watch_cancellable returned after cancel");
+            if (ca.returned) {
+                pthread_join(cth, NULL);
+                CHECK(ca.rc == 0, "cancel: returns 0 (clean stop)");
+            } else {
+                pthread_detach(cth);
+            }
+        } else {
+            CHECK(0, "pthread_create for cancel");
+        }
+        drsg_watch_ctl_free(ca.ctl);
+    }
+
+    /* Cancellation that lands before the watch has connected: the watch must
+     * return 0 as soon as it connects, and a second cancel (documented as
+     * harmless) must not touch whatever socket has since reused that fd. The
+     * socketpair takes the lowest free descriptors, so with the fd still
+     * published the second cancel would shutdown() one of its ends. */
+    {
+        struct cancel_args ca = {getenv("DRSG_BASE_URL"), getenv("DRSG_TOKEN"),
+                                 drsg_watch_ctl_new(), 0, -2, {0}};
+        pthread_t cth;
+        CHECK(ca.ctl, "drsg_watch_ctl_new (early)");
+        drsg_watch_ctl_cancel(ca.ctl);
+        if (ca.ctl && pthread_create(&cth, NULL, cancel_thread, &ca) == 0) {
+            pthread_join(cth, NULL);
+            CHECK(ca.rc == 0, "early cancel: returns 0 without subscribing");
+            int sp[2] = {-1, -1};
+            char byte = 0;
+            CHECK(socketpair(AF_UNIX, SOCK_STREAM, 0, sp) == 0, "early cancel: socketpair");
+            drsg_watch_ctl_cancel(ca.ctl); /* second cancel: must be inert */
+            CHECK(send(sp[0], "x", 1, MSG_NOSIGNAL) == 1 && recv(sp[1], &byte, 1, 0) == 1 && byte == 'x',
+                  "early cancel: second cancel leaves an unrelated socket alone");
+            close(sp[0]);
+            close(sp[1]);
+        } else {
+            CHECK(0, "pthread_create for early cancel");
+        }
+        drsg_watch_ctl_free(ca.ctl);
+    }
+
+    /* Hostile peer (test/fake_ws.py): a frame header claiming 2^40 bytes must
+     * be refused with a typed error rather than allocated; a 101 whose
+     * Sec-WebSocket-Accept is wrong must not be trusted; the token must ride
+     * the upgrade as an Authorization: Bearer header, verbatim, with nothing
+     * in the URL (the fake answers 400 to a query string or any other
+     * spelling, so the watch only ends cleanly when the header was right);
+     * a token that could end the header line is refused before any I/O
+     * (proved against a closed loopback port: the refusal names the token,
+     * not the connection that was never attempted). */
+    if (getenv("DRSG_FAKE_URL")) {
+        drsg_error ferr;
+        int rc = fake_watch("big", &ferr);
+        CHECK(rc == -1 && ferr.code == DRSG_TRANSPORT_ERROR_CODE,
+              "oversized frame: watch fails with DRSG_TRANSPORT_ERROR_CODE");
+        CHECK(rc == -1 && strstr(ferr.message, "DRSG_WS_MAX_MESSAGE_BYTES") != NULL,
+              "oversized frame: message names the limit");
+
+        rc = fake_watch("bad-accept", &ferr);
+        CHECK(rc == -1 && strstr(ferr.message, "Sec-WebSocket-Accept") != NULL,
+              "forged handshake: Sec-WebSocket-Accept mismatch is rejected");
+
+        rc = fake_watch("a&b=c#d", &ferr);
+        CHECK(rc == 0, "token rides the upgrade as a bearer header, not the URL");
+        if (rc != 0) {
+            fprintf(stderr, "  (fake peer said: %s)\n", ferr.message);
+        }
+
+        rc = fake_watch("x\r\nX-Forged: 1", &ferr);
+        CHECK(rc == -1 && ferr.code == DRSG_TRANSPORT_ERROR_CODE
+                  && strstr(ferr.message, "control character") != NULL,
+              "token with a control character is refused before the handshake");
+
+        /* Nothing listens on 127.0.0.1:1, so a connect would fail with
+         * "connection failed"; the token error winning means the scan ran
+         * before any lookup or connect. */
+        drsg_client *dead = drsg_client_new("http://127.0.0.1:1", "x\r\nX-Forged: 1");
+        rc = dead ? drsg_watch(dead, "startup", NULL, on_change_never, NULL, &ferr) : -1;
+        CHECK(dead && rc == -1 && ferr.code == DRSG_TRANSPORT_ERROR_CODE
+                  && strstr(ferr.message, "control character") != NULL,
+              "token with a control character is refused before any I/O");
+        drsg_client_free(dead);
+    } else {
+        CHECK(0, "DRSG_FAKE_URL not set (run via test/run.sh)");
     }
 
     /* Bad token -> auth error (-32001). */

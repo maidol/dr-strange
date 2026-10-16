@@ -22,7 +22,10 @@ Dr Strange 提供**六种语言**的客户端库：TypeScript、Python、Go、Ja
 ## 连接与调用
 
 客户端由一个基地址与一个令牌构造；令牌默认取自 `DRSG_TOKEN` 环境变量，并以
-`Authorization: Bearer` 凭据的形式随每个请求一同发送。方法名与 RPC 方法一一对应，
+`Authorization: Bearer` 凭据的形式随每个请求（包括变更流背后的 WebSocket 升级请求）
+一同发送，绝不放在 URL 中。（只有在标准 `WebSocket` 构造器无法设置请求头的运行时——
+浏览器窗口或 Worker，以及 Deno——TypeScript 客户端才会在套接字上回退到 `?token=`；
+Bun 与 Node 发送请求头。）方法名与 RPC 方法一一对应，
 并适配各语言的命名习惯：
 
 | 语言 | 构造客户端 | 调用示例 |
@@ -57,7 +60,8 @@ console.log(stats.nodes, stats.edges);
 
 应用级失败（未知平面、非法计划）是一个 JSON-RPC 错误；被拒绝的凭据对应错误码
 `-32001`。各 SDK 都会把它包装成带类型的错误：TypeScript 与 Python 中的 `DrsgError` /
-`DrsgAuthError`，Go 中带 `IsAuthError` 的 `*drsg.Error`，Java 中的 `DrsgException` /
+`DrsgAuthError`（此外 TypeScript 客户端中超过 `timeoutMs` 的请求抛出 `DrsgTimeoutError`，Python 中
+非 JSON-RPC 的响应或畸形的变更流帧抛出 `DrsgProtocolError`），Go 中带 `IsAuthError` 的 `*drsg.Error`，Java 中的 `DrsgException` /
 `DrsgAuthException`，以及 C 中一个填充好的 `drsg_error`（配 `drsg_is_auth_error`）。
 
 ## 变更流
@@ -83,7 +87,7 @@ for event in db.watch("social"):
         print(event["seq"], c["op"], c["kind"], c["id"])
 ```
 
-**Go** —— 一个通道（channel）；取消 context 以停止。
+**Go** —— 一个通道（channel）；取消 context 以停止。拨号与握手同样遵守 context（无截止时间则为 30 秒），服务端断开时通道关闭，超过 `drsg.MaxFrameBytes` 的消息会结束订阅。
 
 ```go
 events, _ := db.Watch(ctx, "social")
@@ -94,7 +98,7 @@ for e := range events {
 }
 ```
 
-**Java** —— 一个监听器；返回的 `Subscription` 关闭它。
+**Java** —— 一个监听器；返回的 `Subscription` 关闭它（先发送关闭帧，再中止套接字，沉默的对端无法让它悬着）。监听器抛出的异常以 `WARNING` 记录日志，订阅继续。客户端本身是 `AutoCloseable` 的：`close()` 结束其订阅并回收自建的 `HttpClient`（通过 `Client.Options` 共享的除外）。
 
 ```java
 var sub = db.watch("social", null, event -> {
@@ -104,7 +108,10 @@ var sub = db.watch("social", null, event -> {
 ```
 
 **C** —— 一个回调；`drsg_watch` 阻塞，直到回调返回非零值（如有需要，请在一个线程上
-运行它）。
+运行它；`drsg_watch_cancellable` 接受一个 `drsg_watch_ctl`，其他线程可通过
+`drsg_watch_ctl_cancel` 取消）。一个 `drsg_client` 只包装一个 libcurl 句柄，不能被两个
+线程同时使用，因此 watch 线程需要自己的客户端。超过 `DRSG_WS_MAX_MESSAGE_BYTES` 的消息会以
+`DRSG_TRANSPORT_ERROR_CODE` 结束该 watch。
 
 ```c
 static int on_change(struct json_object *event, void *userdata) {

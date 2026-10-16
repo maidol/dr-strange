@@ -25,9 +25,12 @@ project or depend on it in place:
 ## Connecting and calling
 
 A client is constructed from a base URL and a token; the token defaults to the
-`DRSG_TOKEN` environment variable and rides each request as an
-`Authorization: Bearer` credential. Method names mirror the RPC method one to
-one, adapted to each language's convention:
+`DRSG_TOKEN` environment variable and rides each request — the WebSocket
+upgrade behind the change feed included — as an `Authorization: Bearer`
+credential, never in a URL. (The TypeScript client falls back to `?token=` on
+the socket where the standard `WebSocket` constructor cannot set headers — a
+browser window or worker, and Deno; Bun and Node send the header.) Method
+names mirror the RPC method one to one, adapted to each language's convention:
 
 | Language | Construct a client | Example call |
 |---|---|---|
@@ -62,7 +65,10 @@ out-parameter.
 
 An application-level failure (an unknown plane, a malformed plan) is a JSON-RPC
 error; a rejected credential is code `-32001`. The SDKs surface this as a typed
-error: `DrsgError` / `DrsgAuthError` in TypeScript and Python, a `*drsg.Error`
+error: `DrsgError` / `DrsgAuthError` in TypeScript and Python (plus
+`DrsgTimeoutError` for a request that outlives the TypeScript client's
+`timeoutMs`, and `DrsgProtocolError` for a non-JSON-RPC reply or a malformed
+change-feed frame in Python), a `*drsg.Error`
 with `IsAuthError` in Go, `DrsgException` / `DrsgAuthException` in Java, and a
 filled `drsg_error` (with `drsg_is_auth_error`) in C.
 
@@ -91,7 +97,9 @@ for event in db.watch("social"):
         print(event["seq"], c["op"], c["kind"], c["id"])
 ```
 
-**Go** — a channel; cancel the context to stop.
+**Go** — a channel; cancel the context to stop. The dial and upgrade honour
+the context too (30 s if it carries no deadline), the channel closes when the
+server hangs up, and a message over `drsg.MaxFrameBytes` ends the watch.
 
 ```go
 events, _ := db.Watch(ctx, "social")
@@ -102,7 +110,11 @@ for e := range events {
 }
 ```
 
-**Java** — a listener; the returned `Subscription` closes it.
+**Java** — a listener; the returned `Subscription` closes it (sending a close
+frame, then aborting the socket so a silent peer cannot hold it open). A
+listener that throws is logged at `WARNING` and the feed continues. The client
+itself is `AutoCloseable`: `close()` ends its subscriptions and reaps the
+`HttpClient` it built, unless one was shared through `Client.Options`.
 
 ```java
 var sub = db.watch("social", null, event -> {
@@ -112,7 +124,11 @@ var sub = db.watch("social", null, event -> {
 ```
 
 **C** — a callback; `drsg_watch` blocks until the callback returns non-zero (run
-it on a thread if needed).
+it on a thread if needed; `drsg_watch_cancellable` takes a `drsg_watch_ctl`
+that another thread can `drsg_watch_ctl_cancel`). A `drsg_client` wraps one
+libcurl handle and must not be used by two threads at once, so the watch thread
+needs a client of its own. A message over `DRSG_WS_MAX_MESSAGE_BYTES` ends the
+watch with `DRSG_TRANSPORT_ERROR_CODE`.
 
 ```c
 static int on_change(struct json_object *event, void *userdata) {

@@ -17,9 +17,15 @@ import urllib.error
 import urllib.request
 from collections.abc import Iterator
 from typing import Any
-from urllib.parse import quote, urlsplit
+from urllib.parse import urlsplit
 
 DEFAULT_BASE_URL = "http://127.0.0.1:7700"
+
+# The largest WebSocket frame we will buffer. A frame's length is a 64-bit
+# field chosen by the peer; without a ceiling a hostile or confused server
+# could make the client reserve gigabytes. The server itself caps request
+# bodies at 64 MiB, and a change event is far smaller, so match that.
+MAX_FRAME_BYTES = 64 * 1024 * 1024
 
 
 class DrsgError(Exception):
@@ -39,6 +45,20 @@ class DrsgAuthError(DrsgError):
     variable. With no token configured server-side, only the same-origin browser
     UI is authorized — a programmatic client must present one.
     """
+
+
+class DrsgProtocolError(DrsgError):
+    """The peer spoke something other than the protocol we expect.
+
+    Raised when ``/rpc`` answers with a body that is not a JSON-RPC response,
+    or when the change-feed WebSocket delivers a frame that is truncated, is
+    larger than ``MAX_FRAME_BYTES``, or is otherwise malformed. Code
+    ``-32000`` like the other transport-level failures, so callers that only
+    branch on ``DrsgError`` keep working.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(-32000, message)
 
 
 class _Client:
@@ -83,7 +103,12 @@ class _Client:
         except urllib.error.URLError as e:
             raise DrsgError(-32000, f"connection failed: {e.reason}") from e
 
-        msg = json.loads(raw)
+        try:
+            msg = json.loads(raw)
+        except ValueError as e:
+            raise DrsgProtocolError(f"invalid JSON-RPC response: {e}") from e
+        if not isinstance(msg, dict):
+            raise DrsgProtocolError("invalid JSON-RPC response: not an object")
         if "error" in msg:
             err = msg["error"]
             code = int(err.get("code", -32000))
@@ -137,6 +162,8 @@ class _WebSocket:
     built-in WebSocket. Client frames are masked; server frames are read,
     de-fragmented, and pings are answered."""
 
+    max_frame_bytes = MAX_FRAME_BYTES
+
     def __init__(self, sock: socket.socket) -> None:
         self._sock = sock
         self._buf = b""
@@ -147,7 +174,17 @@ class _WebSocket:
         secure = parts.scheme == "https"
         host = parts.hostname or "127.0.0.1"
         port = parts.port or (443 if secure else 80)
-        path = "/ws" + (f"?token={quote(token)}" if token else "")
+        # The token is a bearer header on the upgrade, the form the server
+        # prefers (arch/08-web-ui §4.1). `?token=` exists only for browsers,
+        # whose WebSocket API cannot set headers; a URL credential would end
+        # up in proxy and access logs, so a native client never sends one.
+        if token and any(ord(c) < 0x20 or ord(c) == 0x7F for c in token):
+            # A CR or LF would end the Authorization line early and let the
+            # rest of the token forge another header (or split the request);
+            # refused before any socket is opened, matching the Go/C/Java
+            # clients' handling of the same input.
+            raise DrsgError(-32000, "token contains a control character")
+        authz = f"Authorization: Bearer {token}\r\n" if token else ""
 
         raw = socket.create_connection((host, port), timeout=timeout)
         sock = (
@@ -157,8 +194,9 @@ class _WebSocket:
         )
         key = base64.b64encode(os.urandom(16)).decode()
         handshake = (
-            f"GET {path} HTTP/1.1\r\n"
+            "GET /ws HTTP/1.1\r\n"
             f"Host: {host}:{port}\r\n"
+            f"{authz}"
             "Upgrade: websocket\r\n"
             "Connection: Upgrade\r\n"
             f"Sec-WebSocket-Key: {key}\r\n"
@@ -199,12 +237,19 @@ class _WebSocket:
         self._sock.sendall(bytes(header) + _xor(payload, mask))
 
     def recv_text(self) -> str | None:
-        """The next complete text message, or ``None`` when the socket closes."""
+        """The next complete text message, or ``None`` when the socket closes.
+
+        A socket that closes cleanly between frames yields ``None``; one that
+        closes in the middle of a frame, or announces a frame (or a fragmented
+        message) larger than ``max_frame_bytes``, raises ``DrsgProtocolError``
+        so the caller can tell a finished feed from a broken one.
+        """
         message = b""
         while True:
-            head = self._read(2)
-            if len(head) < 2:
+            # EOF is only clean at a frame boundary with nothing buffered.
+            if not self._buf and not self._fill():
                 return None
+            head = self._read(2)
             fin = head[0] & 0x80
             opcode = head[0] & 0x0F
             masked = head[1] & 0x80
@@ -213,6 +258,19 @@ class _WebSocket:
                 length = struct.unpack("!H", self._read(2))[0]
             elif length == 127:
                 length = struct.unpack("!Q", self._read(8))[0]
+            if length > self.max_frame_bytes:
+                raise DrsgProtocolError(
+                    f"websocket frame of {length} bytes exceeds the "
+                    f"{self.max_frame_bytes}-byte limit"
+                )
+            # The cap bounds the reassembled message, not just one frame:
+            # a peer fragmenting a message into many small FIN-clear frames
+            # would otherwise grow ``message`` without limit.
+            if len(message) + length > self.max_frame_bytes:
+                raise DrsgProtocolError(
+                    f"websocket message of {len(message) + length}+ bytes "
+                    f"exceeds the {self.max_frame_bytes}-byte limit"
+                )
             mask = self._read(4) if masked else b""
             data = self._read(length) if length else b""
             if masked and data:
@@ -228,12 +286,21 @@ class _WebSocket:
             if fin:
                 return message.decode("utf-8", "replace")
 
+    def _fill(self) -> bool:
+        """Pull more bytes into the buffer; ``False`` once the peer has closed."""
+        chunk = self._sock.recv(65536)
+        if not chunk:
+            return False
+        self._buf += chunk
+        return True
+
     def _read(self, n: int) -> bytes:
+        """Exactly ``n`` bytes of the current frame, or a protocol error."""
         while len(self._buf) < n:
-            chunk = self._sock.recv(65536)
-            if not chunk:
-                return b""  # closed mid-frame
-            self._buf += chunk
+            if not self._fill():
+                raise DrsgProtocolError(
+                    f"websocket closed mid-frame ({len(self._buf)} of {n} bytes)"
+                )
         out, self._buf = self._buf[:n], self._buf[n:]
         return out
 
@@ -254,4 +321,14 @@ class _WebSocket:
 
 
 def _xor(data: bytes, mask: bytes) -> bytes:
-    return bytes(b ^ mask[i % 4] for i, b in enumerate(data))
+    """Apply the 4-byte RFC 6455 mask to ``data``.
+
+    Done as one big-integer xor rather than a per-byte loop: the change feed
+    can carry multi-megabyte records, and a Python-level loop over each byte
+    made unmasking the dominant cost of consuming it.
+    """
+    n = len(data)
+    if n == 0:
+        return data
+    key = (mask * (n // 4 + 1))[:n]
+    return (int.from_bytes(data, "big") ^ int.from_bytes(key, "big")).to_bytes(n, "big")
