@@ -4,6 +4,56 @@ All notable changes to Dr Strange are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.22.0] - 2026-10-17
+
+`drsg init` now configures the agent you run, not only the one this repository
+has seen before. The rest is supply chain: release archives carry signed
+provenance, and the advisories an audit found are gone.
+
+### Added
+
+- **`drsg init` configures an agent this machine has.** It wrote a config for
+  Cursor, OpenCode, Gemini CLI or Codex CLI only when the repository already
+  carried that tool's marker — which a fresh checkout never does. It now
+  accepts either signal, the repository's or the machine's, so a first run
+  sets up the agent you actually use. A tool neither names is still left
+  alone.
+- **The installers fall back to a mirror.** `--mirror <base-url>`
+  (`DRSG_MIRROR`, `-Mirror` on Windows) names a mirror holding the same
+  layout. GitHub is tried first and the mirror takes over only if that attempt
+  is failing or crawling; the SHA-256 is verified whichever source answers, so
+  a mirror is trusted for availability and never for content. `--no-mirror`
+  forbids it. Without a mirror configured nothing changes — a slow download is
+  left to finish rather than abandoned.
+- **Release archives carry SLSA build provenance**, signed through Sigstore
+  with no key to keep. Verify a download against the workflow and commit that
+  produced it:
+  `gh attestation verify <archive> --repo wangyingsm/dr-strange`.
+- **`npx drsg`.** The packaging for six npm packages — a wrapper and one
+  prebuilt binary per platform — and a release job that publishes them once an
+  `NPM_TOKEN` secret exists. Nothing is on npm yet.
+- **A security policy** (`SECURITY.md`), **Dependabot** across seven
+  ecosystems, an **OpenSSF Scorecard** run, and **CodeQL** over the Rust, web,
+  Python and workflow sources.
+
+### Fixed
+
+- **The Python client refuses TLS below 1.2.** `ssl.create_default_context`
+  verifies certificates and hostnames but leaves the floor wherever the
+  platform's OpenSSL puts it, which on older builds still admits TLS 1.0 and
+  1.1 — both withdrawn by RFC 8996.
+- **The TypeScript client strips trailing slashes without backtracking.**
+  `/\/+$/` over a caller-supplied base URL is quadratic on a string of many
+  slashes; a scan from the end says the same thing in linear time.
+- **The Java client builds on a patched Jackson** (2.17.2 → 2.18.11), clearing
+  fifteen advisories against `jackson-core` and `jackson-databind`.
+- **The dashboard build pulls no advisory-bearing package.** `devalue`,
+  `nanoid` and `source-map-js` carried nine advisories between them; `dist/`
+  is embedded in this binary, so a build dependency reaches users.
+- **A write token goes to the job that writes.** `release.yml` and `docs.yml`
+  granted `contents: write` and `pages: write` at the top level, handing a
+  write-scoped token to every job including the ones that only compile.
+
 ## [2.21.0] - 2026-10-16
 
 The web UI shows what the database already knew: where each plane came from,
