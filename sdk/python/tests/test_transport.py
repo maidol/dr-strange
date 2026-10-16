@@ -89,9 +89,11 @@ def test_connect_sends_bearer_header_and_a_bare_path():
 def test_connect_refuses_a_control_character_token_before_dialling():
     """A token holding CR/LF would end the Authorization line and forge another
     header; it is refused before any socket is opened."""
-    with mock.patch("socket.create_connection") as create:
-        with pytest.raises(DrsgError) as exc:
-            _WebSocket.connect("http://127.0.0.1:1", "x\r\nX-Forged: 1", 5.0)
+    with (
+        mock.patch("socket.create_connection") as create,
+        pytest.raises(DrsgError) as exc,
+    ):
+        _WebSocket.connect("http://127.0.0.1:1", "x\r\nX-Forged: 1", 5.0)
     assert exc.value.code == -32000
     assert "control character" in str(exc.value)
     create.assert_not_called()
@@ -211,9 +213,11 @@ class _Resp:
 @pytest.mark.parametrize("body", [b"<html>502</html>", b"", b"[1, 2]", b'"str"'])
 def test_non_jsonrpc_reply_is_a_protocol_error(body):
     c = _Client(token="t")
-    with mock.patch("urllib.request.urlopen", return_value=_Resp(body)):
-        with pytest.raises(DrsgProtocolError, match="invalid JSON-RPC response"):
-            c._call("db.stats")
+    with (
+        mock.patch("urllib.request.urlopen", return_value=_Resp(body)),
+        pytest.raises(DrsgProtocolError, match="invalid JSON-RPC response"),
+    ):
+        c._call("db.stats")
 
 
 def test_wellformed_reply_still_returns_the_result():
