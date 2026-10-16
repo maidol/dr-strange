@@ -120,6 +120,8 @@ chapter](https://wangyingsm.github.io/dr-strange/en/book/web-ui.html).
 | **Code digestion** | sandboxed wasm parser plugins turn a repository into a resolved call graph — thirteen official plugins, an SDK for community parsers |
 | **Commit-synced watch** | `serve watch` folds every commit into the plane, convergent with a full re-digest |
 | **Agent tools** | `context` · `search` · `describe` · `grep` · `trace` · `impact` · `fathom` · `snippet` · `history` · `recall` · `wire` — one round trip each |
+| **Attached planes** | `drsg attach` records that one plane may ask another — on this instance, or another drsg at a URL — so `impact --across` and `wire` answer across repositories |
+| **Mounted databases** | `drsg mount` serves another database's planes on a **running** server, each keeping its own name, writer and lifecycle; nothing is copied or re-digested |
 | **Backup / restore** | consistent, id-faithful whole-database snapshots |
 | **Read-only replicas** | `serve --follow` mirrors a running server for read-scaling across a cluster |
 | **Interfaces** | a web UI, six language SDKs, a CLI, and an MCP server speaking the agent verbs |
