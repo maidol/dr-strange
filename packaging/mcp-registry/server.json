@@ -1,0 +1,39 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.wangyingsm/dr-strange",
+  "title": "Dr Strange",
+  "description": "Code graph for coding agents: who calls this, what a change reaches, in one round trip.",
+  "version": "2.21.0",
+  "websiteUrl": "https://wangyingsm.github.io/dr-strange/en/book/introduction.html",
+  "repository": {
+    "url": "https://github.com/wangyingsm/dr-strange",
+    "source": "github"
+  },
+  "packages": [
+    {
+      "registryType": "oci",
+      "identifier": "ghcr.io/wangyingsm/dr-strange",
+      "version": "2.21.0",
+      "transport": {
+        "type": "streamable-http",
+        "url": "http://localhost:7700/mcp",
+        "headers": [
+          {
+            "name": "Authorization",
+            "description": "Bearer <token>, when the server was started with DRSG_TOKEN set. A loopback server started without one accepts its own browser UI only.",
+            "isRequired": false,
+            "isSecret": true
+          }
+        ]
+      },
+      "environmentVariables": [
+        {
+          "name": "DRSG_TOKEN",
+          "description": "Bearer token the server requires of every client. Omit on a loopback bind to run without authentication.",
+          "isRequired": false,
+          "isSecret": true
+        }
+      ]
+    }
+  ]
+}
