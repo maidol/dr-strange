@@ -4,6 +4,46 @@ All notable changes to Dr Strange are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.20.4] - 2026-10-16
+
+Nothing under `crates/` changed in this release: the drsg binary behaves
+exactly as 2.20.3's. What changed is the six SDKs, which ship from this
+repository rather than from a language registry, so they reach you through a
+tag.
+
+### Fixed
+
+- **A watch client's token no longer rides the URL.** Every SDK put the bearer
+  token in the change feed's query string — `/ws?token=…` — which is a token in
+  proxy logs, server logs and browser history. The Go, Python, TypeScript, Java
+  and C clients now send it as an `Authorization: Bearer` header on the
+  WebSocket upgrade, and refuse a token holding a control character before a
+  socket is opened at all — a CR or LF would end the header line and forge
+  another. The server has accepted both forms all along, so a newer client
+  works against an older server. The TypeScript client chooses by
+  **capability**, not by sniffing the document: Bun and Node send the header, a
+  browser window, a worker and Deno cannot set one on a `WebSocket` and still
+  fall back to `?token=`.
+- **The change feeds let go.** The Go subscription honours its context and
+  releases a closed peer; the C watch can be stopped from outside and withdraws
+  its socket when a cancel beats the connect; the Java feed drops a
+  `plane.change` carrying no payload instead of handing a subscriber a null
+  record, and tells a caller when its feed has died.
+- **Transports fail in their own vocabulary.** The Python client raises
+  `DrsgProtocolError` rather than leaking a `websockets` exception, and bounds
+  what a fragmented message may buffer. The TypeScript client names its timeout
+  and ships declarations that match it. A Java watch timeout names the
+  configured duration whichever of its two timers fired — its own handshake
+  deadline or the JDK's `connectTimeout` — where before one of them left a bare
+  "request timed out" to reach a caller who had just set 300ms.
+- **Clients can be closed and configured.** The Java client gains `close()` and
+  an options constructor that reaches `timeout` and `httpClient`, which
+  `Client.call` being protected had made unreachable from the typed API. The C
+  client states its one-client-per-thread contract.
+- **The C code generator bounds its fixed parameter arrays.** A future method
+  with more parameters than they hold becomes a build failure naming the method
+  rather than a silent stack overwrite. The generated output is unchanged.
+
 ## [2.20.3] - 2026-10-15
 
 ### Fixed
