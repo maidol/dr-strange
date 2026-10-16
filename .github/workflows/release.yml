@@ -5,9 +5,11 @@ on:
   push:
     tags: ["v*"]
 
+# Read-only by default; each job that writes asks for exactly what it writes.
+# A token scoped at the top is handed to every job, including the ones that
+# only compile — and that is what an audit flags.
 permissions:
-  contents: write # create the GitHub Release and upload assets
-  packages: write # push the image to GHCR
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -224,6 +226,9 @@ jobs:
 
   docker:
     name: Docker image → GHCR
+    permissions:
+      contents: read
+      packages: write # push the image to GHCR
     # Reuse the natively-built linux binaries instead of recompiling Rust under
     # QEMU emulation (which made this job ~50 min); the image build is now a COPY.
     needs: binaries

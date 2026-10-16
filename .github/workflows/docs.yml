@@ -8,10 +8,9 @@ on:
     paths: ["docs/**", ".github/workflows/docs.yml"]
   workflow_dispatch:
 
+# Read-only by default; only the job that deploys asks for Pages.
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 # One deployment at a time; don't cancel a publish mid-flight.
 concurrency:
@@ -50,6 +49,10 @@ jobs:
 
   deploy:
     needs: build
+    permissions:
+      contents: read
+      pages: write # publish the built book
+      id-token: write # the Pages deployment is OIDC-authenticated
     runs-on: ubuntu-latest
     environment:
       name: github-pages
