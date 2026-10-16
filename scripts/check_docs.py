@@ -22,6 +22,7 @@ or directly:
 from __future__ import annotations
 
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -34,6 +35,23 @@ HTML_REF = re.compile(r'(?:src|href)="([^"]+)"')
 FEATURE_ROW = re.compile(r"^\| \*\*(.+?)\*\* \|")
 HEADING = re.compile(r"^(#{2,3}) ")
 SKIP = ("http://", "https://", "mailto:", "#")
+# mdBook's output, `docs/.gitignore`'s only entry. The two editions link to
+# each other's built HTML, which exists after a build and never in the source
+# tree — a cross-edition link resolved at publish time, not a broken one.
+BUILD_OUTPUT = "/book/"
+
+
+def tracked() -> set[str]:
+    """Every path git holds, which is what a reader of the repository sees.
+
+    Asking the filesystem instead would let a build artifact or a file someone
+    forgot to `git add` answer for a reference. This check passed locally and
+    failed in CI for exactly that reason once.
+    """
+    out = subprocess.run(
+        ["git", "ls-files"], cwd=ROOT, capture_output=True, text=True, check=True
+    ).stdout
+    return {line for line in out.split("\n") if line}
 
 
 def docs() -> list[Path]:
@@ -50,16 +68,32 @@ def references(text: str) -> set[str]:
 
 
 def check_references(paths: list[Path]) -> list[str]:
-    """A local reference must name a file, from the repo root or beside its page."""
+    """A local reference must name a tracked file, from the repo root or
+    beside its own page. A directory counts: some links point at one."""
+    known = tracked()
+    dirs = {d for f in known for d in _parents(f)}
     bad = []
     for path in paths:
+        rel_dir = path.parent.relative_to(ROOT).as_posix()
         for ref in sorted(references(path.read_text(encoding="utf-8"))):
             target = ref.split("#")[0]
-            if not target:
+            if not target or BUILD_OUTPUT in f"/{target}":
                 continue
-            if not ((ROOT / target).exists() or (path.parent / target).exists()):
-                bad.append(f"{path.relative_to(ROOT)}: {ref} names no file")
+            candidates = {
+                Path(target).as_posix().lstrip("/"),
+                (Path(rel_dir) / target).as_posix() if rel_dir != "." else target,
+            }
+            resolved = {Path(c).resolve().relative_to(ROOT).as_posix()
+                        for c in candidates
+                        if str(Path(c).resolve()).startswith(str(ROOT))}
+            if not (resolved & known or resolved & dirs):
+                bad.append(f"{path.relative_to(ROOT)}: {ref} names no tracked file")
     return bad
+
+
+def _parents(path: str) -> set[str]:
+    parts = path.split("/")[:-1]
+    return {"/".join(parts[:i + 1]) for i in range(len(parts))}
 
 
 def check_readme_parity() -> list[str]:
