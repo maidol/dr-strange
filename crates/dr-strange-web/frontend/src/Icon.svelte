@@ -42,6 +42,9 @@
     mounted: '<ellipse cx="12" cy="6" rx="7" ry="2.6"/><path d="M5 6v5c0 1.5 3.1 2.6 7 2.6s7-1.1 7-2.6V6"/><path d="M5 11v5c0 1.5 3.1 2.6 7 2.6"/><path d="M15 18h6M18 15l3 3-3 3"/>',
     attached:
       '<circle cx="6" cy="12" r="2.4"/><circle cx="18" cy="6" r="2.4"/><circle cx="18" cy="18" r="2.4"/><path d="M8.2 11 15.8 7"/><path d="M8.2 13l7.6 4"/>',
+    // a route stated on both sides of a boundary
+    wires:
+      '<path d="M3 8h4a4 4 0 0 1 4 4 4 4 0 0 0 4 4h4"/><circle cx="3" cy="8" r="1.6"/><circle cx="21" cy="16" r="1.6"/><path d="M14 5h7M14 5l2.5-2.5M14 5l2.5 2.5"/>',
   }
 </script>
 

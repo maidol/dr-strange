@@ -911,6 +911,84 @@ nav button.active {
 }
 
 /* ---- analyze bar (graph algorithms, ROADMAP §1) ---- */
+/* ---- Wires: the routes a plane states, and which of them meet ---------- */
+.wire-bar .wire-path {
+  flex: 1 1 14rem;
+  min-width: 8rem;
+}
+.wire-bar .wire-count {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 0.8rem;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.wire-hint {
+  margin: 0.7rem 0 0;
+  color: var(--muted);
+  font-size: 0.88rem;
+  line-height: 1.5;
+  max-width: 78ch;
+}
+.wire-table {
+  width: 100%;
+  margin-top: 0.6rem;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+.wire-table th {
+  text-align: left;
+  padding: 0.25rem 0.5rem;
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.wire-table td {
+  padding: 0.3rem 0.5rem;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.wire-table code {
+  font-family: ui-monospace, monospace;
+  font-size: 0.82rem;
+}
+.wire-table td.written {
+  color: var(--muted);
+}
+/* A request nothing here answers: the interesting half, so it is marked
+   rather than hidden — the handler may live in a repository this graph does
+   not hold. */
+.wire-table tr.unanswered td {
+  background: color-mix(in oklab, var(--accent) 7%, transparent);
+}
+.wire-none {
+  color: var(--muted);
+  font-style: italic;
+}
+.wire-node {
+  display: inline-block;
+  margin: 0 0.3rem 0.15rem 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font-family: ui-monospace, monospace;
+  font-size: 0.82rem;
+  text-align: left;
+  cursor: pointer;
+}
+.wire-node:hover {
+  text-decoration: underline;
+}
+.wire-label {
+  margin-left: 0.3rem;
+  color: var(--muted);
+  font-size: 0.74rem;
+}
+
 .algo-bar {
   display: flex;
   align-items: center;

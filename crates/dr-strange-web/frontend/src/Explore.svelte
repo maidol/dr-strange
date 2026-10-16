@@ -5,6 +5,7 @@
   import { Plot } from './plot.js'
   import { renderMarkdown } from './markdown.js'
   import { formatVector, unwrapVector, vectorDims } from './vectors.js'
+  import { statedFrom, matchRequests } from './wires.js'
   import CreatePlane from './CreatePlane.svelte'
   import Icon from './Icon.svelte'
 
@@ -213,6 +214,21 @@
   let feed = $state([]) // [{ seq, kind, op, id, labels, record }], newest first
   let feedLabel = $state('') // '' = all labels, else narrow the subscription
   let feedPaused = $state(false) // stop streaming without leaving the tab
+
+  // ---- Wires: the routes this plane states, and which of them meet --------
+  //
+  // An HTTP route is the one reference a parser cannot turn into an edge: the
+  // handler and the caller are often in different languages and repositories,
+  // and between them there is only a string. So the plugins write what each
+  // side *states* — `serves` on a handler, `requests` on a caller, both as
+  // `VERB /path/{}` with every variable segment already reduced — and the
+  // match is computed when someone asks, never stored.
+  let wires = $state([]) // { side, verb, path, written, id, key, label, file, line }
+  let wiresLoaded = $state(false)
+  let wiresBusy = $state(false)
+  let wirePath = $state('') // substring filter over the normalised path
+  let wireVerb = $state('') // '' = any verb
+  let wireView = $state('matched') // matched | serves | requests
   let feedLive = $state(false) // WebSocket connected?
 
   function onChange(params) {
@@ -1092,6 +1108,37 @@
 
   // Center a specific node (from header search): show it plus its 1-hop
   // neighborhood and select it.
+  // The same selection core's `wire` makes (`compact.rs`, `route_plan`): every
+  // node stating either side, and nothing else — so a plane of any size
+  // answers with its routes rather than with itself.
+  async function loadWires() {
+    wiresBusy = true
+    error = null
+    try {
+      const res = await rpc('plane.cypher', {
+        plane,
+        query: 'MATCH (n) WHERE n.serves IS NOT NULL OR n.requests IS NOT NULL RETURN n',
+      })
+      wires = statedFrom(res?.nodes ?? [])
+      wiresLoaded = true
+      status = `${wires.length} route${wires.length === 1 ? '' : 's'} stated in “${plane}”`
+    } catch (e) {
+      error = e.message
+    } finally {
+      wiresBusy = false
+    }
+  }
+
+  let wireVerbs = $derived([...new Set(wires.map((w) => w.verb))].sort())
+  let wiresShown = $derived(
+    wires.filter(
+      (w) =>
+        (!wirePath || w.path.toLowerCase().includes(wirePath.toLowerCase())) &&
+        (!wireVerb || w.verb === wireVerb)
+    )
+  )
+  let wireMatches = $derived(matchRequests(wiresShown, wires))
+
   async function focusNode(id) {
     error = null
     try {
@@ -1232,6 +1279,7 @@
       <Icon name="timetravel" /> Time-travel{#if asOf != null}<span class="tt-dot" aria-hidden="true"></span>{/if}
     </button>
   {/if}
+  <button class:active={tab === 'wires'} onclick={() => (tab = 'wires')}><Icon name="wires" /> Wires</button>
   <button class:active={tab === 'live'} onclick={() => (tab = 'live')}>
     <Icon name="live" /> Live{#if tab === 'live' && feedLive}<span class="live-dot" aria-hidden="true"></span>{/if}
   </button>
@@ -1381,6 +1429,103 @@
       <span class="tt-empty">Only one commit so far — make more changes to travel back through history.</span>
     {/if}
   </div>
+{:else if tab === 'wires'}
+  <div class="algo-bar wire-bar">
+    <button onclick={loadWires} disabled={wiresBusy} title="Read every route this plane states">
+      {wiresBusy ? 'Reading…' : wiresLoaded ? 'Refresh' : 'Read routes'}
+    </button>
+    <span class="algo-sp-label">view</span>
+    <select bind:value={wireView} title="Matched pairs, or one side on its own">
+      <option value="matched">matched</option>
+      <option value="requests">requests</option>
+      <option value="serves">serves</option>
+    </select>
+    <span class="algo-sp-label">verb</span>
+    <select bind:value={wireVerb} title="Only routes stated with this verb">
+      <option value="">any</option>
+      {#each wireVerbs as v (v)}<option value={v}>{v}</option>{/each}
+    </select>
+    <input
+      class="wire-path"
+      bind:value={wirePath}
+      placeholder="path contains…"
+      title="Filter on the normalised path, e.g. /api/orders"
+    />
+    {#if wiresLoaded}
+      <span class="wire-count">
+        {wiresShown.filter((w) => w.side === 'serves').length} serves ·
+        {wiresShown.filter((w) => w.side === 'requests').length} requests
+      </span>
+    {/if}
+  </div>
+
+  {#if !wiresLoaded}
+    <p class="wire-hint">
+      A route is the one reference a parser cannot turn into an edge: the handler
+      and the caller are often in different languages, and between them there is
+      only a string. Each side states what it knows — <code>serves</code> on a
+      handler, <code>requests</code> on a caller — and the match is computed on
+      demand rather than stored. Read the routes to see both.
+    </p>
+  {:else if wireView === 'matched'}
+    {#if !wireMatches.length}
+      <p class="wire-hint">No request matches this filter.</p>
+    {:else}
+      <table class="wire-table">
+        <thead>
+          <tr><th>request</th><th>from</th><th>answered by</th></tr>
+        </thead>
+        <tbody>
+          {#each wireMatches as m (m.req.id + m.req.side + m.req.verb + m.req.path)}
+            <tr class:unanswered={!m.serves.length}>
+              <td><code>{m.req.verb} {m.req.path}</code></td>
+              <td>
+                <button class="wire-node" onclick={() => focusNode(m.req.id)} title={m.req.file ? `${m.req.file}:${m.req.line}` : 'Centre this node'}>
+                  {m.req.key}
+                </button>
+              </td>
+              <td>
+                {#if m.serves.length}
+                  {#each m.serves as sv (sv.id + sv.verb + sv.path)}
+                    <button class="wire-node" onclick={() => focusNode(sv.id)} title={sv.file ? `${sv.file}:${sv.line}` : 'Centre this node'}>
+                      {sv.key}
+                    </button>
+                  {/each}
+                {:else}
+                  <span class="wire-none" title="Nothing in this plane declares a handler for that path — it may be served by a repository this graph does not hold">nothing here serves it</span>
+                {/if}
+              </td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+    {/if}
+  {:else}
+    {@const rows = wiresShown.filter((w) => w.side === wireView)}
+    {#if !rows.length}
+      <p class="wire-hint">No {wireView} match this filter.</p>
+    {:else}
+      <table class="wire-table">
+        <thead>
+          <tr><th>route</th><th>as written</th><th>symbol</th></tr>
+        </thead>
+        <tbody>
+          {#each rows as w (w.id + w.side + w.verb + w.path)}
+            <tr>
+              <td><code>{w.verb} {w.path}</code></td>
+              <td class="written">{#if w.written && w.written !== w.path}<code>{w.written}</code>{:else}—{/if}</td>
+              <td>
+                <button class="wire-node" onclick={() => focusNode(w.id)} title={w.file ? `${w.file}:${w.line}` : 'Centre this node'}>
+                  {w.key}
+                </button>
+                {#if w.label}<span class="wire-label">{w.label}</span>{/if}
+              </td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+    {/if}
+  {/if}
 {:else if tab === 'live'}
   <div class="algo-bar live-bar">
     <button
