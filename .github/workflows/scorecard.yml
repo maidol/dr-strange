@@ -1,0 +1,52 @@
+# OpenSSF Scorecard: an outside, automated read of this repository's supply-chain
+# posture — pinned actions, branch protection, token permissions, dependency
+# update automation, published releases. It judges the practices, not the code,
+# and the score is public so a reader need not take this project's word for it.
+name: Scorecard
+
+on:
+  # The default branch only: Scorecard describes the project as it stands, and
+  # its published result is keyed to that branch.
+  push:
+    branches: [master]
+  # Branch-protection findings are the half that changes without a commit.
+  branch_protection_rule:
+  schedule:
+    - cron: "17 4 * * 1" # Mondays, early, away from the hour everyone picks
+  workflow_dispatch:
+
+permissions: read-all
+
+jobs:
+  analysis:
+    name: Scorecard analysis
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write # upload the SARIF to the Security tab
+      id-token: write # sign the published result, keylessly
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false # Scorecard checks for this, and it is right to
+      - name: Run analysis
+        uses: ossf/scorecard-action@fa7117db83c52d787ae5a89f350999701505d78e # v2.5.0
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          # Publishes to the OpenSSF API, which is what makes the README badge
+          # resolve and lets anyone re-read the score without running this.
+          publish_results: true
+      - name: Keep the raw result
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        with:
+          name: scorecard-results
+          path: results.sarif
+          retention-days: 5
+      # Findings land in the Security tab, where they are read alongside
+      # everything else rather than only inside this run's log.
+      - name: Upload to code scanning
+        uses: github/codeql-action/upload-sarif@ce5e7eeac396d720fe2d802714996c8ce561e311 # v3
+        with:
+          sarif_file: results.sarif
