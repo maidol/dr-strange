@@ -125,6 +125,8 @@ jobs:
       - uses: taiki-e/install-action@3f74d7c16a4242f1c95561e98edc25d36adb4375 # v2.87.12
         with:
           tool: mdbook
+      - name: Links and EN/ZH parity
+        run: python3 scripts/check_docs.py
       - name: Build (en)
         run: mdbook build docs/en
       - name: Build (zh)

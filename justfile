@@ -192,8 +192,10 @@ gate-features:
 gate-frontend:
     cd crates/dr-strange-web/frontend && bun install --frozen-lockfile && bun run lint && bun run build && bun test
 
-# CI's `docs` job: both editions of the book must build.
+# CI's `docs` job: both editions of the book must build, every local
+# reference must name a file, and the two READMEs must match in shape.
 gate-docs:
+    python3 scripts/check_docs.py
     mdbook build docs/en
     mdbook build docs/zh
 
