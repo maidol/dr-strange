@@ -4,6 +4,34 @@ All notable changes to Dr Strange are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.20.5] - 2026-10-16
+
+Like 2.20.4, nothing under `crates/` that ships changed: `release.yml` builds
+only `dr-strange-cli` and `dr-strange-mcp`, and the benchmark harness is
+neither. The binary behaves exactly as 2.20.4's.
+
+### Fixed
+
+- **The vector benchmark now checks that it was right, not only that it was
+  fast.** It timed ANN queries and never scored them, so an index returning
+  the wrong neighbours quickly read as a win. `drsg-bench gen` writes an exact
+  brute-force top-100 for a sample of the vector queries, computed from the
+  values it actually wrote to the dataset; every engine scores its ANN answer
+  against that one shared oracle, and a `vector_recall` row carries the mean
+  recall and the `k` it was scored at. One oracle serves any `k` up to 100
+  without regenerating the data.
+- **The comparators measure what drsg measures.** Each loads through its own
+  bulk path — Kùzu's `COPY`, SQLite's `executemany`, Neo4j's `UNWIND` — and the
+  report says where the engines genuinely differ instead of presenting unlike
+  work as like. The load row now also says where each engine parses its CSV:
+  SQLite's timed `executemany` parses lazily, which is not the same work as a
+  loader that parses up front.
+- **The evidence behind the published table is kept.**
+  `benchmarks/results/*.json` — per-op figures, pass count, recorded spread —
+  is no longer ignored, so the table in `BENCHMARKS.md` can be checked and
+  reproduced rather than taken on trust. `AGENT-BENCHMARKS.md` also says what
+  that benchmark cannot show.
+
 ## [2.20.4] - 2026-10-16
 
 Nothing under `crates/` changed in this release: the drsg binary behaves
