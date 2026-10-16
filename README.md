@@ -11,6 +11,9 @@
   <a href="https://github.com/wangyingsm/dr-strange/actions/workflows/release.yml"><img src="https://github.com/wangyingsm/dr-strange/actions/workflows/release.yml/badge.svg" alt="Release"></a>
   <a href="https://github.com/wangyingsm/dr-strange/actions/workflows/docs.yml"><img src="https://github.com/wangyingsm/dr-strange/actions/workflows/docs.yml/badge.svg" alt="Docs"></a>
   <a href="https://github.com/wangyingsm/dr-strange/releases/latest"><img src="https://img.shields.io/github/v/release/wangyingsm/dr-strange?label=release&color=blue" alt="Latest release"></a>
+  <a href="https://github.com/wangyingsm/dr-strange/actions/workflows/codeql.yml"><img src="https://github.com/wangyingsm/dr-strange/actions/workflows/codeql.yml/badge.svg" alt="CodeQL"></a>
+  <a href="https://scorecard.dev/viewer/?uri=github.com/wangyingsm/dr-strange"><img src="https://api.securityscorecards.dev/projects/github.com/wangyingsm/dr-strange/badge" alt="OpenSSF Scorecard"></a>
+  <a href="SECURITY.md#what-ships-and-how-to-check-it"><img src="https://img.shields.io/badge/provenance-signed-0b8043" alt="Signed build provenance"></a>
   <a href="LICENSE-MIT"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue" alt="License: MIT OR Apache-2.0"></a>
 </p>
 
