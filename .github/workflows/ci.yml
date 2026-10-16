@@ -181,7 +181,7 @@ jobs:
       # v7, so `@v9` does not resolve even though v9.0.0 is the latest release.
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
       - name: Test (drift + e2e)
-        run: uv run --with pytest pytest -q
+        run: uv run --locked pytest -q
         working-directory: sdk/python
 
   sdk-go:
@@ -306,7 +306,7 @@ jobs:
         run: cargo machete
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
       - name: Lint
-        run: uv run --with ruff ruff check .
+        run: uv run --locked --with ruff ruff check .
         working-directory: sdk/python
       # The bench scripts belong to no package, so they carry the SDK's rules
       # explicitly rather than inheriting a pyproject they are not under.

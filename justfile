@@ -149,7 +149,7 @@ gate-hooks:
 gate-supply:
     cargo deny check
     cargo machete
-    cd sdk/python && uv run --with ruff ruff check .
+    cd sdk/python && uv run --locked --with ruff ruff check .
     # The bench scripts belong to no package, so they carry the SDK's rules
     # explicitly rather than inheriting a pyproject they are not under.
     uv run --no-project --with ruff ruff check benchmarks/ \
@@ -210,7 +210,7 @@ gate-docs:
 gate-sdk: _drsg-for-sdk
     @test -x "{{drsg_bin}}" || { echo "gate: no executable drsg at {{drsg_bin}} — every SDK suite skips a missing DRSG_BIN instead of failing, so the gate would pass with no e2e coverage. Point CARGO_TARGET_DIR at the real target dir, or unset CARGO_BUILD_TARGET." >&2; exit 1; }
     cd sdk/typescript && bun install --frozen-lockfile && DRSG_BIN="{{drsg_bin}}" bun test
-    cd sdk/python && DRSG_BIN="{{drsg_bin}}" env -u PYTHONPATH uv run --with pytest pytest -q
+    cd sdk/python && DRSG_BIN="{{drsg_bin}}" env -u PYTHONPATH uv run --locked pytest -q
     cd sdk/go && DRSG_BIN="{{drsg_bin}}" go test ./...
     cd sdk/java && DRSG_BIN="{{drsg_bin}}" ./mvnw -q -B test
     cd sdk/c && DRSG_BIN="{{drsg_bin}}" make test
