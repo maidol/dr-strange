@@ -1943,3 +1943,48 @@ fn a_rebuild_that_cannot_route_the_tree_keeps_the_plane_it_has() {
     resync(&db, "code", &tree.host(), &plugins, "test", "r2").unwrap();
     assert!(key_id(&db, "a.aa::f").is_some());
 }
+
+/// A manifest is claimed by *filename*, and the table that does it must not
+/// let two plugins claim the same name — the first match would silently win.
+#[test]
+fn a_filename_claims_one_plugin_and_only_one() {
+    // Compose, in every spelling the tool itself accepts, and case-folded
+    // because the lookup lowercases.
+    for name in [
+        "compose.yaml",
+        "compose.yml",
+        "docker-compose.yaml",
+        "docker-compose.yml",
+        "docker-compose.override.yml",
+        "DOCKER-COMPOSE.YML",
+    ] {
+        assert_eq!(
+            manifest_plugin_for(&format!("deploy/{name}")),
+            Some("compose"),
+            "{name}"
+        );
+    }
+    assert_eq!(manifest_plugin_for("package.json"), Some("deps"));
+
+    // A YAML file that is not a Compose file is claimed by nobody, which is
+    // the whole reason this routes by name instead of by extension.
+    for name in [
+        "k8s/deployment.yaml",
+        ".github/workflows/ci.yml",
+        "chart/values.yaml",
+        "compose.yaml.bak",
+    ] {
+        assert_eq!(manifest_plugin_for(name), None, "{name}");
+    }
+
+    // No filename is claimed twice across the table.
+    let mut seen: Vec<&str> = Vec::new();
+    for (_, files) in MANIFEST_PLUGINS {
+        for f in *files {
+            assert!(!seen.contains(f), "{f} is claimed by two plugins");
+            seen.push(f);
+            // A claim the lookup could never match is a dead entry.
+            assert_eq!(*f, f.to_ascii_lowercase(), "{f} is not lowercase");
+        }
+    }
+}

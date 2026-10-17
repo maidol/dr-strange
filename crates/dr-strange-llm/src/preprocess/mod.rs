@@ -981,26 +981,51 @@ fn stamp_provenance(out: &mut Preprocessed, mark: &str) {
 /// files beside it, another registered later reads its own, and a name with
 /// nothing installed under it leaves those files exactly where they are
 /// today — read as prose, and said so in the notes. Nothing is guessed.
-const MANIFEST_PLUGINS: &[(&str, &[&str])] = &[(
-    "deps",
-    &[
-        "package.json",
-        "go.mod",
-        "requirements.txt",
-        "pyproject.toml",
-        "pom.xml",
-        "build.gradle",
-        "build.gradle.kts",
-    ],
-)];
+const MANIFEST_PLUGINS: &[(&str, &[&str])] = &[
+    (
+        "deps",
+        &[
+            "package.json",
+            "go.mod",
+            "requirements.txt",
+            "pyproject.toml",
+            "pom.xml",
+            "build.gradle",
+            "build.gradle.kts",
+        ],
+    ),
+    // A Compose file is a filename too, and for a sharper reason than a
+    // build manifest: claiming `.yml` would take every Kubernetes manifest,
+    // chart and CI workflow in the tree from whoever reads them.
+    (
+        "compose",
+        &[
+            "compose.yaml",
+            "compose.yml",
+            "docker-compose.yaml",
+            "docker-compose.yml",
+            "compose.override.yaml",
+            "compose.override.yml",
+            "docker-compose.override.yaml",
+            "docker-compose.override.yml",
+        ],
+    ),
+];
+
+/// The reserved plugin name that claims this path by filename, whether or
+/// not anything is installed under it.
+fn manifest_plugin_for(path: &str) -> Option<&'static str> {
+    let base = Path::new(path).file_name()?.to_str()?.to_ascii_lowercase();
+    MANIFEST_PLUGINS
+        .iter()
+        .find(|(_, files)| files.contains(&base.as_str()))
+        .map(|(name, _)| *name)
+}
 
 /// The plugin that claims this file by name, when one is installed.
 fn manifest_handler(registry: &[Box<dyn Preprocessor>], path: &str) -> Option<usize> {
-    let base = Path::new(path).file_name()?.to_str()?.to_ascii_lowercase();
-    let (name, _) = MANIFEST_PLUGINS
-        .iter()
-        .find(|(_, files)| files.contains(&base.as_str()))?;
-    registry.iter().position(|p| p.manifest().name == *name)
+    let name = manifest_plugin_for(path)?;
+    registry.iter().position(|p| p.manifest().name == name)
 }
 
 /// Extension of `name`, lowercased, without the dot. `""` when there is none.
