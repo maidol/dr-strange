@@ -18,6 +18,13 @@ What this measures, and why it is three numbers rather than one:
   thought to forbid. A false edge is worse than a miss: it sends an agent to
   rewrite code that was never involved.
 
+  **Impact** — "what would a change to this reach?", computed as the set of
+  symbols that reach a subject through the calls the tool recorded. This is
+  where an edge error stops being one line in a report: a missing call hides
+  a whole subtree of callers, and a false one drags in code that was never
+  involved. Scored over resolved calls only, so no tool is asked to guess
+  through an interface.
+
   **Honesty** — at the call sites where syntax genuinely cannot settle the
   target (an interface, a function value, a bound method), does the tool say
   so, or does it pick one and sound certain? Scored separately because a tool
@@ -168,7 +175,45 @@ def score(key: dict, edges: set, declared: set) -> dict:
             # carries the lower-bound note — but the agent is not told which
             # call went unrecorded, only that some may have.
             blanket.append(e)
+    # Who reaches `of`, following the tool's own edges backwards.
+    reverse = {}
+    for a, b in edges:
+        reverse.setdefault(b, set()).add(a)
+    # And who *may* reach it: the same walk over every edge the key allows,
+    # including the candidates at ambiguous sites and an interface method's
+    # implementations. Without this, a tool is marked wrong for being more
+    # capable — resolving `h = upper; h(s)` really does put viaFuncValue in
+    # upper's blast radius — or for a defensible model of interface dispatch.
+    permitted = {}
+    for a, b in legitimate:
+        permitted.setdefault(b, set()).add(a)
+
+    def walk(graph: dict, start: str) -> set:
+        seen, stack = set(), [start]
+        while stack:
+            for caller in graph.get(stack.pop(), ()):
+                if caller not in seen:
+                    seen.add(caller)
+                    stack.append(caller)
+        return seen
+
+    impact = []
+    for e in key.get("impact", []):
+        seen = walk(reverse, e["of"])
+        want = set(e["reaches"])
+        allowed = walk(permitted, e["of"]) | want
+        impact.append({
+            **e,
+            "hit": sorted(want & seen),
+            "missing": sorted(want - seen),
+            # Only a reach the key cannot justify at all. Restricted to
+            # located symbols: one the key never heard of is out of scope
+            # here, not a false claim.
+            "extra": sorted((seen - allowed) & universe),
+        })
+
     return {
+        "impact": impact,
         "found": found, "missed": missed, "asserted": asserted,
         "per_site": per_site, "blanket": blanket, "guessed": guessed,
         "followed": followed, "invented": invented,
@@ -200,6 +245,19 @@ def report(name: str, key: dict, s: dict) -> None:
         print(f"    WRONG     {e['from']} -> {e['to']}  ({e['why']})")
     for e in s["guessed"]:
         print(f"    GUESSED   {e['from']} picked {e['picked']} at {e['site']}")
+    imp = s.get("impact", [])
+    if imp:
+        hit = sum(len(i["hit"]) for i in imp)
+        want = sum(len(i["hit"]) + len(i["missing"]) for i in imp)
+        extra = sum(len(i["extra"]) for i in imp)
+        pct = hit / want * 100 if want else 0.0
+        print(f"  impact     {pct:5.1f}%   {hit}/{want} reaching symbols found"
+              + (f"; {extra} that do not reach it" if extra else "; none invented"))
+        for i in imp:
+            for m in i["missing"]:
+                print(f"    UNSEEN    {m} reaches {i['of']} and was not reported")
+            for x in i["extra"]:
+                print(f"    OVERREACH {x} does not reach {i['of']}")
     for a, b in invented:
         print(f"    INVENTED  {a} -> {b}  (no such call, and not a candidate anywhere)")
     for e in s["blanket"]:

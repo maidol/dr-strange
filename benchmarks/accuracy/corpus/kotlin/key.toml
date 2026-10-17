@@ -141,6 +141,36 @@ candidates = ["acme.normalize"]
 why = "`::normalize` names the function as a value; the call site is Function1.invoke"
 
 # ---------------------------------------------------------------------------
+# IMPACT — "what would a change to this reach?", the question an agent asks
+# before it edits anything. Scored as a set, over the calls a parser can
+# resolve: every symbol below reaches the subject through `resolved` edges
+# only, so no tool is asked to guess through an interface.
+#
+# This is where an edge error stops being a line in a report. One missing call
+# hides a whole subtree of callers; one false call drags in code that was
+# never involved. The set is the consequence an agent actually experiences.
+# ---------------------------------------------------------------------------
+[[impact]]
+of = "acme.normalize"
+reaches = ["acme.Dispatch.direct", "acme.Dispatch.shout", "acme.Dispatch.viaExtension", "acme.Dispatch.viaLambda", "acme.Service.save"]
+why = "every symbol that reaches it through calls a parser can resolve"
+
+[[impact]]
+of = "acme.AuditStore.note"
+reaches = ["acme.AuditStore.get", "acme.AuditStore.put"]
+why = "every symbol that reaches it through calls a parser can resolve"
+
+[[impact]]
+of = "acme.Cache.get"
+reaches = ["acme.Service.warm"]
+why = "every symbol that reaches it through calls a parser can resolve"
+
+[[impact]]
+of = "acme.Dispatch.shout"
+reaches = ["acme.Dispatch.viaExtension"]
+why = "every symbol that reaches it through calls a parser can resolve"
+
+# ---------------------------------------------------------------------------
 # ABSENT — must never be asserted.
 # ---------------------------------------------------------------------------
 [[absent]]

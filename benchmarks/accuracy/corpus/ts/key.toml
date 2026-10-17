@@ -135,6 +135,36 @@ candidates = []
 why = "an optional call on a structural type with no named implementation"
 
 # ---------------------------------------------------------------------------
+# IMPACT — "what would a change to this reach?", the question an agent asks
+# before it edits anything. Scored as a set, over the calls a parser can
+# resolve: every symbol below reaches the subject through `resolved` edges
+# only, so no tool is asked to guess through an interface.
+#
+# This is where an edge error stops being a line in a report. One missing call
+# hides a whole subtree of callers; one false call drags in code that was
+# never involved. The set is the consequence an agent actually experiences.
+# ---------------------------------------------------------------------------
+[[impact]]
+of = "store.normalize"
+reaches = ["dynamic.direct", "dynamic.viaArrow", "service.Service.save"]
+why = "every symbol that reaches it through calls a parser can resolve"
+
+[[impact]]
+of = "store.AuditStore.note"
+reaches = ["store.AuditStore.get", "store.AuditStore.put"]
+why = "every symbol that reaches it through calls a parser can resolve"
+
+[[impact]]
+of = "service.Cache.get"
+reaches = ["service.Service.warm"]
+why = "every symbol that reaches it through calls a parser can resolve"
+
+[[impact]]
+of = "service.Service.label"
+reaches = ["service.Service.describe"]
+why = "every symbol that reaches it through calls a parser can resolve"
+
+# ---------------------------------------------------------------------------
 # ABSENT — must never be asserted.
 # ---------------------------------------------------------------------------
 [[absent]]

@@ -173,6 +173,36 @@ candidates = ["Cache.Get"]
 why = "a bound method value assigned to a local"
 
 # ---------------------------------------------------------------------------
+# IMPACT — "what would a change to this reach?", the question an agent asks
+# before it edits anything. Scored as a set, over the calls a parser can
+# resolve: every symbol below reaches the subject through `resolved` edges
+# only, so a tool is not asked to guess through an interface.
+#
+# This is where an edge error stops being a line in a report. One missing call
+# hides a whole subtree of callers; one false call drags in code that was
+# never involved. The set is the consequence an agent actually experiences.
+# ---------------------------------------------------------------------------
+[[impact]]
+of = "normalize"
+reaches = ["Service.Save", "main"]
+why = "Save calls it directly; main reaches it through Save"
+
+[[impact]]
+of = "AuditStore.note"
+reaches = ["AuditStore.Get", "AuditStore.Put"]
+why = """both decorator methods call it. Nothing further: what calls *them* goes through the Store interface, which no parser can settle."""
+
+[[impact]]
+of = "Cache.Get"
+reaches = ["Service.Warm", "viaDefer", "viaGo"]
+why = "the annotated receiver, plus the deferred and goroutine call sites"
+
+[[impact]]
+of = "upper"
+reaches = ["main", "viaClosure"]
+why = """viaClosure calls it inside a closure literal, and main calls viaClosure. viaFuncValue is absent on purpose: it reaches upper only through a function value, which the key marks ambiguous."""
+
+# ---------------------------------------------------------------------------
 # ABSENT — pairs that must never be asserted. A tool that matches on a bare
 # method name will produce these. Scored as precision.
 # ---------------------------------------------------------------------------

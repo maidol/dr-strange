@@ -122,6 +122,36 @@ candidates = ["normalize"]
 why = "a function pointer held in a local; the name appears as a value"
 
 # ---------------------------------------------------------------------------
+# IMPACT — "what would a change to this reach?", the question an agent asks
+# before it edits anything. Scored as a set, over the calls a parser can
+# resolve: every symbol below reaches the subject through `resolved` edges
+# only, so no tool is asked to guess through an interface.
+#
+# This is where an edge error stops being a line in a report. One missing call
+# hides a whole subtree of callers; one false call drags in code that was
+# never involved. The set is the consequence an agent actually experiences.
+# ---------------------------------------------------------------------------
+[[impact]]
+of = "normalize"
+reaches = ["direct", "service_save", "via_macro"]
+why = "every symbol that reaches it through calls a parser can resolve"
+
+[[impact]]
+of = "note"
+reaches = ["audit_get", "audit_put"]
+why = "every symbol that reaches it through calls a parser can resolve"
+
+[[impact]]
+of = "cache_get"
+reaches = ["service_warm"]
+why = "every symbol that reaches it through calls a parser can resolve"
+
+[[impact]]
+of = "service_label"
+reaches = ["service_describe"]
+why = "every symbol that reaches it through calls a parser can resolve"
+
+# ---------------------------------------------------------------------------
 # ABSENT — must never be asserted.
 # ---------------------------------------------------------------------------
 [[absent]]

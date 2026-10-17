@@ -147,6 +147,36 @@ candidates = []
 why = "the method name is a string; nothing static can name the target"
 
 # ---------------------------------------------------------------------------
+# IMPACT — "what would a change to this reach?", the question an agent asks
+# before it edits anything. Scored as a set, over the calls a parser can
+# resolve: every symbol below reaches the subject through `resolved` edges
+# only, so no tool is asked to guess through an interface.
+#
+# This is where an edge error stops being a line in a report. One missing call
+# hides a whole subtree of callers; one false call drags in code that was
+# never involved. The set is the consequence an agent actually experiences.
+# ---------------------------------------------------------------------------
+[[impact]]
+of = "Acme.Text.Normalize"
+reaches = ["Acme.Dispatch.Direct", "Acme.Dispatch.ViaExtension", "Acme.Dispatch.ViaLambda", "Acme.Service.Save", "Acme.TextExtensions.Shout"]
+why = "every symbol that reaches it through calls a parser can resolve"
+
+[[impact]]
+of = "Acme.AuditStore.Note"
+reaches = ["Acme.AuditStore.Get", "Acme.AuditStore.Put"]
+why = "every symbol that reaches it through calls a parser can resolve"
+
+[[impact]]
+of = "Acme.Cache.Get"
+reaches = ["Acme.Service.Warm"]
+why = "every symbol that reaches it through calls a parser can resolve"
+
+[[impact]]
+of = "Acme.Service.Label"
+reaches = ["Acme.Service.Describe"]
+why = "every symbol that reaches it through calls a parser can resolve"
+
+# ---------------------------------------------------------------------------
 # ABSENT — must never be asserted.
 # ---------------------------------------------------------------------------
 [[absent]]
