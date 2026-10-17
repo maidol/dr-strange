@@ -1,0 +1,169 @@
+# Ground truth for the Go fixture.
+#
+# Names are tool-neutral: a package-level function is its bare name, a method
+# is `Type.Method`, and anything outside this module keeps its import path.
+# Every tool's output is normalised into this vocabulary before scoring, so
+# the key favours no one's internal naming.
+#
+# The three buckets below are not three ways of saying the same thing. They
+# ask different questions of a parser, and a tool can do well at one and
+# badly at another.
+
+[corpus]
+language = "go"
+entry = "."
+module = "acme/orders"
+# Checked against `callgraph` (golang.org/x/tools) — see crosscheck_go.py.
+# RTA and CHA both over-approximate, in opposite directions, so neither is
+# used as the key itself; they are used to catch an edge in `resolved` that
+# does not exist, and an edge in `absent` that does.
+crosscheck = "callgraph -algo=rta and -algo=cha"
+
+# ---------------------------------------------------------------------------
+# RESOLVED — the target is unambiguous from syntax alone. A parser that misses
+# one of these is incomplete. Scored as recall.
+# ---------------------------------------------------------------------------
+[[resolved]]
+from = "Service.Save"
+to = "normalize"
+why = "a package-level function called by name"
+
+[[resolved]]
+from = "normalize"
+to = "strings.TrimSpace"
+why = "an imported function, named at the call site"
+
+[[resolved]]
+from = "Service.Warm"
+to = "Cache.Get"
+why = "method on a parameter whose type is written in the signature"
+
+[[resolved]]
+from = "AuditStore.Get"
+to = "AuditStore.note"
+why = "a method on the receiver's own type"
+
+[[resolved]]
+from = "AuditStore.Put"
+to = "AuditStore.note"
+why = "a method on the receiver's own type"
+
+[[resolved]]
+from = "MemStore.Get"
+to = "fmt.Errorf"
+why = "an imported function inside a conditional"
+
+[[resolved]]
+from = "viaDefer"
+to = "Cache.Get"
+why = "a deferred call is still a call"
+
+[[resolved]]
+from = "viaGo"
+to = "Cache.Get"
+why = "a goroutine call is still a call"
+
+[[resolved]]
+from = "viaClosure"
+to = "upper"
+why = "called inside a closure literal, which is still this function's text"
+
+[[resolved]]
+from = "main"
+to = "Service.Load"
+why = "method on a local whose type is the composite literal beside it"
+
+[[resolved]]
+from = "main"
+to = "Service.Save"
+why = "method on a local whose type is the composite literal beside it"
+
+[[resolved]]
+from = "main"
+to = "viaFuncValue"
+why = "a package-level function called by name"
+
+[[resolved]]
+from = "main"
+to = "viaClosure"
+why = "a package-level function called by name"
+
+[[resolved]]
+from = "main"
+to = "fmt.Println"
+why = "an imported function"
+
+# ---------------------------------------------------------------------------
+# AMBIGUOUS — the target depends on a value's dynamic type, which no parser
+# reading syntax can know. The right answer is to say so: record the call as
+# unresolved, or point at the interface method, but never assert one concrete
+# implementation. Scored as honesty, not as recall.
+# ---------------------------------------------------------------------------
+[[ambiguous]]
+from = "Service.Load"
+site = "s.store.Get(id)"
+interface_method = "Store.Get"
+candidates = ["MemStore.Get", "AuditStore.Get"]
+why = "the field's type is the interface Store; which implementation is injected is a runtime fact"
+
+[[ambiguous]]
+from = "Service.Save"
+site = "s.store.Put(...)"
+interface_method = "Store.Put"
+candidates = ["MemStore.Put", "AuditStore.Put"]
+why = "same, through Put"
+
+[[ambiguous]]
+from = "AuditStore.Get"
+site = "a.inner.Get(id)"
+interface_method = "Store.Get"
+candidates = ["MemStore.Get", "AuditStore.Get"]
+why = "a decorator holding the interface it decorates; RTA reports the self-edge too"
+
+[[ambiguous]]
+from = "AuditStore.Put"
+site = "a.inner.Put(...)"
+interface_method = "Store.Put"
+candidates = ["MemStore.Put", "AuditStore.Put"]
+why = "same, through Put"
+
+[[ambiguous]]
+from = "viaFuncValue"
+site = "h(s)"
+candidates = ["upper"]
+why = "a variable of a function type; CHA answers with every function of that signature in the universe, which is the measure of how little syntax settles here"
+
+[[ambiguous]]
+from = "viaMethodValue"
+site = "get(key)"
+candidates = ["Cache.Get"]
+why = "a bound method value assigned to a local"
+
+# ---------------------------------------------------------------------------
+# ABSENT — pairs that must never be asserted. A tool that matches on a bare
+# method name will produce these. Scored as precision.
+# ---------------------------------------------------------------------------
+[[absent]]
+from = "Service.Warm"
+to = "Store.Get"
+why = "Warm calls Cache.Get; Store.Get merely shares the name"
+
+[[absent]]
+from = "Service.Warm"
+to = "MemStore.Get"
+why = "same trap, one implementation further"
+
+[[absent]]
+from = "Service.Load"
+to = "Cache.Get"
+why = "Load goes through Store, which Cache does not implement"
+
+[[absent]]
+from = "normalize"
+to = "upper"
+why = "both take and return a string and neither calls the other"
+
+[[absent]]
+from = "viaDefer"
+to = "Store.Get"
+why = "the deferred call is on *Cache"
