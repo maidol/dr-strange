@@ -1,0 +1,124 @@
+# Ground truth for the Rust fixture.
+#
+# Names are tool-neutral: `module::free_function`, `module::Type::method`.
+#
+# Rust writes types down more than Go or Python, so the ambiguity moves rather
+# than disappears: a `dyn Trait` call is settled at runtime, a generic's target
+# only after monomorphisation, and a macro can produce a call that appears in
+# no line of source a parser reads.
+
+[corpus]
+language = "rust"
+entry = "."
+module = "orders"
+# No call-graph oracle exists for Rust the way `callgraph` does for Go:
+# rust-analyzer emits none, and a MIR-level analysis is a larger undertaking
+# than the fixture it would check. `crosscheck_rust.py` therefore checks the
+# one claim that can be checked mechanically — what the macro expands to —
+# with `cargo expand`, and says plainly that the rest rests on the key.
+crosscheck = "cargo expand, for the macro case only"
+
+# ---------------------------------------------------------------------------
+# RESOLVED — unambiguous from syntax alone.
+# ---------------------------------------------------------------------------
+[[resolved]]
+from = "service::Service::save"
+to = "store::normalize"
+why = "a free function, imported and called by name"
+
+[[resolved]]
+from = "service::Service::warm"
+to = "service::Cache::get"
+why = "the parameter is typed `&Cache`, so the target is written down"
+
+[[resolved]]
+from = "service::Service::describe"
+to = "service::Service::label"
+why = "a call on `self` within the same impl"
+
+[[resolved]]
+from = "store::AuditStore::put"
+to = "store::AuditStore::note"
+why = "a call on `self` within the same impl"
+
+[[resolved]]
+from = "dispatch::via_closure"
+to = "store::normalize"
+why = "called inside a closure literal, which is this function's own text"
+
+[[resolved]]
+from = "dispatch::via_macro"
+to = "store::normalize"
+why = "the macro expands to a call to normalize; `cargo expand` confirms it"
+
+# ---------------------------------------------------------------------------
+# AMBIGUOUS — settled at runtime or at monomorphisation, not by syntax.
+# ---------------------------------------------------------------------------
+[[ambiguous]]
+from = "service::Service::load"
+site = "self.store.get(key)"
+interface_method = "store::Store::get"
+candidates = ["store::MemStore::get", "store::AuditStore::get"]
+why = "a `Box<dyn Store>`; which implementation runs is a runtime fact"
+
+[[ambiguous]]
+from = "service::Service::save"
+site = "self.store.put(...)"
+interface_method = "store::Store::put"
+candidates = ["store::MemStore::put", "store::AuditStore::put"]
+why = "same, through put"
+
+[[ambiguous]]
+from = "store::AuditStore::get"
+site = "self.inner.get(key)"
+interface_method = "store::Store::get"
+candidates = ["store::MemStore::get", "store::AuditStore::get"]
+why = "a call on the generic parameter S; the target depends on the instantiation"
+
+[[ambiguous]]
+from = "store::AuditStore::put"
+site = "self.inner.put(...)"
+interface_method = "store::Store::put"
+candidates = ["store::MemStore::put", "store::AuditStore::put"]
+why = "same, through put"
+
+[[ambiguous]]
+from = "dispatch::via_fn_pointer"
+site = "f(value)"
+candidates = ["store::normalize"]
+why = "a function pointer held in a local; the name appears as a value, not at the call"
+
+[[ambiguous]]
+from = "dispatch::via_generic"
+site = "value.to_string()"
+interface_method = "ToString::to_string"
+candidates = []
+why = """a trait method on a generic bounded by ToString; every implementor is a candidate. Naming the trait method is the honest resolution — it says what was called without pretending to know which implementation runs — so the key counts that as declaring the gap rather than guessing."""
+
+# ---------------------------------------------------------------------------
+# ABSENT — must never be asserted.
+# ---------------------------------------------------------------------------
+[[absent]]
+from = "service::Service::warm"
+to = "store::Store::get"
+why = "warm takes a &Cache; Store::get merely shares the name"
+
+[[absent]]
+from = "service::Service::warm"
+to = "store::MemStore::get"
+why = "same trap, one implementation further"
+
+[[absent]]
+from = "service::Service::load"
+to = "service::Cache::get"
+why = "Cache does not implement Store"
+
+[[absent]]
+from = "store::normalize"
+to = "service::Service::label"
+why = "both return String and neither calls the other"
+
+[[absent]]
+from = "dispatch::via_generic"
+to = "store::normalize"
+why = "via_generic calls ToString::to_string, not normalize"

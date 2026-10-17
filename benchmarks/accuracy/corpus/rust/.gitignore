@@ -1,0 +1,3 @@
+# `cargo build` output; the corpus is source only.
+/target
+/Cargo.lock
