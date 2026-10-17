@@ -1,0 +1,3 @@
+# The TypeScript oracle's dependency; `bun install` here restores it.
+node_modules/
+bun.lock

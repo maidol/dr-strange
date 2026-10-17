@@ -1,0 +1,9 @@
+{
+  "name": "drsg-accuracy-oracle",
+  "private": true,
+  "type": "module",
+  "description": "Resolves the TypeScript fixture's calls with the compiler's own checker, to check the key.",
+  "devDependencies": {
+    "typescript": "5.9.3"
+  }
+}

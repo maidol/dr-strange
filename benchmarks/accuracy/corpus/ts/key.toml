@@ -1,0 +1,131 @@
+# Ground truth for the TypeScript fixture.
+#
+# Names are tool-neutral: `module.function`, `module.Class.method`, where the
+# module is the file stem.
+
+[corpus]
+language = "ts"
+entry = "."
+# drsg prefixes a TypeScript key with the directory it was digested from.
+module = "ts"
+# TypeScript has a real oracle: the compiler's own checker resolves a call
+# expression to the declaration it binds to. `crosscheck_ts.py` drives it
+# through the TypeScript API and compares. Its bound is the mirror of Go's
+# RTA: the checker answers for the *declared* type, so an interface call
+# resolves to the interface's method and never to an implementation.
+crosscheck = "the TypeScript compiler's type checker"
+
+# ---------------------------------------------------------------------------
+# RESOLVED — unambiguous from syntax and annotations alone.
+# ---------------------------------------------------------------------------
+[[resolved]]
+from = "service.Service.save"
+to = "store.normalize"
+why = "an imported function, called by name"
+
+[[resolved]]
+from = "service.Service.warm"
+to = "service.Cache.get"
+why = "the parameter is annotated `Cache`"
+
+[[resolved]]
+from = "service.Service.describe"
+to = "service.Service.label"
+why = "a call on `this` within the same class"
+
+[[resolved]]
+from = "store.AuditStore.get"
+to = "store.AuditStore.note"
+why = "a call on `this` within the same class"
+
+[[resolved]]
+from = "store.AuditStore.put"
+to = "store.AuditStore.note"
+why = "a call on `this` within the same class"
+
+[[resolved]]
+from = "dynamic.direct"
+to = "store.normalize"
+why = "the plain case, for contrast with the four below it"
+
+[[resolved]]
+from = "dynamic.viaArrow"
+to = "store.normalize"
+why = "called inside an arrow function, which is this function's own text"
+
+# ---------------------------------------------------------------------------
+# AMBIGUOUS — the annotation gives a shape, not an implementation.
+# ---------------------------------------------------------------------------
+[[ambiguous]]
+from = "service.Service.load"
+site = "this.store.get(key)"
+interface_method = "store.Store.get"
+candidates = ["store.MemStore.get", "store.AuditStore.get"]
+why = "the field is typed `Store`; which class was constructed is a runtime fact"
+
+[[ambiguous]]
+from = "service.Service.save"
+site = "this.store.put(...)"
+interface_method = "store.Store.put"
+candidates = ["store.MemStore.put", "store.AuditStore.put"]
+why = "same, through put"
+
+[[ambiguous]]
+from = "store.AuditStore.get"
+site = "this.inner.get(key)"
+interface_method = "store.Store.get"
+candidates = ["store.MemStore.get", "store.AuditStore.get"]
+why = "a decorator holding the interface it decorates"
+
+[[ambiguous]]
+from = "store.AuditStore.put"
+site = "this.inner.put(...)"
+interface_method = "store.Store.put"
+candidates = ["store.MemStore.put", "store.AuditStore.put"]
+why = "same, through put"
+
+[[ambiguous]]
+from = "dynamic.viaFnValue"
+site = "f(value)"
+candidates = ["store.normalize"]
+why = "the function is bound to a local first"
+
+[[ambiguous]]
+from = "dynamic.viaIndex"
+site = "obj[name]()"
+candidates = []
+why = "the method name is a string value; nothing static can name the target"
+
+[[ambiguous]]
+from = "dynamic.viaOptional"
+site = "s?.get()"
+candidates = []
+why = "an optional call on a structural type with no named implementation"
+
+# ---------------------------------------------------------------------------
+# ABSENT — must never be asserted.
+# ---------------------------------------------------------------------------
+[[absent]]
+from = "service.Service.warm"
+to = "store.Store.get"
+why = "warm takes a Cache; Store.get merely shares the name"
+
+[[absent]]
+from = "service.Service.warm"
+to = "store.MemStore.get"
+why = "same trap, one implementation further"
+
+[[absent]]
+from = "service.Service.load"
+to = "service.Cache.get"
+why = "Cache does not implement Store"
+
+[[absent]]
+from = "dynamic.direct"
+to = "dynamic.viaArrow"
+why = "neither calls the other; both call normalize"
+
+[[absent]]
+from = "store.normalize"
+to = "store.MemStore.put"
+why = "normalize touches no store at all"
