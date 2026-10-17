@@ -183,13 +183,82 @@ as its own outcome rather than as either a resolution or a guess, because the
 other seven plugins leave the same shape unresolved. They are incomplete there,
 not dishonest; C is more complete.
 
+## Against the other two tools
+
+The point of a tool-neutral key. Same fixture, same key, same three questions,
+scored by the same code — `--tool codegraph` or `--tool codebase-memory-mcp`.
+
+drsg 2.21.0, codegraph 1.6.2, codebase-memory-mcp 0.12.1, over the Go fixture:
+
+| | recall | false edges | ambiguous sites: gap named / followed / blanket |
+|---|---|---|---|
+| **drsg** | **100%** (14/14) | **0** | 2 / 0 / 4 |
+| **codegraph** | 79% (11/14) | **0** | 4 / 2 / 0 |
+| **codebase-memory-mcp** | 71% (10/14) | **2** | 3 / 2 / 1 |
+
+**codegraph's three misses are all calls into the standard library**, which it
+does not index at all — `callees normalize` returns zero where the source
+calls `strings.TrimSpace`. That is a scope decision rather than a resolution
+failure, and within the fixture's own symbols its recall is 11 of 11. It is
+also the only tool here that resolves both local function bindings.
+
+**codebase-memory-mcp asserts two calls that do not exist.** It has merged the
+three methods named `Get`. From its own graph:
+
+```
+MATCH (a)-[:CALLS]->(b) WHERE a.file = 'service.go' AND a.start_line = 30
+  Get "30" -> note  store.go:49
+  Get "30" -> Get   store.go:13
+```
+
+`service.go:30` is `func (c *Cache) Get(key int) string { return c.hits[key] }`
+— a one-line map read that calls nothing. This is the same-name collision the
+fixture was built to expose, and it is the failure that matters most: an agent
+told that `Cache.Get` reaches `AuditStore.note` will go and read code that was
+never involved.
+
+### Identity is by file and line, never by name
+
+The three tools do not agree on what a symbol is called. drsg writes
+`acme/orders.Cache.Get`; codegraph writes `Get` and distinguishes it from the
+other two by printing `service.go:30`; codebase-memory-mcp qualifies an
+interface method but leaves a struct's method bare. So every key records where
+each symbol is declared, and each adapter maps whatever a tool returns back
+through that. Matching on names would have measured this harness's
+name-mangling and called it a competitor's accuracy.
+
+An interface method to its own implementations is also **not** counted as a
+false call: codegraph answers `callees Store.Get` with `MemStore.Get` and
+`AuditStore.Get`, which is a defensible model of what an agent wants to know.
+
+### The harness was wrong before it was right
+
+Five times, the first result slandered a competitor and the raw output
+disagreed. Worth stating, because a comparative benchmark that has never been
+wrong has probably not been checked:
+
+1. codegraph prints a **subject's** location inline and a **callee's** on the
+   next line; parsing only the second made every answer look off-subject, and
+   `main` appeared to call nothing.
+2. Querying the bare `Get` instead of `AuditStore.Get` answered about a
+   different method, and its callees were attributed to the wrong symbol.
+3. Retrying a legitimate "0 callees" with the bare name invented **nine**
+   false edges for a tool that had asserted none.
+4. A query matching several definitions prints **one block per definition**;
+   folding them under the first subject invented eight more.
+5. Externals have no line in the fixture, so three real stdlib edges were
+   dropped as missing before name-matching was added for them.
+
+Every number above was checked against the tool's own raw output before being
+written down. The rule that caught all five: when a competitor looks bad, read
+what it actually printed.
+
 ### Not yet covered
 
 - **C#'s key is unverified**, as the table says. That is the one gap in
   coverage rather than a gap in languages.
-- **One tool.** The point of a tool-neutral vocabulary is to score codegraph
-  and codebase-memory-mcp over the identical corpus; that driver is not
-  written yet, and until it is this measures drsg against ground truth rather
-  than against anyone.
+- **The comparison covers Go only.** The other seven keys need their
+  `[symbols]` locations before another tool can be scored over them; without
+  those, identity falls back to names, which is what makes a comparison wrong.
 - **Call edges only.** `REFERENCES`, `IMPORTS`, `EXTENDS` and route matching
   are unscored.
