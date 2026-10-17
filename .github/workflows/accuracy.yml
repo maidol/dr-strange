@@ -3,9 +3,14 @@
 #
 # C# is the reason this exists: its fixture was written on a machine with no
 # C# compiler, so its key shipped marked `unverified`. A runner has the .NET
-# SDK, so Roslyn can say whether the key is right. Java and Python ride along
-# because their oracles — the JDK and the interpreter — are already here, and
-# a key that drifts should fail on the commit that drifts it.
+# SDK, so Roslyn can say whether the key is right. Java, Python and C ride
+# along because their oracles — the JDK, the interpreter, and gcc — are
+# already here, and a key that drifts should fail on the commit that drifts
+# it. Kotlin brings its own compiler, fetched and checksummed below.
+#
+# Rust is deliberately absent: `cargo expand` checks only its macro entry, and
+# that is run locally by `just accuracy`. Installing a Rust toolchain here to
+# re-run one assertion would buy nothing.
 name: Accuracy
 
 on:
@@ -41,7 +46,25 @@ jobs:
       - name: C# — Roslyn
         run: uv run --no-project --with tomli python benchmarks/accuracy/crosscheck_csharp.py
 
-      # These two need nothing a runner does not already have.
+      # Fetched rather than taken from a third-party action: this repository
+      # pins what it runs and verifies what it downloads, and a setup action
+      # for one compiler is more supply chain than a checksummed zip.
+      - name: Kotlin compiler
+        env:
+          KOTLIN_VERSION: "2.2.21"
+          KOTLIN_SHA256: "a623871f1cd9c938946948b70ef9170879f0758043885bbd30c32f024e511714"
+        run: |
+          set -euo pipefail
+          url="https://github.com/JetBrains/kotlin/releases/download/v${KOTLIN_VERSION}/kotlin-compiler-${KOTLIN_VERSION}.zip"
+          curl -fsSL --retry 3 --retry-all-errors -o kotlin.zip "$url"
+          echo "${KOTLIN_SHA256}  kotlin.zip" | sha256sum -c -
+          unzip -q kotlin.zip -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/kotlinc/bin" >> "$GITHUB_PATH"
+
+      - name: Kotlin — compiled bytecode
+        run: uv run --no-project --with tomli python benchmarks/accuracy/crosscheck_kotlin.py
+
+      # These need nothing a runner does not already have.
       - name: Java — compiled bytecode
         run: uv run --no-project --with tomli python benchmarks/accuracy/crosscheck_java.py
       - name: Python — a real execution trace
