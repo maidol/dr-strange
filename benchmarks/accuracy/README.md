@@ -47,6 +47,17 @@ thought of is in neither. Two things push against that:
    handle.
 2. `crosscheck_go.py` checks the key against an independent tool.
 
+C's oracle is the object code. `objdump -d -r` distinguishes the two kinds of
+call without any approximation at all: a direct call carries a symbol, and a
+call through a struct of function pointers compiles to `call *%rcx`, naming
+nothing — which is exactly the line the key draws.
+
+Kotlin compiles to JVM bytecode, so `javap` serves it as it serves Java, with
+three wrinkles the check accounts for: top-level functions live in a synthetic
+`<File>Kt` class, every public function opens with the compiler's own
+`Intrinsics.checkNotNullParameter`, and a lambda is reached by
+`invokedynamic`.
+
 Java's oracle is the compiler's own output. `javac` turns every call into an
 explicit invoke instruction naming its target and `javap -c` prints them, so
 the check reads what actually runs. Its bound is the same as TypeScript's —
@@ -100,15 +111,24 @@ a key that has no symbol for a closure.
 
 ## Results
 
-drsg 2.22.0 — `go@2`, `java@2`, `py@2`, `rust@3`, `ts@2`:
+drsg 2.22.0, every language in the official catalog:
 
 | | recall | precision | ambiguous sites not guessed | of those, gap **named** | key checked by |
 |---|---|---|---|---|---|
 | Go | **100%** (14/14) | **100%** (5/5) | 6/6 | 2 of 6 | `callgraph` (RTA + CHA) |
 | Java | **100%** (7/7) | **100%** (5/5) | 6/6 | 4 of 6 | compiled bytecode |
 | Python | **100%** (8/8) | **100%** (5/5) | 7/7 | 5 of 7 | a real execution trace |
-| Rust | 83% (5/6) | **100%** (5/5) | 6/6 | 5 of 6 | `cargo expand`, macro only |
 | TypeScript | **100%** (7/7) | **100%** (5/5) | 7/7 | 0 of 7 | the TypeScript checker |
+| C# † | 89% (8/9) | **100%** (5/5) | 6/6 | 4 of 6 | **nothing** |
+| Kotlin | 89% (8/9) | **100%** (5/5) | 5/5 | 4 of 5 | compiled bytecode |
+| C | 86% (6/7) | **100%** (5/5) | 5/5 | 0 of 5, 1 followed | the object code |
+| Rust | 83% (5/6) | **100%** (5/5) | 6/6 | 5 of 6 | `cargo expand`, macro only |
+
+† **C#'s key is unverified.** No C# compiler exists on the machine this was
+written on — no dotnet SDK, and mono's `mcs` needs a package install the
+account cannot perform — so that fixture has never been compiled and nothing
+independent has confirmed its key. Read its row as provisional. `dotnet build`
+plus `ildasm`/`monodis` would settle it, in the same shape as the Java check.
 
 **Nothing was guessed, in any language, at any site where syntax cannot settle
 the target. No false edge anywhere** — including every same-name trap, which a
@@ -140,18 +160,33 @@ recorded the interface method as a node — Go's `Store.Get` and TypeScript's
 `Store.get` are both in the graph, unconnected to the call that goes through
 them.
 
-### The one recall miss
+### The recall misses, and they fall into two families
 
-Rust's `via_macro` calls `normalize` through a `macro_rules!`. `cargo expand`
-confirms the expansion; drsg records the function but no call out of it. A call
-a macro generates is in no line of source the parser reads, and nothing in the
-graph says it was there.
+**A call a macro generates.** Rust's `via_macro` and C's `via_macro` both reach
+`normalize` through a macro. `cargo expand` and the object code respectively
+confirm the call; drsg records the enclosing function and, in C, an edge to the
+macro's own name — but not to what the expansion calls. The call exists in no
+line of source the parser reads.
+
+**An extension method.** Kotlin's `viaExtension -> shout` and C#'s
+`ViaExtension -> Shout` are the same miss in two languages: a call dispatched
+statically by the receiver's type, which the bytecode resolves and the parser
+does not. That two independently written plugins miss the identical shape
+suggests the gap is in how extension dispatch is modelled rather than in either
+plugin.
+
+### One plugin follows a local binding
+
+C resolves `f = normalize; f(value)` to `normalize`. That is not a guess — it
+is the only binding in scope, and following it is local dataflow. It is scored
+as its own outcome rather than as either a resolution or a guess, because the
+other seven plugins leave the same shape unresolved. They are incomplete there,
+not dishonest; C is more complete.
 
 ### Not yet covered
 
-- **Five languages of eight.** C, Kotlin and C# need their own corpus and key.
-  None of the three has an oracle as direct as the five here, so they will rest
-  more heavily on the fixture discipline.
+- **C#'s key is unverified**, as the table says. That is the one gap in
+  coverage rather than a gap in languages.
 - **One tool.** The point of a tool-neutral vocabulary is to score codegraph
   and codebase-memory-mcp over the identical corpus; that driver is not
   written yet, and until it is this measures drsg against ground truth rather
