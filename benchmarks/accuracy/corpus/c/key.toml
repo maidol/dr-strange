@@ -1,0 +1,121 @@
+# Ground truth for the C fixture.
+#
+# C has one namespace for external functions, so a name is just the function's
+# name. Statics are local to their file but still named plainly here.
+
+[corpus]
+language = "c"
+entry = "."
+# drsg keys a C function by the file it was parsed from; the key names it the
+# way the source does, since C has one namespace for externals.
+strip = "^[\\w.]+\\.c::"
+# The oracle is the object code. `objdump -d -r` shows every call, and the two
+# kinds are distinguishable without ambiguity:
+#   * a direct call carries a symbol — `call <cache_get>` for one in the same
+#     object, or a `R_X86_64_PLT32 normalize` relocation for one outside it;
+#   * an indirect call is `call *%rcx` and names nothing, which is exactly the
+#     shape of a call through a struct of function pointers.
+# Caveat: the compiler rewrites some calls (`printf("%s\n", x)` becomes
+# `puts`), so the key names no libc function.
+crosscheck = "objdump -d -r on the compiled objects"
+
+# ---------------------------------------------------------------------------
+# RESOLVED — the target is named at the call site.
+# ---------------------------------------------------------------------------
+[[resolved]]
+from = "service_save"
+to = "normalize"
+why = "a plain function, called by name"
+
+[[resolved]]
+from = "service_warm"
+to = "cache_get"
+why = "a static in the same file, called by name"
+
+[[resolved]]
+from = "service_describe"
+to = "service_label"
+why = "a function in the same file, called by name"
+
+[[resolved]]
+from = "audit_get"
+to = "note"
+why = "a static in the same file"
+
+[[resolved]]
+from = "audit_put"
+to = "note"
+why = "a static in the same file"
+
+[[resolved]]
+from = "direct"
+to = "normalize"
+why = "the plain case, for contrast with the two below it"
+
+[[resolved]]
+from = "via_macro"
+to = "normalize"
+why = """the macro expands to a call to normalize. The call appears in no line \
+of source a parser reads, which is what makes it worth asking about."""
+
+# ---------------------------------------------------------------------------
+# AMBIGUOUS — a call through a function pointer. The object code says
+# `call *%reg` and names nothing, because there is nothing to name.
+# ---------------------------------------------------------------------------
+[[ambiguous]]
+from = "service_load"
+site = "s->store->get(s->store, key)"
+candidates = ["mem_get", "audit_get"]
+why = "through the Store vtable; which function was assigned is a runtime fact"
+
+[[ambiguous]]
+from = "service_save"
+site = "s->store->put(...)"
+candidates = ["mem_put", "audit_put"]
+why = "same, through put"
+
+[[ambiguous]]
+from = "audit_get"
+site = "a->inner->get(a->inner, key)"
+candidates = ["mem_get", "audit_get"]
+why = "a decorator holding another Store"
+
+[[ambiguous]]
+from = "audit_put"
+site = "a->inner->put(...)"
+candidates = ["mem_put", "audit_put"]
+why = "same, through put"
+
+[[ambiguous]]
+from = "via_fn_pointer"
+site = "f(value)"
+candidates = ["normalize"]
+why = "a function pointer held in a local; the name appears as a value"
+
+# ---------------------------------------------------------------------------
+# ABSENT — must never be asserted.
+# ---------------------------------------------------------------------------
+[[absent]]
+from = "service_warm"
+to = "mem_get"
+why = "warm calls the file's own cache_get; mem_get is a different `get` entirely"
+
+[[absent]]
+from = "service_warm"
+to = "audit_get"
+why = "same trap, the other implementation"
+
+[[absent]]
+from = "service_load"
+to = "cache_get"
+why = "load goes through the Store vtable, which cache_get is not part of"
+
+[[absent]]
+from = "normalize"
+to = "mem_put"
+why = "normalize touches no store at all"
+
+[[absent]]
+from = "direct"
+to = "via_macro"
+why = "neither calls the other; both reach normalize"
