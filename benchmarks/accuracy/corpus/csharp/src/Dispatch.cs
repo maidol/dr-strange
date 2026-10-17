@@ -1,3 +1,5 @@
+using System;
+
 namespace Acme;
 
 /// <summary>An extension method — dispatched statically by receiver type.</summary>

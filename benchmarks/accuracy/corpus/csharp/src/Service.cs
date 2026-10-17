@@ -1,3 +1,5 @@
+using System.Collections.Generic;
+
 namespace Acme;
 
 /// <summary>An unrelated class whose Get shares a name with IStore.Get.</summary>
