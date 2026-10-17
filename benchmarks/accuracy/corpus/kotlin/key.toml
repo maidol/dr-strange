@@ -18,6 +18,39 @@ entry = "src"
 crosscheck = "javap -c, the compiled bytecode"
 
 # ---------------------------------------------------------------------------
+# WHERE EACH SYMBOL IS DECLARED.
+#
+# Identity for a cross-tool comparison, because tools do not agree on names.
+# Matching on names would score the harness's name-mangling rather than any
+# tool's accuracy, and would make a competitor look wrong for a naming
+# convention. Symbols the fixture does not define — the standard library —
+# have no line here and are matched by name.
+#
+# Extracted from the source and checked: the line each entry points at is the
+# declaration that introduces the symbol, not a call to it.
+# ---------------------------------------------------------------------------
+[symbols]
+"acme.AuditStore.get" = "src/Store.kt:24"
+"acme.AuditStore.note" = "src/Store.kt:34"
+"acme.AuditStore.put" = "src/Store.kt:29"
+"acme.Cache.get" = "src/Service.kt:7"
+"acme.Dispatch.direct" = "src/Dispatch.kt:24"
+"acme.Dispatch.shout" = "src/Dispatch.kt:19"
+"acme.Dispatch.viaExtension" = "src/Dispatch.kt:21"
+"acme.Dispatch.viaFunctionRef" = "src/Dispatch.kt:13"
+"acme.Dispatch.viaLambda" = "src/Dispatch.kt:7"
+"acme.MemStore.get" = "src/Store.kt:13"
+"acme.MemStore.put" = "src/Store.kt:15"
+"acme.Service.describe" = "src/Service.kt:25"
+"acme.Service.label" = "src/Service.kt:27"
+"acme.Service.load" = "src/Service.kt:14"
+"acme.Service.save" = "src/Service.kt:17"
+"acme.Service.warm" = "src/Service.kt:22"
+"acme.Store.get" = "src/Store.kt:5"
+"acme.Store.put" = "src/Store.kt:6"
+"acme.normalize" = "src/Store.kt:40"
+
+# ---------------------------------------------------------------------------
 # RESOLVED — unambiguous from syntax alone.
 # ---------------------------------------------------------------------------
 [[resolved]]

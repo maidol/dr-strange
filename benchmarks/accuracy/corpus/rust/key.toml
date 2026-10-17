@@ -19,6 +19,38 @@ module = "orders"
 crosscheck = "cargo expand, for the macro case only"
 
 # ---------------------------------------------------------------------------
+# WHERE EACH SYMBOL IS DECLARED.
+#
+# Identity for a cross-tool comparison, because tools do not agree on names.
+# Matching on names would score the harness's name-mangling rather than any
+# tool's accuracy, and would make a competitor look wrong for a naming
+# convention. Symbols the fixture does not define — the standard library —
+# have no line here and are matched by name.
+#
+# Extracted from the source and checked: the line each entry points at is the
+# declaration that introduces the symbol, not a call to it.
+# ---------------------------------------------------------------------------
+[symbols]
+"dispatch::via_closure" = "src/dispatch.rs:4"
+"dispatch::via_fn_pointer" = "src/dispatch.rs:10"
+"dispatch::via_generic" = "src/dispatch.rs:16"
+"dispatch::via_macro" = "src/dispatch.rs:27"
+"service::Cache::get" = "src/service.rs:10"
+"service::Service::describe" = "src/service.rs:41"
+"service::Service::label" = "src/service.rs:45"
+"service::Service::load" = "src/service.rs:26"
+"service::Service::save" = "src/service.rs:31"
+"service::Service::warm" = "src/service.rs:36"
+"store::AuditStore::get" = "src/store.rs:40"
+"store::AuditStore::note" = "src/store.rs:34"
+"store::AuditStore::put" = "src/store.rs:46"
+"store::MemStore::get" = "src/store.rs:14"
+"store::MemStore::put" = "src/store.rs:18"
+"store::Store::get" = "src/store.rs:3"
+"store::Store::put" = "src/store.rs:4"
+"store::normalize" = "src/store.rs:53"
+
+# ---------------------------------------------------------------------------
 # RESOLVED — unambiguous from syntax alone.
 # ---------------------------------------------------------------------------
 [[resolved]]

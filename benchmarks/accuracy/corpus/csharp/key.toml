@@ -19,6 +19,40 @@ crosscheck = "none — see above"
 unverified = true
 
 # ---------------------------------------------------------------------------
+# WHERE EACH SYMBOL IS DECLARED.
+#
+# Identity for a cross-tool comparison, because tools do not agree on names.
+# Matching on names would score the harness's name-mangling rather than any
+# tool's accuracy, and would make a competitor look wrong for a naming
+# convention. Symbols the fixture does not define — the standard library —
+# have no line here and are matched by name.
+#
+# Extracted from the source and checked: the line each entry points at is the
+# declaration that introduces the symbol, not a call to it.
+# ---------------------------------------------------------------------------
+[symbols]
+"Acme.AuditStore.Get" = "src/Store.cs:28"
+"Acme.AuditStore.Note" = "src/Store.cs:40"
+"Acme.AuditStore.Put" = "src/Store.cs:34"
+"Acme.Cache.Get" = "src/Service.cs:8"
+"Acme.Dispatch.Direct" = "src/Dispatch.cs:34"
+"Acme.Dispatch.ViaDelegate" = "src/Dispatch.cs:13"
+"Acme.Dispatch.ViaExtension" = "src/Dispatch.cs:31"
+"Acme.Dispatch.ViaLambda" = "src/Dispatch.cs:20"
+"Acme.Dispatch.ViaReflection" = "src/Dispatch.cs:27"
+"Acme.IStore.Get" = "src/Store.cs:6"
+"Acme.IStore.Put" = "src/Store.cs:7"
+"Acme.MemStore.Get" = "src/Store.cs:15"
+"Acme.MemStore.Put" = "src/Store.cs:17"
+"Acme.Service.Describe" = "src/Service.cs:28"
+"Acme.Service.Label" = "src/Service.cs:30"
+"Acme.Service.Load" = "src/Service.cs:19"
+"Acme.Service.Save" = "src/Service.cs:22"
+"Acme.Service.Warm" = "src/Service.cs:25"
+"Acme.Text.Normalize" = "src/Store.cs:46"
+"Acme.TextExtensions.Shout" = "src/Dispatch.cs:6"
+
+# ---------------------------------------------------------------------------
 # RESOLVED — unambiguous from syntax alone.
 # ---------------------------------------------------------------------------
 [[resolved]]

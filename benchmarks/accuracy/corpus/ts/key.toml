@@ -16,6 +16,38 @@ module = "ts"
 crosscheck = "the TypeScript compiler's type checker"
 
 # ---------------------------------------------------------------------------
+# WHERE EACH SYMBOL IS DECLARED.
+#
+# Identity for a cross-tool comparison, because tools do not agree on names.
+# Matching on names would score the harness's name-mangling rather than any
+# tool's accuracy, and would make a competitor look wrong for a naming
+# convention. Symbols the fixture does not define — the standard library —
+# have no line here and are matched by name.
+#
+# Extracted from the source and checked: the line each entry points at is the
+# declaration that introduces the symbol, not a call to it.
+# ---------------------------------------------------------------------------
+[symbols]
+"dynamic.direct" = "dynamic.ts:26"
+"dynamic.viaArrow" = "dynamic.ts:10"
+"dynamic.viaFnValue" = "dynamic.ts:4"
+"dynamic.viaOptional" = "dynamic.ts:21"
+"service.Cache.get" = "service.ts:7"
+"service.Service.describe" = "service.ts:31"
+"service.Service.label" = "service.ts:35"
+"service.Service.load" = "service.ts:16"
+"service.Service.save" = "service.ts:21"
+"service.Service.warm" = "service.ts:26"
+"store.AuditStore.get" = "store.ts:30"
+"store.AuditStore.note" = "store.ts:40"
+"store.AuditStore.put" = "store.ts:35"
+"store.MemStore.get" = "store.ts:15"
+"store.MemStore.put" = "store.ts:19"
+"store.Store.get" = "store.ts:8"
+"store.Store.put" = "store.ts:9"
+"store.normalize" = "store.ts:46"
+
+# ---------------------------------------------------------------------------
 # RESOLVED — unambiguous from syntax and annotations alone.
 # ---------------------------------------------------------------------------
 [[resolved]]

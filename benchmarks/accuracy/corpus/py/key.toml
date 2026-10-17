@@ -19,6 +19,37 @@ entry = "."
 crosscheck = "dynamic trace via sys.setprofile"
 
 # ---------------------------------------------------------------------------
+# WHERE EACH SYMBOL IS DECLARED.
+#
+# Identity for a cross-tool comparison, because tools do not agree on names.
+# Matching on names would score the harness's name-mangling rather than any
+# tool's accuracy, and would make a competitor look wrong for a naming
+# convention. Symbols the fixture does not define — the standard library —
+# have no line here and are matched by name.
+#
+# Extracted from the source and checked: the line each entry points at is the
+# declaration that introduces the symbol, not a call to it.
+# ---------------------------------------------------------------------------
+[symbols]
+"dynamic.direct" = "dynamic.py:35"
+"dynamic.fetch" = "dynamic.py:19"
+"dynamic.retry.wrapper" = "dynamic.py:12"
+"dynamic.via_getattr" = "dynamic.py:24"
+"dynamic.via_local_alias" = "dynamic.py:29"
+"service.Cache.get" = "service.py:12"
+"service.Service._inner" = "service.py:36"
+"service.Service.helper" = "service.py:32"
+"service.Service.load" = "service.py:20"
+"service.Service.save" = "service.py:25"
+"service.Service.warm" = "service.py:28"
+"store.AuditStore._note" = "store.py:49"
+"store.AuditStore.get" = "store.py:41"
+"store.AuditStore.put" = "store.py:45"
+"store.MemStore.get" = "store.py:27"
+"store.MemStore.put" = "store.py:30"
+"store.encode" = "store.py:53"
+
+# ---------------------------------------------------------------------------
 # RESOLVED — unambiguous from syntax alone.
 # ---------------------------------------------------------------------------
 [[resolved]]

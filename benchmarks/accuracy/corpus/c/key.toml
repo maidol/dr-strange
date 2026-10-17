@@ -20,6 +20,35 @@ strip = "^[\\w.]+\\.c::"
 crosscheck = "objdump -d -r on the compiled objects"
 
 # ---------------------------------------------------------------------------
+# WHERE EACH SYMBOL IS DECLARED.
+#
+# Identity for a cross-tool comparison, because tools do not agree on names.
+# Matching on names would score the harness's name-mangling rather than any
+# tool's accuracy, and would make a competitor look wrong for a naming
+# convention. Symbols the fixture does not define — the standard library —
+# have no line here and are matched by name.
+#
+# Extracted from the source and checked: the line each entry points at is the
+# declaration that introduces the symbol, not a call to it.
+# ---------------------------------------------------------------------------
+[symbols]
+"audit_get" = "store.c:29"
+"audit_put" = "store.c:36"
+"cache_get" = "service.c:10"
+"direct" = "dispatch.c:17"
+"mem_get" = "store.c:8"
+"mem_put" = "store.c:13"
+"normalize" = "store.c:43"
+"note" = "store.c:19"
+"service_describe" = "service.c:40"
+"service_label" = "service.c:35"
+"service_load" = "service.c:20"
+"service_save" = "service.c:25"
+"service_warm" = "service.c:30"
+"via_fn_pointer" = "dispatch.c:4"
+"via_macro" = "dispatch.c:12"
+
+# ---------------------------------------------------------------------------
 # RESOLVED — the target is named at the call site.
 # ---------------------------------------------------------------------------
 [[resolved]]
