@@ -47,6 +47,21 @@ thought of is in neither. Two things push against that:
    handle.
 2. `crosscheck_go.py` checks the key against an independent tool.
 
+TypeScript has the strongest oracle of all, and it needs no approximation:
+`crosscheck_ts.mjs` drives the compiler's own type checker — the same
+authority an editor uses for go-to-definition. Its bound is the mirror of
+RTA's: the checker answers for the *declared* type, so a call through an
+interface resolves to the interface's method and never to an implementation.
+That is exactly the line the key draws between `resolved` and `ambiguous`, so
+it checks both sides of it.
+
+Rust has none. rust-analyzer emits no call graph, and a MIR-level analysis
+would be a larger undertaking than the fixture it would check. `crosscheck_rust.py`
+therefore checks the single claim a tool can settle — that the `macro_rules!`
+expands to a call to `normalize`, via `cargo expand` — and says plainly that
+the rest of that key rests on reading the source. It is the weakest ground
+here.
+
 Python has no oracle of that kind — `pycg` does not install under a current
 interpreter, and a type checker resolves types without emitting a call graph.
 So `crosscheck_py.py` takes the other road: it exercises the fixture under
@@ -79,40 +94,53 @@ a key that has no symbol for a closure.
 
 ## Results
 
-drsg 2.22.0 — `go@2+029b2d9d`, `py@2+a60536b6`:
+drsg 2.22.0 — `go@2+029b2d9d`, `py@2+a60536b6`, `rust@3+db2857ae`, `ts@2+63a54545`:
 
 | | recall | precision | ambiguous sites not guessed | of those, gap **named** |
 |---|---|---|---|---|
-| Go | **100%** (14/14) | **100%** (5/5) | 6/6 | 2 |
-| Python | **100%** (8/8) | **100%** (5/5) | 7/7 | 5 |
+| Go | **100%** (14/14) | **100%** (5/5) | 6/6 | 2 of 6 |
+| Python | **100%** (8/8) | **100%** (5/5) | 7/7 | 5 of 7 |
+| Rust | 83% (5/6) | **100%** (5/5) | 6/6 | 5 of 6 |
+| TypeScript | **100%** (7/7) | **100%** (5/5) | 7/7 | 0 of 7 |
 
-Nothing guessed, in either language, at any site where syntax cannot settle
-the target. No false edge, including the same-name traps that a tool matching
-on a bare method name would take.
+**Nothing was guessed, in any language, at any site where syntax cannot settle
+the target. No false edge anywhere** — including every same-name trap, which a
+tool matching on a bare method name would take.
 
-### The two plugins do not agree about saying so
+### Where the plugins differ, which is the point of the last column
 
-The interesting column is the last one, and it is a difference between plugins
-rather than a property of the engine.
+Precision is uniform and recall nearly so. What varies is whether a parser
+*says* it could not resolve something, and that is a plugin decision rather
+than a property of the engine.
 
-Given the same shape — a call on an attribute whose type is not written down —
-**the Python plugin records the gap by name** (`?::service.py::self.store.get`),
-so an agent reading `context Service.load` sees that a call was made there and
-could not be resolved. **The Go plugin records nothing at all.** For
-`s.store.Get(id)`, where `store` is declared `Store` in the same file, there is
-neither a CALLS edge to `Store.Get` nor an unresolved reference: the call site
-leaves no trace, and the only warning is the blanket lower-bound note every
-answer carries.
+- **Rust is the most forthcoming.** A `Box<dyn Store>` call is recorded as an
+  edge to the trait method `Store::get` — naming what was called without
+  pretending to know which implementation runs. A call on a generic parameter
+  becomes an `UnresolvedRef` with the name.
+- **Python names the gap too**, writing the unresolved expression into the key
+  (`?::service.py::self.store.get`).
+- **Go and TypeScript record nothing** for the same shape. For Go's
+  `s.store.Get(id)` — where `store` is declared `Store` in the same file —
+  there is neither an edge to `Store.Get` nor an unresolved reference. An agent
+  asking `context Service.Load` is told it has no callees, and learns only from
+  the blanket lower-bound note that this may be incomplete. TypeScript behaves
+  the same way at all seven of its ambiguous sites.
 
-That is a fixable asymmetry, not an inherent limit — the Python plugin proves
-the behaviour is available, and the Go parser already records `Store.Get` as a
-node. Four of Go's six ambiguous sites are this one shape.
+That asymmetry is fixable rather than inherent: Rust already does the thing Go
+and TypeScript do not, and both parsers already record the interface method as
+a node.
+
+### The one recall miss
+
+Rust's `via_macro` calls `normalize` through a `macro_rules!`. `cargo expand`
+confirms the expansion; drsg records the function but no call out of it. A call
+a macro generates is in no line of source the parser reads, and nothing in the
+graph says it was there.
 
 ### Not yet covered
 
-- **Two languages of eight.** Go first because it has an independent oracle,
-  Python second to test the fixture discipline without one. Rust, TypeScript,
-  Java, C, Kotlin and C# need their own corpus and key.
+- **Four languages of eight.** Java, C, Kotlin and C# need their own corpus and
+  key; of those only Java has a comparable oracle.
 - **One tool.** The point of a tool-neutral vocabulary is to score codegraph
   and codebase-memory-mcp over the identical corpus; that driver is not
   written yet, and until it is this measures drsg against ground truth rather
