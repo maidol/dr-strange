@@ -56,7 +56,8 @@ def run(args: list[str], cwd: Path | None = None) -> str:
     return p.stdout
 
 
-def drsg_edges(drsg: str, corpus: Path, plane: str, module: str) -> tuple[set, set]:
+def drsg_edges(drsg: str, corpus: Path, plane: str, module: str,
+               strip: str = "") -> tuple[set, set]:
     """Every CALLS edge drsg records, in the key's vocabulary.
 
     Returns (resolved edges, callers that declared an unresolved target).
@@ -73,15 +74,15 @@ def drsg_edges(drsg: str, corpus: Path, plane: str, module: str) -> tuple[set, s
     rows = json.loads(out[out.index("{"):]).get("rows", [])
     edges, declared = set(), set()
     for a, b in rows:
-        caller = normalise(a, module)
+        caller = normalise(a, module, strip)
         if b.startswith("?::"):
             declared.add(caller)
         else:
-            edges.add((caller, normalise(b, module)))
+            edges.add((caller, normalise(b, module, strip)))
     return edges, declared
 
 
-def normalise(name: str, module: str) -> str:
+def normalise(name: str, module: str, strip: str = "") -> str:
     """A tool's key in the vocabulary the fixture key uses.
 
     `module` is guarded: an empty one would make the prefix a bare "." and
@@ -91,6 +92,8 @@ def normalise(name: str, module: str) -> str:
     # Rust writes a trait implementation as `<Type as Trait>::method`; the key
     # names it by the type, since that is where the body lives.
     name = re.sub(r"<([^>]+?) as [^>]+>::", r"\1::", name)
+    if strip:
+        name = re.sub(strip, "", name)
     if module:
         # Each plugin spells the prefix its language's way: `orders::` in Rust,
         # `acme/orders.` in Go, `ts/` for a TypeScript directory.
@@ -106,12 +109,19 @@ def score(key: dict, edges: set, declared: set) -> dict:
     missed = [e for e in key["resolved"] if (e["from"], e["to"]) not in edges]
     asserted = [e for e in key["absent"] if (e["from"], e["to"]) in edges]
 
-    per_site, blanket, guessed = [], [], []
+    per_site, blanket, guessed, followed = [], [], [], []
     for e in key["ambiguous"]:
         frm = e["from"]
-        picked = [c for c in e.get("candidates", []) if (frm, c) in edges]
+        cands = e.get("candidates", [])
+        picked = [c for c in cands if (frm, c) in edges]
         iface = e.get("interface_method")
-        if picked:
+        if picked and len(cands) == 1 and len(picked) == 1:
+            # One candidate, and the tool found it. That is local dataflow —
+            # `f = normalize; f(x)` has exactly one binding in scope — not a
+            # tool choosing among alternatives and sounding sure. Credited
+            # separately from a guess, because it is the opposite of one.
+            followed.append({**e, "picked": picked})
+        elif picked:
             guessed.append({**e, "picked": picked})
         elif frm in declared or (iface and (frm, iface) in edges):
             per_site.append(e)
@@ -123,6 +133,7 @@ def score(key: dict, edges: set, declared: set) -> dict:
     return {
         "found": found, "missed": missed, "asserted": asserted,
         "per_site": per_site, "blanket": blanket, "guessed": guessed,
+        "followed": followed,
     }
 
 
@@ -130,13 +141,18 @@ def report(name: str, key: dict, s: dict) -> None:
     nres, nabs, namb = len(key["resolved"]), len(key["absent"]), len(key["ambiguous"])
     rec = len(s["found"]) / nres * 100 if nres else 0.0
     prec = (nabs - len(s["asserted"])) / nabs * 100 if nabs else 0.0
-    not_guessed = len(s["per_site"]) + len(s["blanket"])
+    not_guessed = len(s["per_site"]) + len(s["blanket"]) + len(s["followed"])
     print(f"\n=== {name} ===")
     print(f"  recall     {rec:5.1f}%   {len(s['found'])}/{nres} unambiguous calls found")
     print(f"  precision  {prec:5.1f}%   {nabs - len(s['asserted'])}/{nabs} traps avoided")
     print(f"  honesty            {not_guessed}/{namb} ambiguous sites not guessed at, of which")
     print(f"                     {len(s['per_site'])} named the gap, "
-          f"{len(s['blanket'])} left only the blanket lower-bound note")
+          f"{len(s['blanket'])} left only the blanket lower-bound note"
+          + (f", {len(s['followed'])} resolved by following the one binding"
+             if s["followed"] else ""))
+    for e in s["followed"]:
+        print(f"    FOLLOWED  {e['from']} -> {e['picked'][0]} at {e['site']} "
+              f"(the only candidate in scope)")
     for e in s["missed"]:
         print(f"    MISSED    {e['from']} -> {e['to']}  ({e['why']})")
     for e in s["asserted"]:
@@ -162,7 +178,9 @@ def main() -> int:
     for corpus in corpora:
         key = tomllib.load((corpus / "key.toml").open("rb"))
         module = key["corpus"].get("module", "")
-        edges, declared = drsg_edges(args.drsg, corpus, corpus.name, module)
+        edges, declared = drsg_edges(
+            args.drsg, corpus, corpus.name, module, key["corpus"].get("strip", "")
+        )
         s = score(key, edges, declared)
         report(f"{corpus.name}  (drsg)", key, s)
     print("\nMISSED is incompleteness. WRONG is a false edge — worse than a miss,"
