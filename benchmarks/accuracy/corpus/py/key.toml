@@ -1,0 +1,136 @@
+# Ground truth for the Python fixture.
+#
+# Names are tool-neutral: a module-level function is `module.name`, a method
+# is `module.Class.name`. Every tool's output is normalised into this
+# vocabulary before scoring.
+#
+# Python settles less at parse time than Go. There are no declared types on
+# most receivers, so what Go calls an interface call is here simply a call on
+# an attribute of unknown type — the common case rather than the exception.
+
+[corpus]
+language = "py"
+entry = "."
+# No usable static oracle: pycg does not install under a current interpreter,
+# and no type checker emits a call graph. Instead `crosscheck_py.py` runs the
+# fixture under `sys.setprofile` and records the calls that actually happen.
+# That is truth rather than approximation, bounded the other way: it sees only
+# what the exercise covers, as Go's RTA sees only what `main` reaches.
+crosscheck = "dynamic trace via sys.setprofile"
+
+# ---------------------------------------------------------------------------
+# RESOLVED — unambiguous from syntax alone.
+# ---------------------------------------------------------------------------
+[[resolved]]
+from = "service.Service.save"
+to = "store.encode"
+why = "an imported module-level function, called by name"
+
+[[resolved]]
+from = "service.Service.warm"
+to = "service.Cache.get"
+why = "the parameter is annotated `Cache`, so the target is written down"
+
+[[resolved]]
+from = "service.Service.helper"
+to = "service.Service._inner"
+why = "a call on `self`, whose class is the enclosing one"
+
+[[resolved]]
+from = "store.AuditStore.get"
+to = "store.AuditStore._note"
+why = "a call on `self`"
+
+[[resolved]]
+from = "store.AuditStore.put"
+to = "store.AuditStore._note"
+why = "a call on `self`"
+
+[[resolved]]
+from = "store.encode"
+to = "json.dumps"
+why = "an imported function from the standard library"
+
+[[resolved]]
+from = "dynamic.direct"
+to = "store.encode"
+why = "the plain case, for contrast with the three below it"
+
+[[resolved]]
+from = "dynamic.fetch"
+to = "store.encode"
+why = "the decorated function's own body still calls encode by name"
+
+# ---------------------------------------------------------------------------
+# AMBIGUOUS — no annotation, a name bound at runtime, or a decorator between
+# the caller and the callee. Saying so is the right answer.
+# ---------------------------------------------------------------------------
+[[ambiguous]]
+from = "service.Service.load"
+site = "self.store.get(key)"
+candidates = ["store.MemStore.get", "store.AuditStore.get", "service.Cache.get"]
+why = "`store` is whatever was passed to __init__; nothing declares its type"
+
+[[ambiguous]]
+from = "service.Service.save"
+site = "self.store.put(...)"
+candidates = ["store.MemStore.put", "store.AuditStore.put"]
+why = "same, through put"
+
+[[ambiguous]]
+from = "store.AuditStore.get"
+site = "self.inner.get(key)"
+candidates = ["store.MemStore.get", "store.AuditStore.get"]
+why = "a decorator holding an undeclared inner"
+
+[[ambiguous]]
+from = "store.AuditStore.put"
+site = "self.inner.put(...)"
+candidates = ["store.MemStore.put", "store.AuditStore.put"]
+why = "same, through put"
+
+[[ambiguous]]
+from = "dynamic.via_getattr"
+site = "getattr(obj, name)()"
+candidates = []
+why = "the method name is a string value; nothing static can name the target"
+
+[[ambiguous]]
+from = "dynamic.via_local_alias"
+site = "f({'a': 1})"
+candidates = ["store.encode"]
+why = "the function is bound to a local first"
+
+[[ambiguous]]
+from = "dynamic.retry.wrapper"
+site = "fn(*args, **kwargs)"
+candidates = ["dynamic.fetch"]
+why = "a decorator's wrapper calls whatever it wrapped; the binding is a runtime fact"
+
+# ---------------------------------------------------------------------------
+# ABSENT — must never be asserted.
+# ---------------------------------------------------------------------------
+[[absent]]
+from = "service.Service.warm"
+to = "store.MemStore.get"
+why = "warm is annotated Cache; MemStore merely has a method of the same name"
+
+[[absent]]
+from = "service.Service.warm"
+to = "store.AuditStore.get"
+why = "same trap, the other implementation"
+
+[[absent]]
+from = "service.Service.load"
+to = "service.Cache.get"
+why = "Cache is not a store; a tool matching on the bare name `get` reaches it"
+
+[[absent]]
+from = "dynamic.direct"
+to = "dynamic.fetch"
+why = "neither calls the other; both call encode"
+
+[[absent]]
+from = "store.encode"
+to = "store.MemStore.put"
+why = "encode touches no store at all"
