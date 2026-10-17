@@ -88,8 +88,15 @@ def normalise(name: str, module: str) -> str:
     strip every dot in the name, which is how this first reported 0% recall
     for a plugin that had in fact found everything.
     """
+    # Rust writes a trait implementation as `<Type as Trait>::method`; the key
+    # names it by the type, since that is where the body lives.
+    name = re.sub(r"<([^>]+?) as [^>]+>::", r"\1::", name)
     if module:
-        name = name.replace(f"{module}.", "")
+        # Each plugin spells the prefix its language's way: `orders::` in Rust,
+        # `acme/orders.` in Go, `ts/` for a TypeScript directory.
+        for sep in ("::", "/", "."):
+            name = name.replace(f"{module}{sep}", "", 1)
+    # Go writes a pointer receiver as `(*Type).method`.
     name = re.sub(r"\(\*?([A-Za-z_][\w]*)\)\.", r"\1.", name)
     return name.strip()
 
