@@ -82,7 +82,14 @@ def drsg_edges(drsg: str, corpus: Path, plane: str, module: str) -> tuple[set, s
 
 
 def normalise(name: str, module: str) -> str:
-    name = name.replace(f"{module}.", "")
+    """A tool's key in the vocabulary the fixture key uses.
+
+    `module` is guarded: an empty one would make the prefix a bare "." and
+    strip every dot in the name, which is how this first reported 0% recall
+    for a plugin that had in fact found everything.
+    """
+    if module:
+        name = name.replace(f"{module}.", "")
     name = re.sub(r"\(\*?([A-Za-z_][\w]*)\)\.", r"\1.", name)
     return name.strip()
 
