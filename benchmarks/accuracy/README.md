@@ -128,18 +128,25 @@ a key that has no symbol for a closure.
 
 ## Results
 
-drsg 2.22.0, every language in the official catalog:
+drsg 2.22.0, with the plugin versions the catalog published on 2026-10-17 —
+`go` 2.2.0, `ts` 2.2.0, `rust` 2.2.0, `c` 2.1.0, `kotlin` 1.1.0, `csharp`
+1.1.0, `java` 2.2.0, `py` 2.1.0. Six of those are releases this benchmark
+caused: see [what it found in drsg](#what-this-found-in-drsg).
 
-| | recall | precision | ambiguous sites not guessed | of those, gap **named** | key checked by |
-|---|---|---|---|---|---|
-| Go | **100%** (14/14) | **100%** (5/5) | 6/6 | 2 of 6 | `callgraph` (RTA + CHA) |
-| Java | **100%** (7/7) | **100%** (5/5) | 6/6 | 4 of 6 | compiled bytecode |
-| Python | **100%** (8/8) | **100%** (5/5) | 7/7 | 5 of 7 | a real execution trace |
-| TypeScript | **100%** (7/7) | **100%** (5/5) | 7/7 | 0 of 7 | the TypeScript checker |
-| C# | 89% (8/9) | **100%** (5/5) | 6/6 | 4 of 6 | Roslyn, in CI |
-| Kotlin | 89% (8/9) | **100%** (5/5) | 5/5 | 4 of 5 | compiled bytecode |
-| C | 86% (6/7) | **100%** (5/5) | 5/5 | 0 of 5, 1 followed | the object code |
-| Rust | 83% (5/6) | **100%** (5/5) | 6/6 | 5 of 6 | `cargo expand`, macro only |
+| | recall | precision | references | ambiguous sites not guessed | of those, gap **named** | key checked by |
+|---|---|---|---|---|---|---|
+| Go | **100%** (14/14) | **100%** (5/5) | **7/7** | 6/6 | 2 of 6 | `callgraph` (RTA + CHA) |
+| Java | **100%** (7/7) | **100%** (5/5) | **4/4** | 6/6 | 4 of 6 | compiled bytecode |
+| Python | **100%** (8/8) | **100%** (5/5) | — none to find | 7/7 | 5 of 7 | a real execution trace |
+| TypeScript | **100%** (7/7) | **100%** (5/5) | **1/1** | 7/7 | 0 of 7 | the TypeScript checker |
+| C# | **100%** (9/9) | **100%** (5/5) | **1/1** | 6/6 | 4 of 6 | Roslyn, in CI |
+| Kotlin | **100%** (9/9) | **100%** (5/5) | **1/1** | 5/5 | 4 of 5 | compiled bytecode |
+| C | 86% (6/7) | **100%** (5/5) | **6/6** | 5/5 | 0 of 5, 1 followed | the object code |
+| Rust | 83% (5/6) | **100%** (5/5) | **1/1** | 6/6 | 5 of 6 | `cargo expand`, macro only |
+
+Totals: **recall 65/67, precision 40/40 — no false edge anywhere — impact
+59/61, references 21/21.** The two misses are the same one twice, and the
+section below says why they are still there.
 
 Every key is now checked by something that is not this project. C#'s oracle
 runs in CI rather than locally — `.github/workflows/accuracy.yml`, because the
@@ -180,20 +187,40 @@ recorded the interface method as a node — Go's `Store.Get` and TypeScript's
 `Store.get` are both in the graph, unconnected to the call that goes through
 them.
 
-### The recall misses, and they fall into two families
+### The two recall misses, and why they are staying
 
 **A call a macro generates.** Rust's `via_macro` and C's `via_macro` both reach
 `normalize` through a macro. `cargo expand` and the object code respectively
-confirm the call; drsg records the enclosing function and, in C, an edge to the
-macro's own name — but not to what the expansion calls. The call exists in no
-line of source the parser reads.
+confirm the call; the call exists in no line of source a parser reads.
 
-**An extension method.** Kotlin's `viaExtension -> shout` and C#'s
-`ViaExtension -> Shout` are the same miss in two languages: a call dispatched
-statically by the receiver's type, which the bytecode resolves and the parser
-does not. That two independently written plugins miss the identical shape
-suggests the gap is in how extension dispatch is modelled rather than in either
-plugin.
+Reaching 67/67 would mean expanding macros inside a parser, and the Rust
+plugin declines on stated grounds: `macro_rules` has hygiene and recursion, and
+a proc macro is arbitrary code that has to be *run*. So expansion stays the
+compiler's job, and both plugins now do the honest thing instead — name the
+macro at the call site, so a body that hides a call behind one cannot be
+mistaken for a body that calls nothing. C already did; Rust marked
+item-position invocations and was **silent** in expression position, which was
+a real defect against its own stated principle and is fixed in `rust` 2.2.0.
+
+These two are therefore a deliberate limit, not a to-do. A tool that reported
+them would be guessing or running a compiler; this one says where it stopped.
+
+### What this found in drsg
+
+Six plugin releases, all on 2026-10-17, every one of them a gap this benchmark
+found and no one had reported:
+
+| fix | release |
+|---|---|
+| An extension method is dispatched on the receiver's static type — the same miss in two independently written plugins, which pointed at how extension dispatch was modelled rather than at either plugin | `kotlin` 1.1.0, `csharp` 1.1.0 |
+| A composite literal names the type it builds: `&Service{store: &AuditStore{…}}` names three types from two other files, and nesting is why only the outermost was seen | `go` 2.2.0 |
+| An anonymous `typedef struct { … } Name` owns its fields — the shape most C in the wild declares a struct in, whose fields had no tag to belong to | `c` 2.1.0 |
+| A parameter property declares a field of its class: `constructor(private store: Store)`, the shorthand most TypeScript services are written with | `ts` 2.2.0 |
+| A macro invoked in a body is marked, not silent | `rust` 2.2.0 |
+
+The extension-method and reference gaps were worth more than the recall points
+they bought: each was a shape that appears in ordinary code, not a corner the
+fixtures invented.
 
 ### One plugin follows a local binding
 
@@ -211,7 +238,7 @@ question is asked through them.
 
 | | impact | cross-file references |
 |---|---|---|
-| drsg | 56/61 | 15/21 |
+| drsg | 59/61 | **21/21** |
 | codegraph | 55/61 | — no reference edges |
 | codebase-memory-mcp | 55/61 | 13/21 |
 
@@ -225,29 +252,22 @@ compounds: codebase-memory-mcp's one wrong edge in the Go fixture
 false edge stated in the units an agent actually feels, and it is why
 precision is the number to read first.
 
-**On references drsg wins overall and loses where it is otherwise strongest.**
+**On references, drsg now finds every one. It did not when the arm was
+written** — the table below is the comparison that caused six plugin
+releases, and the rows are what the first run said:
 
-| | declared | drsg | codebase-memory-mcp |
-|---|---|---|---|
-| Go | 7 | 4 | **6** |
-| C | 6 | 4 | 4 |
-| Java | 4 | **4** | 3 |
-| C#, Kotlin, Rust | 1 each | **1** each | 0 each |
-| TypeScript | 1 | 0 | 0 |
-| Python | 0 | — | — |
+| | declared | drsg, first run | drsg, after the fixes | codebase-memory-mcp |
+|---|---|---|---|---|
+| Go | 7 | 4 | **7** | 6 |
+| C | 6 | 4 | **6** | 4 |
+| Java | 4 | 4 | **4** | 3 |
+| C#, Kotlin, Rust | 1 each | 1 each | **1** each | 0 each |
+| TypeScript | 1 | 0 | **1** | 0 |
+| Python | 0 | — | — | — |
 
-Three real gaps in drsg, all found by this arm and none of them known before:
-
-1. **Composite literals (Go).** `&Service{store: &AuditStore{...}}` in `main`
-   names three types from two other files. drsg records none of them: it sees
-   types in declarations — fields, parameters — and not in literals.
-   codebase-memory-mcp finds all three, which is why it wins that row.
-2. **Struct fields (C).** `Store base`, `Store *inner`, `Store *store` are
-   references to a type in `store.h`. drsg records the `Store *self`
-   parameters and misses the fields.
-3. **A constructor parameter (TypeScript).** `constructor(private store: Store)`
-   is the one cross-file reference in that fixture, and drsg's TypeScript
-   plugin records no type reference for it at all.
+Losing the Go row to codebase-memory-mcp, 4 against 6, is what made the arm
+worth having. A benchmark its own author's tool wins everywhere teaches
+nothing.
 
 Two notes on what this arm is worth. **It is thin outside Go, Java and C** —
 the other fixtures declare one reference each, because single-purpose files
@@ -266,20 +286,23 @@ read as a miss for drsg when it was recorded all along.
 The point of a tool-neutral key. Same fixture, same key, same questions,
 scored by the same code — `--tool codegraph` or `--tool codebase-memory-mcp`.
 
-drsg 2.21.0, codegraph 1.6.2, codebase-memory-mcp 0.12.1, every fixture:
+drsg 2.22.0 with the 2026-10-17 plugins, codegraph 1.6.2,
+codebase-memory-mcp 0.12.1, every fixture. The middle column is drsg as this
+benchmark first scored it, before the six releases it caused — kept because a
+comparison that quietly improves one side is not one:
 
-| | drsg | codegraph | codebase-memory-mcp |
-|---|---|---|---|
-| C | 6/7 | 6/7 | **7/7** |
-| C# † | 8/9 | 8/9 | **9/9**, 2 false |
-| Go | **14/14** | 11/14 | 10/14, 2 false |
-| Java | **7/7** | 5/7 | 5/7 |
-| Kotlin | 8/9 | **9/9** | **9/9**, 2 false |
-| Python | **8/8** | 7/8 | 7/8 |
-| Rust | 5/6 | 5/6 | 4/6, 2 false |
-| TypeScript | **7/7** | 6/7 | 6/7 |
-| **total recall** | **63/67** | 57/67 | 57/67 |
-| **false edges** | **0** | **0** | **8** |
+| | drsg, first run | drsg now | codegraph | codebase-memory-mcp |
+|---|---|---|---|---|
+| C | 6/7 | 6/7 | 6/7 | **7/7** |
+| C# | 8/9 | **9/9** | 8/9 | **9/9**, 2 false |
+| Go | **14/14** | **14/14** | 11/14 | 10/14, 2 false |
+| Java | **7/7** | **7/7** | 5/7 | 5/7 |
+| Kotlin | 8/9 | **9/9** | **9/9** | **9/9**, 2 false |
+| Python | **8/8** | **8/8** | 7/8 | 7/8 |
+| Rust | 5/6 | 5/6 | 5/6 | 4/6, 2 false |
+| TypeScript | **7/7** | **7/7** | 6/7 | 6/7 |
+| **total recall** | 63/67 | **65/67** | 57/67 | 57/67 |
+| **false edges** | **0** | **0** | **0** | **8** |
 
 Recall separates the three only a little. What separates them is the last row.
 
@@ -384,5 +407,8 @@ drsg, in the same way.
 - **The fixtures are small.** Eight programs of a few dozen lines, chosen for
   the shapes they contain rather than for scale. A tool that does well here
   may do worse on a million lines, and nothing here measures that.
-- **Call edges only.** `REFERENCES`, `IMPORTS`, `EXTENDS` and route matching
-  are unscored.
+- **Two edge kinds, not all of them.** Calls and cross-file type references
+  are scored. `IMPORTS`, `EXTENDS` and route matching are not.
+- **Only drsg and codebase-memory-mcp are compared on references**, because
+  codegraph exposes nothing reference-shaped. One of three arms is therefore a
+  two-tool comparison, and a thin one outside Go, Java and C.
