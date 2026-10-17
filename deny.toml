@@ -17,6 +17,24 @@ ignore = [
     # Reached only when a digest is handed a PDF, and unmaintained is not the
     # same as vulnerable.
     "RUSTSEC-2026-0192",
+    # zip 8.6.0 → anydoc / calamine. One family, three IDs, all of them about
+    # `ZipArchive::extract()` / `ZipStreamReader::extract()` writing to the
+    # filesystem: SUID/SGID bits preserved on extraction (0367), a symlink
+    # whose target escapes the destination (0368), and Unix permissions
+    # applied through such a symlink (0369).
+    #
+    # Nothing here extracts. anydoc opens `ZipArchive<Cursor<&[u8]>>` and
+    # pulls parts out with `by_name` (`src/package/archive.rs`) — that is how
+    # a .docx or .xlsx is read, entirely in memory — and calamine calls no
+    # extract-to-path either. The vulnerable functions are not reached from
+    # this workspace, and no filesystem write happens on this path at all.
+    #
+    # The fix is zip >= 9.0.0, and every published anydoc (through 0.2.4)
+    # requires `^8.6.0`, so there is nothing to upgrade to. Re-check when
+    # anydoc moves: these are unreachable functions, not accepted risk.
+    "RUSTSEC-2026-0367",
+    "RUSTSEC-2026-0368",
+    "RUSTSEC-2026-0369",
 ]
 
 [licenses]
