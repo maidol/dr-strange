@@ -217,13 +217,14 @@ def drsg_adapter(args, corpus: Path, key: dict) -> tuple[set, set]:
 def _workdir(corpus: Path, args) -> Path:
     """A copy of the corpus for a tool that writes its index beside the source.
 
-    codegraph creates `.codegraph/` in the project it indexes. The fixtures are
-    checked in, so they are copied somewhere disposable first.
+    A fresh directory every time, never a reused path. codegraph creates
+    `.codegraph/` and leaves a daemon holding it; deleting and recreating the
+    same path underneath that daemon made `init` fail silently, and the tool
+    then scored 14% on a language it indexes perfectly well.
     """
-    work = Path(args.workdir) / corpus.name
-    if work.exists():
-        shutil.rmtree(work)
-    work.parent.mkdir(parents=True, exist_ok=True)
+    root = Path(args.workdir)
+    root.mkdir(parents=True, exist_ok=True)
+    work = Path(tempfile.mkdtemp(prefix=f"{corpus.name}-", dir=root)) / corpus.name
     shutil.copytree(corpus, work)
     return work
 
@@ -233,7 +234,12 @@ def codegraph_adapter(args, corpus: Path, key: dict) -> tuple[set, set]:
     if not exe:
         sys.exit("codegraph is not on PATH — pass --codegraph <path to its bin>")
     work = _workdir(corpus, args)
-    subprocess.run([exe, "init", "-y", str(work)], capture_output=True, check=False)
+    r = subprocess.run([exe, "init", "-y", str(work)], capture_output=True,
+                       text=True, check=False)
+    if r.returncode != 0 or "Done" not in r.stdout:
+        # Scoring an index that was never built reports the tool as hopeless
+        # when the harness is at fault. Fail loudly instead.
+        sys.exit(f"codegraph init failed for {corpus.name}:\n{r.stdout[-400:]}{r.stderr[-400:]}")
     return competitors.codegraph_edges(exe, work, key)
 
 

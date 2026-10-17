@@ -28,11 +28,18 @@ from pathlib import Path
 
 
 def locate(key: dict) -> dict[tuple[str, int], str]:
-    """(file, line) -> the key's name for the symbol declared there."""
+    """(file, line) -> the key's name for the symbol declared there.
+
+    Keyed by both the path the key records and its basename, because tools
+    report either: codebase-memory-mcp gives `src/acme/AuditStore.java` while
+    the flat Go fixture makes the two forms identical. Comparing basenames
+    only worked for Go and silently scored every nested corpus at zero.
+    """
     out = {}
     for name, where in key.get("symbols", {}).items():
         file, _, line = where.rpartition(":")
         out[(file, int(line))] = name
+        out[(Path(file).name, int(line))] = name
     return out
 
 
@@ -72,11 +79,19 @@ def codegraph_edges(exe: str, workdir: Path, key: dict) -> tuple[set, set]:
         # The qualified name first: codegraph accepts `AuditStore.Get` and
         # answers about that one, where the bare `Get` picks whichever of the
         # three it likes and the answer is then thrown away as off-subject.
-        # Only the qualified name. Retrying a legitimate "0 callees" with the
-        # bare name answers about a different same-named symbol, and
-        # attributing those callees here invented nine false edges for a tool
-        # that had asserted none.
-        out = run([exe, "callees", caller, "--path", str(workdir)], env=env)
+        # Keys name a symbol their language's way — `service.Service.save`,
+        # `store::AuditStore::note`, `acme.Service.Save` — and codegraph wants
+        # `Service.save`. Try the full name, then shorter suffixes of it. The
+        # location check below rejects an answer about a different symbol, so
+        # a shorter form cannot smuggle in the wrong one; without this,
+        # TypeScript scored 14% on a fixture the tool indexes perfectly.
+        parts = re.split(r"::|\.", caller)
+        attempts = [caller, *(".".join(parts[-n:]) for n in (2, 1))]
+        out = ""
+        for attempt in dict.fromkeys(attempts):
+            out = run([exe, "callees", attempt, "--path", str(workdir)], env=env)
+            if "Callees of" in out and "(0)" not in out.split("\n")[1 if out.startswith("\n") else 0]:
+                break
         # A query whose name matches several definitions prints one block per
         # definition — "Callees of X — 3 distinct definitions". Each block
         # opens with its own subject and location. Folding them all under the
@@ -85,7 +100,8 @@ def codegraph_edges(exe: str, workdir: Path, key: dict) -> tuple[set, set]:
         for line in out.splitlines():
             inline = CG_SUBJECT.match(line)
             if inline:
-                subject = at.get((inline.group(2), int(inline.group(3))))
+                sf, sn = inline.group(2), int(inline.group(3))
+                subject = at.get((sf, sn)) or at.get((Path(sf).name, sn))
                 pending = None
                 continue
             head = CG_HEAD.match(line)
@@ -94,7 +110,8 @@ def codegraph_edges(exe: str, workdir: Path, key: dict) -> tuple[set, set]:
                 continue
             loc = CG_LOC.match(line)
             if loc and pending and subject:
-                callee = at.get((loc.group(1), int(loc.group(2))))
+                lf, ln = loc.group(1), int(loc.group(2))
+                callee = at.get((lf, ln)) or at.get((Path(lf).name, ln))
                 if callee:
                     edges.add((subject, callee))
                 pending = None
@@ -115,9 +132,24 @@ def codegraph_edges(exe: str, workdir: Path, key: dict) -> tuple[set, set]:
 # --------------------------------------------------------------------------
 def cbm_edges(exe: str, workdir: Path, key: dict) -> tuple[set, set]:
     at = locate(key)
-    project = str(workdir).strip("/").replace("/", "-").replace("_", "-")
-    run([exe, "cli", "--quiet", "index_repository",
-         json.dumps({"repo_path": str(workdir), "mode": "fast"})])
+    # The project name comes from the indexer's own answer, never from munging
+    # the path: the tool sanitises it its own way, and guessing silently
+    # queried a project that did not exist — reporting 0% for a language it
+    # had indexed perfectly.
+    indexed = run([exe, "cli", "--quiet", "index_repository",
+                   json.dumps({"repo_path": str(workdir), "mode": "fast"})])
+    project = None
+    for line in indexed.splitlines():
+        if line.strip().startswith("{"):
+            try:
+                project = json.loads(line).get("project")
+            except json.JSONDecodeError:
+                continue
+            if project:
+                break
+    if not project:
+        msg = f"codebase-memory-mcp did not report a project for {workdir}"
+        raise RuntimeError(msg)
     query = (
         "MATCH (a)-[:CALLS]->(b) RETURN a.file AS af, a.start_line AS al, "
         "b.file AS bf, b.start_line AS bl"
@@ -133,7 +165,8 @@ def cbm_edges(exe: str, workdir: Path, key: dict) -> tuple[set, set]:
             af, al, bf, bl = parts[0], int(parts[1].strip('"')), parts[2], int(parts[3].strip('"'))
         except ValueError:
             continue
-        a, b = at.get((Path(af).name, al)), at.get((Path(bf).name, bl))
+        a = at.get((af, al)) or at.get((Path(af).name, al))
+        b = at.get((bf, bl)) or at.get((Path(bf).name, bl))
         if a and b:
             edges.add((a, b))
     return edges, set()
