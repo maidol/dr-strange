@@ -616,6 +616,19 @@ fn write_agent_configs(
             dir.join(".kimi-code/mcp.json").display()
         )?;
     }
+    // Qoder and CodeBuddy read the project's own `.mcp.json`, which is
+    // already written above — so there is nothing to add for them, only
+    // something to say. Reporting it is the point: otherwise `init` looks
+    // like it skipped the agent the user actually runs.
+    for (name, marker) in [("Qoder", ".qoder"), ("CodeBuddy", ".codebuddy")] {
+        if dir.join(marker).is_dir() || user_has(marker) {
+            writeln!(
+                out,
+                "  + {name}: reads {} — already written, nothing else needed",
+                dir.join(".mcp.json").display()
+            )?;
+        }
+    }
     if probe_and_write_codex(dir, addr, user_has(".codex"))? {
         writeln!(
             out,
