@@ -11,7 +11,7 @@ code and history planes that are already there.
 Four decisions are settled, and the rest of this doc is their consequences:
 
 1. Ops data lives in **its own plane**, `<name>_ops`, the way history lives
-   in `<name>_git`.
+   in `<name>_git` — and a digest writes it **without being asked to**.
 2. The **container image** is the join carrier between a running thing and
    the commit that built it.
 3. The plugins read **declared state** — manifests as written — and not a
@@ -53,6 +53,14 @@ Its own plane because an ops resync and a code digest have unrelated
 lifecycles: a chart changes on a different cadence from the code, and
 re-reading one must not invalidate the other. Planes are cheap
 ([09-planes.md](09-planes.md) §1), so a third is not a cost.
+
+**No flag asks for it.** An ops file in a digested tree is read because it is
+there, and the reader that claimed it decides the plane — the mechanism
+`preprocess/repo.rs` already uses for history, where writer and readers share
+one constant rather than each keeping a copy. The exception is Kubernetes: a
+manifest may be called anything and that reader claims no extension on
+purpose, so a manifest tree is still digested with `--handler k8s` until
+something sniffs a document for `apiVersion` and `kind`.
 
 **And because planes are hard namespaces, this choice has a consequence that
 shapes everything in §5: a cross-plane edge is rejected at the storage
@@ -229,10 +237,13 @@ The model is shaped so these extend rather than rewrite it:
 
 ## 9. Open questions
 
-1. **Cross-plane reads.** The §5 join needs one query to read two planes.
-   Whether that is a client-side join, a new verb, or the `portals` concept
-   from 09-planes §6 is undecided — and it is the single thing that most
-   affects whether this track delivers its headline.
+1. ~~**Cross-plane reads.**~~ **Settled**: a verb, `deployed`, opening both
+   planes and joining in itself. Not `portals`, which stays unshipped and
+   unneeded until a *query language* need appears. `rev.rs` already resolves
+   an abbreviated sha and already states an ambiguity instead of guessing, so
+   no storage or query change is involved; the reverse direction scans the
+   ops plane's `Image` nodes rather than indexing them, which is nothing at
+   the size an ops plane is.
 2. **Helm and Kustomize.** The plugins parse rendered YAML; something has to
    render it. A `helm template` invocation is not a parser's job, so this is
    likely a CLI step that writes a rendered tree the plugin then reads.
