@@ -1,0 +1,132 @@
+# Ground truth for the Java fixture.
+#
+# Names are tool-neutral: `acme.Type.method`, matching the package.
+
+[corpus]
+language = "java"
+entry = "src"
+# The oracle is the compiler's own output: `javap -c` disassembles the class
+# files and every call is an explicit invoke instruction naming its target.
+# That is as authoritative as it gets — it is what actually runs.
+#
+# Its bound, like the TypeScript checker's, is that bytecode records the
+# *static* target: a call through an interface is `invokeinterface
+# acme/Store.get`, never an implementation. A lambda body becomes a synthetic
+# `lambda$...` method reached by `invokedynamic`, so the call to what the
+# lambda contains is attributed to that synthetic method rather than to the
+# enclosing one.
+crosscheck = "javap -c, the compiled bytecode"
+
+# ---------------------------------------------------------------------------
+# RESOLVED — unambiguous from syntax alone.
+# ---------------------------------------------------------------------------
+[[resolved]]
+from = "acme.Service.save"
+to = "acme.Text.normalize"
+why = "a static method, called by its class name"
+
+[[resolved]]
+from = "acme.Service.warm"
+to = "acme.Cache.get"
+why = "the parameter is typed Cache, so the target is written down"
+
+[[resolved]]
+from = "acme.Service.describe"
+to = "acme.Service.label"
+why = "a call on this, within the same class"
+
+[[resolved]]
+from = "acme.AuditStore.get"
+to = "acme.AuditStore.note"
+why = "a private method on the same class"
+
+[[resolved]]
+from = "acme.AuditStore.put"
+to = "acme.AuditStore.note"
+why = "a private method on the same class"
+
+[[resolved]]
+from = "acme.Dispatch.direct"
+to = "acme.Text.normalize"
+why = "the plain case, for contrast with the three below it"
+
+[[resolved]]
+from = "acme.Dispatch.viaLambda"
+to = "acme.Text.normalize"
+why = """the lambda body calls normalize. Bytecode puts that call in a \
+synthetic `lambda$viaLambda$0` method, so the cross-check attributes a \
+synthetic method's calls to the method that declares it — the lambda is part \
+of viaLambda's own text."""
+
+# ---------------------------------------------------------------------------
+# AMBIGUOUS — the declared type gives a shape, not an implementation.
+# ---------------------------------------------------------------------------
+[[ambiguous]]
+from = "acme.Service.load"
+site = "store.get(key)"
+interface_method = "acme.Store.get"
+candidates = ["acme.MemStore.get", "acme.AuditStore.get"]
+why = "the field is typed Store; the implementation is injected at construction"
+
+[[ambiguous]]
+from = "acme.Service.save"
+site = "store.put(...)"
+interface_method = "acme.Store.put"
+candidates = ["acme.MemStore.put", "acme.AuditStore.put"]
+why = "same, through put"
+
+[[ambiguous]]
+from = "acme.AuditStore.get"
+site = "inner.get(key)"
+interface_method = "acme.Store.get"
+candidates = ["acme.MemStore.get", "acme.AuditStore.get"]
+why = "a decorator holding the interface it decorates"
+
+[[ambiguous]]
+from = "acme.AuditStore.put"
+site = "inner.put(...)"
+interface_method = "acme.Store.put"
+candidates = ["acme.MemStore.put", "acme.AuditStore.put"]
+why = "same, through put"
+
+[[ambiguous]]
+from = "acme.Dispatch.viaMethodRef"
+site = "f.apply(value)"
+candidates = ["acme.Text.normalize"]
+why = """a method reference: `Text::normalize` names the method as a value, \
+and the call site is `Function.apply`. Nothing at the call says which method \
+was referenced."""
+
+[[ambiguous]]
+from = "acme.Dispatch.viaReflection"
+site = "getMethod(name).invoke(target)"
+candidates = []
+why = "the method name is a string; nothing static can name the target"
+
+# ---------------------------------------------------------------------------
+# ABSENT — must never be asserted.
+# ---------------------------------------------------------------------------
+[[absent]]
+from = "acme.Service.warm"
+to = "acme.Store.get"
+why = "warm takes a Cache; Store.get merely shares the name"
+
+[[absent]]
+from = "acme.Service.warm"
+to = "acme.MemStore.get"
+why = "same trap, one implementation further"
+
+[[absent]]
+from = "acme.Service.load"
+to = "acme.Cache.get"
+why = "Cache does not implement Store"
+
+[[absent]]
+from = "acme.Text.normalize"
+to = "acme.MemStore.put"
+why = "normalize touches no store at all"
+
+[[absent]]
+from = "acme.Dispatch.direct"
+to = "acme.Dispatch.viaLambda"
+why = "neither calls the other; both reach normalize"
