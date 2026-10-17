@@ -47,6 +47,12 @@ thought of is in neither. Two things push against that:
    handle.
 2. `crosscheck_go.py` checks the key against an independent tool.
 
+Java's oracle is the compiler's own output. `javac` turns every call into an
+explicit invoke instruction naming its target and `javap -c` prints them, so
+the check reads what actually runs. Its bound is the same as TypeScript's —
+bytecode records the *static* target, so an interface call is
+`invokeinterface acme/Store.get` and never an implementation.
+
 TypeScript has the strongest oracle of all, and it needs no approximation:
 `crosscheck_ts.mjs` drives the compiler's own type checker — the same
 authority an editor uses for go-to-definition. Its bound is the mirror of
@@ -94,14 +100,15 @@ a key that has no symbol for a closure.
 
 ## Results
 
-drsg 2.22.0 — `go@2+029b2d9d`, `py@2+a60536b6`, `rust@3+db2857ae`, `ts@2+63a54545`:
+drsg 2.22.0 — `go@2`, `java@2`, `py@2`, `rust@3`, `ts@2`:
 
-| | recall | precision | ambiguous sites not guessed | of those, gap **named** |
-|---|---|---|---|---|
-| Go | **100%** (14/14) | **100%** (5/5) | 6/6 | 2 of 6 |
-| Python | **100%** (8/8) | **100%** (5/5) | 7/7 | 5 of 7 |
-| Rust | 83% (5/6) | **100%** (5/5) | 6/6 | 5 of 6 |
-| TypeScript | **100%** (7/7) | **100%** (5/5) | 7/7 | 0 of 7 |
+| | recall | precision | ambiguous sites not guessed | of those, gap **named** | key checked by |
+|---|---|---|---|---|---|
+| Go | **100%** (14/14) | **100%** (5/5) | 6/6 | 2 of 6 | `callgraph` (RTA + CHA) |
+| Java | **100%** (7/7) | **100%** (5/5) | 6/6 | 4 of 6 | compiled bytecode |
+| Python | **100%** (8/8) | **100%** (5/5) | 7/7 | 5 of 7 | a real execution trace |
+| Rust | 83% (5/6) | **100%** (5/5) | 6/6 | 5 of 6 | `cargo expand`, macro only |
+| TypeScript | **100%** (7/7) | **100%** (5/5) | 7/7 | 0 of 7 | the TypeScript checker |
 
 **Nothing was guessed, in any language, at any site where syntax cannot settle
 the target. No false edge anywhere** — including every same-name trap, which a
@@ -113,12 +120,13 @@ Precision is uniform and recall nearly so. What varies is whether a parser
 *says* it could not resolve something, and that is a plugin decision rather
 than a property of the engine.
 
-- **Rust is the most forthcoming.** A `Box<dyn Store>` call is recorded as an
-  edge to the trait method `Store::get` — naming what was called without
-  pretending to know which implementation runs. A call on a generic parameter
-  becomes an `UnresolvedRef` with the name.
-- **Python names the gap too**, writing the unresolved expression into the key
-  (`?::service.py::self.store.get`).
+- **Rust and Java point at the interface.** A `Box<dyn Store>` call becomes an
+  edge to the trait method `Store::get`; a Java interface call becomes one to
+  `acme.Store.get`. That names what was called without pretending to know
+  which implementation runs — the same answer the TypeScript checker and the
+  JVM's own bytecode give.
+- **Python names the gap another way**, writing the unresolved expression into
+  the key (`?::service.py::self.store.get`).
 - **Go and TypeScript record nothing** for the same shape. For Go's
   `s.store.Get(id)` — where `store` is declared `Store` in the same file —
   there is neither an edge to `Store.Get` nor an unresolved reference. An agent
@@ -126,9 +134,11 @@ than a property of the engine.
   the blanket lower-bound note that this may be incomplete. TypeScript behaves
   the same way at all seven of its ambiguous sites.
 
-That asymmetry is fixable rather than inherent: Rust already does the thing Go
-and TypeScript do not, and both parsers already record the interface method as
-a node.
+That asymmetry is fixable rather than inherent. Three of the five plugins
+already do what the other two do not, and in every case the parser has already
+recorded the interface method as a node — Go's `Store.Get` and TypeScript's
+`Store.get` are both in the graph, unconnected to the call that goes through
+them.
 
 ### The one recall miss
 
@@ -139,8 +149,9 @@ graph says it was there.
 
 ### Not yet covered
 
-- **Four languages of eight.** Java, C, Kotlin and C# need their own corpus and
-  key; of those only Java has a comparable oracle.
+- **Five languages of eight.** C, Kotlin and C# need their own corpus and key.
+  None of the three has an oracle as direct as the five here, so they will rest
+  more heavily on the fixture discipline.
 - **One tool.** The point of a tool-neutral vocabulary is to score codegraph
   and codebase-memory-mcp over the identical corpus; that driver is not
   written yet, and until it is this measures drsg against ground truth rather

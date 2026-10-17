@@ -201,6 +201,7 @@ accuracy:
     uv run --no-project --with tomli python benchmarks/accuracy/crosscheck_py.py
     uv run --no-project --with tomli python benchmarks/accuracy/crosscheck_rust.py
     uv run --no-project --with tomli python benchmarks/accuracy/crosscheck_ts.py
+    uv run --no-project --with tomli python benchmarks/accuracy/crosscheck_java.py
     uv run --no-project --with tomli python benchmarks/accuracy/score.py
 
 # Lay out the six npm packages for a release, ready to publish; see
