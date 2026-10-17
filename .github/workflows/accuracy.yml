@@ -1,0 +1,50 @@
+# The accuracy benchmark's cross-checks, for the keys whose oracle this
+# project's authors cannot run locally.
+#
+# C# is the reason this exists: its fixture was written on a machine with no
+# C# compiler, so its key shipped marked `unverified`. A runner has the .NET
+# SDK, so Roslyn can say whether the key is right. Java and Python ride along
+# because their oracles — the JDK and the interpreter — are already here, and
+# a key that drifts should fail on the commit that drifts it.
+name: Accuracy
+
+on:
+  push:
+    branches: [master]
+    paths: ["benchmarks/accuracy/**", ".github/workflows/accuracy.yml"]
+  pull_request:
+    paths: ["benchmarks/accuracy/**", ".github/workflows/accuracy.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: accuracy-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  keys:
+    name: Keys agree with their oracles
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: "8.0.x"
+      # Pinned exactly, as ci.yml explains: setup-uv stopped publishing a
+      # floating major tag after v7, so `@v9` does not resolve.
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+
+      # The one the laptop cannot do.
+      - name: C# — Roslyn
+        run: uv run --no-project --with tomli python benchmarks/accuracy/crosscheck_csharp.py
+
+      # These two need nothing a runner does not already have.
+      - name: Java — compiled bytecode
+        run: uv run --no-project --with tomli python benchmarks/accuracy/crosscheck_java.py
+      - name: Python — a real execution trace
+        run: uv run --no-project --with tomli python benchmarks/accuracy/crosscheck_py.py
+      - name: C — the object code
+        run: uv run --no-project --with tomli python benchmarks/accuracy/crosscheck_c.py
