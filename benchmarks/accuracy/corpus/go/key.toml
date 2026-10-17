@@ -20,6 +20,39 @@ module = "acme/orders"
 crosscheck = "callgraph -algo=rta and -algo=cha"
 
 # ---------------------------------------------------------------------------
+# WHERE EACH SYMBOL IS DECLARED.
+#
+# Identity for a cross-tool comparison, because tools do not agree on names.
+# codegraph calls the interface method `Get` and distinguishes it from the
+# other two `Get`s by printing `store.go:13`; codebase-memory-mcp qualifies an
+# interface method but leaves a struct's method bare. Matching on names would
+# score the harness's name-mangling rather than any tool's accuracy, and would
+# make a competitor look wrong for a naming convention.
+#
+# These lines are read from the source and agree with what both tools report.
+# ---------------------------------------------------------------------------
+[symbols]
+"upper" = "dispatch.go:8"
+"viaFuncValue" = "dispatch.go:11"
+"viaMethodValue" = "dispatch.go:17"
+"viaClosure" = "dispatch.go:23"
+"viaDefer" = "dispatch.go:29"
+"viaGo" = "dispatch.go:33"
+"main" = "main.go:5"
+"Service.Load" = "service.go:9"
+"Service.Save" = "service.go:12"
+"normalize" = "service.go:21"
+"Cache.Get" = "service.go:30"
+"Service.Warm" = "service.go:34"
+"Store.Get" = "store.go:13"
+"Store.Put" = "store.go:14"
+"MemStore.Get" = "store.go:20"
+"MemStore.Put" = "store.go:27"
+"AuditStore.Get" = "store.go:39"
+"AuditStore.Put" = "store.go:44"
+"AuditStore.note" = "store.go:49"
+
+# ---------------------------------------------------------------------------
 # RESOLVED — the target is unambiguous from syntax alone. A parser that misses
 # one of these is incomplete. Scored as recall.
 # ---------------------------------------------------------------------------
