@@ -135,6 +135,44 @@ site = "getMethod(name).invoke(target)"
 candidates = []
 why = "the method name is a string; nothing static can name the target"
 
+# Where each type is declared. Separate from `[symbols]` because these are
+# what a reference points at, not something that calls or is called: putting
+# them in the call universe would turn a constructor edge into a false call.
+[types]
+"acme.AuditStore" = "src/acme/AuditStore.java:7"
+"acme.Cache" = "src/acme/Cache.java:7"
+"acme.MemStore" = "src/acme/MemStore.java:7"
+"acme.Service" = "src/acme/Service.java:4"
+"acme.Store" = "src/acme/Store.java:4"
+
+# ---------------------------------------------------------------------------
+# REFERENCE — cross-file type references: a symbol in one file naming a type
+# declared in another. Enumerated from the source, not from any tool's output.
+# Same-file references are deliberately absent: the task is the cross-file
+# one, because that is the reference an agent cannot see in the file it has
+# open. Static helper classes (`Text`, `TextExtensions`) are not in `[types]`,
+# so a static call is not counted twice as a reference.
+# ---------------------------------------------------------------------------
+[[reference]]
+from = "acme.Service"
+to = "acme.Store"
+why = "the field's type, from Store.java"
+
+[[reference]]
+from = "acme.Service.warm"
+to = "acme.Cache"
+why = "the parameter's type, from Cache.java"
+
+[[reference]]
+from = "acme.MemStore"
+to = "acme.Store"
+why = "the interface it implements, from Store.java"
+
+[[reference]]
+from = "acme.AuditStore"
+to = "acme.Store"
+why = "the interface it implements, from Store.java"
+
 # ---------------------------------------------------------------------------
 # IMPACT — "what would a change to this reach?", the question an agent asks
 # before it edits anything. Scored as a set, over the calls a parser can

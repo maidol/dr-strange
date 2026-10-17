@@ -172,6 +172,60 @@ site = "get(key)"
 candidates = ["Cache.Get"]
 why = "a bound method value assigned to a local"
 
+# Where each type is declared. Separate from `[symbols]` because these are
+# what a reference points at, not something that calls or is called: putting
+# them in the call universe would turn a constructor edge into a false call.
+[types]
+"AuditStore" = "store.go:34"
+"Cache" = "service.go:28"
+"MemStore" = "store.go:18"
+"Reader" = "service.go:25"
+"Service" = "service.go:6"
+"Store" = "store.go:12"
+"handlerFunc" = "dispatch.go:6"
+
+# ---------------------------------------------------------------------------
+# REFERENCE — cross-file type references: a symbol in one file naming a type
+# declared in another. Enumerated from the source, not from any tool's output.
+# Same-file references (`AuditStore.inner Store`, `Service.Warm(c *Cache)`)
+# are deliberately absent: the task is the cross-file one, because that is
+# the reference an agent cannot see in the file it has open.
+# ---------------------------------------------------------------------------
+[[reference]]
+from = "Service"
+to = "Store"
+why = "the struct field's type, declared in store.go"
+
+[[reference]]
+from = "main"
+to = "Service"
+why = "a composite literal names the type from service.go"
+
+[[reference]]
+from = "main"
+to = "AuditStore"
+why = "a composite literal names the type from store.go"
+
+[[reference]]
+from = "main"
+to = "MemStore"
+why = "a composite literal names the type from store.go"
+
+[[reference]]
+from = "viaMethodValue"
+to = "Cache"
+why = "a parameter typed by service.go's Cache"
+
+[[reference]]
+from = "viaDefer"
+to = "Cache"
+why = "a parameter typed by service.go's Cache"
+
+[[reference]]
+from = "viaGo"
+to = "Cache"
+why = "a parameter typed by service.go's Cache"
+
 # ---------------------------------------------------------------------------
 # IMPACT — "what would a change to this reach?", the question an agent asks
 # before it edits anything. Scored as a set, over the calls a parser can

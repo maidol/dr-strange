@@ -8,7 +8,7 @@ language = "c"
 entry = "."
 # drsg keys a C function by the file it was parsed from; the key names it the
 # way the source does, since C has one namespace for externals.
-strip = "^[\\w.]+\\.c::"
+strip = "^[\\w.]+\\.[ch]::"
 # The oracle is the object code. `objdump -d -r` shows every call, and the two
 # kinds are distinguishable without ambiguity:
 #   * a direct call carries a symbol — `call <cache_get>` for one in the same
@@ -120,6 +120,53 @@ from = "via_fn_pointer"
 site = "f(value)"
 candidates = ["normalize"]
 why = "a function pointer held in a local; the name appears as a value"
+
+# Where each type is declared. Separate from `[symbols]` because these are
+# what a reference points at, not something that calls or is called: putting
+# them in the call universe would turn a constructor edge into a false call.
+[types]
+"AuditStore" = "store.c:27"
+"Cache" = "service.c:8"
+"Service" = "service.c:17"
+"Store" = "store.h:13"
+
+# ---------------------------------------------------------------------------
+# REFERENCE — cross-file type references: a symbol in one file naming a type
+# declared in another. Enumerated from the source, not from any tool's output.
+# Same-file references are deliberately absent: the task is the cross-file
+# one, because that is the reference an agent cannot see in the file it has
+# open. Static helper classes (`Text`, `TextExtensions`) are not in `[types]`,
+# so a static call is not counted twice as a reference.
+# ---------------------------------------------------------------------------
+[[reference]]
+from = "mem_get"
+to = "Store"
+why = "the `Store *self` parameter, from store.h"
+
+[[reference]]
+from = "mem_put"
+to = "Store"
+why = "the `Store *self` parameter, from store.h"
+
+[[reference]]
+from = "audit_get"
+to = "Store"
+why = "the `Store *self` parameter, from store.h"
+
+[[reference]]
+from = "audit_put"
+to = "Store"
+why = "the `Store *self` parameter, from store.h"
+
+[[reference]]
+from = "AuditStore"
+to = "Store"
+why = "the embedded `Store base` and `Store *inner`, from store.h"
+
+[[reference]]
+from = "Service"
+to = "Store"
+why = "the `Store *store` field, from store.h"
 
 # ---------------------------------------------------------------------------
 # IMPACT — "what would a change to this reach?", the question an agent asks

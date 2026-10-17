@@ -27,19 +27,26 @@ import subprocess
 from pathlib import Path
 
 
-def locate(key: dict) -> dict[tuple[str, int], str]:
+def locate(key: dict, types: bool = False) -> dict[tuple[str, int], str]:
     """(file, line) -> the key's name for the symbol declared there.
 
     Keyed by both the path the key records and its basename, because tools
     report either: codebase-memory-mcp gives `src/acme/AuditStore.java` while
     the flat Go fixture makes the two forms identical. Comparing basenames
     only worked for Go and silently scored every nested corpus at zero.
+
+    `types` adds the `[types]` table, whose entries are the declarations a
+    reference points *at*. They stay out of the call tables on purpose: a
+    type in the call universe would turn a tool's constructor edge into a
+    false call, which is a modelling difference and not an error.
     """
     out = {}
-    for name, where in key.get("symbols", {}).items():
-        file, _, line = where.rpartition(":")
-        out[(file, int(line))] = name
-        out[(Path(file).name, int(line))] = name
+    tables = ["symbols"] + (["types"] if types else [])
+    for table in tables:
+        for name, where in key.get(table, {}).items():
+            file, _, line = where.rpartition(":")
+            out[(file, int(line))] = name
+            out[(Path(file).name, int(line))] = name
     return out
 
 
@@ -130,7 +137,7 @@ def codegraph_edges(exe: str, workdir: Path, key: dict) -> tuple[set, set]:
 # codebase-memory-mcp — one Cypher query for every CALLS edge, with the file
 # and line of both ends so they can be identified.
 # --------------------------------------------------------------------------
-def cbm_edges(exe: str, workdir: Path, key: dict) -> tuple[set, set]:
+def cbm_edges(exe: str, workdir: Path, key: dict) -> tuple[set, set, set]:
     at = locate(key)
     # The project name comes from the indexer's own answer, never from munging
     # the path: the tool sanitises it its own way, and guessing silently
@@ -169,7 +176,31 @@ def cbm_edges(exe: str, workdir: Path, key: dict) -> tuple[set, set]:
         b = at.get((bf, bl)) or at.get((Path(bf).name, bl))
         if a and b:
             edges.add((a, b))
-    return edges, set()
+
+    # It models references too, as USAGE. Same identity rule: file and line,
+    # so a file-level node (start_line 0) simply does not resolve.
+    refs: set[tuple[str, str]] = set()
+    rt = locate(key, types=True)
+    # USAGE and IMPLEMENTS both: the same reading drsg gets.
+    usage = "\n".join(
+        run([exe, "cli", "--quiet", "query_graph",
+             json.dumps({"project": project, "max_rows": 999, "query": (
+                 f"MATCH (a)-[:{rel}]->(b) RETURN a.file AS af, "
+                 "a.start_line AS al, b.file AS bf, b.start_line AS bl")})])
+        for rel in ("USAGE", "IMPLEMENTS"))
+    for line in usage.splitlines():
+        parts = line.split()
+        if len(parts) != 4:
+            continue
+        try:
+            af, al, bf, bl = parts[0], int(parts[1].strip('"')), parts[2], int(parts[3].strip('"'))
+        except ValueError:
+            continue
+        a = rt.get((af, al)) or rt.get((Path(af).name, al))
+        b = rt.get((bf, bl)) or rt.get((Path(bf).name, bl))
+        if a and b and a != b:
+            refs.add((a, b))
+    return edges, set(), refs
 
 
 def find(*names: str) -> str | None:

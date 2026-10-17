@@ -146,6 +146,29 @@ site = "GetMethod(name)?.Invoke(...)"
 candidates = []
 why = "the method name is a string; nothing static can name the target"
 
+# Where each type is declared. Separate from `[symbols]` because these are
+# what a reference points at, not something that calls or is called: putting
+# them in the call universe would turn a constructor edge into a false call.
+[types]
+"Acme.AuditStore" = "src/Store.cs:23"
+"Acme.Cache" = "src/Service.cs:6"
+"Acme.IStore" = "src/Store.cs:6"
+"Acme.MemStore" = "src/Store.cs:13"
+"Acme.Service" = "src/Service.cs:14"
+
+# ---------------------------------------------------------------------------
+# REFERENCE — cross-file type references: a symbol in one file naming a type
+# declared in another. Enumerated from the source, not from any tool's output.
+# Same-file references are deliberately absent: the task is the cross-file
+# one, because that is the reference an agent cannot see in the file it has
+# open. Static helper classes (`Text`, `TextExtensions`) are not in `[types]`,
+# so a static call is not counted twice as a reference.
+# ---------------------------------------------------------------------------
+[[reference]]
+from = "Acme.Service"
+to = "Acme.IStore"
+why = "the readonly field's type, from Store.cs"
+
 # ---------------------------------------------------------------------------
 # IMPACT — "what would a change to this reach?", the question an agent asks
 # before it edits anything. Scored as a set, over the calls a parser can

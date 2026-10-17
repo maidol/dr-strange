@@ -25,6 +25,11 @@ What this measures, and why it is three numbers rather than one:
   involved. Scored over resolved calls only, so no tool is asked to guess
   through an interface.
 
+  **Reference** — cross-file type references: a parameter typed by a struct
+  three files away, a literal naming a type from another file. Recall only;
+  the comment in `score` explains why precision has no honest denominator
+  here, and a tool with no reference concept is reported as out of scope.
+
   **Honesty** — at the call sites where syntax genuinely cannot settle the
   target (an interface, a function value, a bound method), does the tool say
   so, or does it pick one and sound certain? Scored separately because a tool
@@ -94,6 +99,12 @@ def drsg_edges(drsg: str, corpus: Path, plane: str, module: str,
         run([drsg, "--db", db, "digest", str(corpus), "--apply", "--code-only", "--no-git"])
         out = run([drsg, "--db", db, "cypher", "--plane", plane,
                    "MATCH (a)-[:CALLS]->(b) RETURN key(a), key(b)"])
+        # IMPLEMENTS counts: a class naming the interface it implements is a
+        # reference to a type declared elsewhere, whatever edge it lands on.
+        uses = run([drsg, "--db", db, "cypher", "--plane", plane,
+                    "MATCH (a)-[:USES_TYPE]->(b) RETURN key(a), key(b)"])
+        impl = run([drsg, "--db", db, "cypher", "--plane", plane,
+                    "MATCH (a)-[:IMPLEMENTS]->(b) RETURN key(a), key(b)"])
     rows = json.loads(out[out.index("{"):]).get("rows", [])
     edges, declared = set(), set()
     for a, b in rows:
@@ -102,7 +113,11 @@ def drsg_edges(drsg: str, corpus: Path, plane: str, module: str,
             declared.add(caller)
         else:
             edges.add((caller, normalise(b, module, strip)))
-    return edges, declared
+    refs = {(normalise(a, module, strip), normalise(b, module, strip))
+            for out_ in (uses, impl)
+            for a, b in json.loads(out_[out_.index("{"):]).get("rows", [])
+            if not b.startswith("?::")}
+    return edges, declared, refs
 
 
 def normalise(name: str, module: str, strip: str = "") -> str:
@@ -127,7 +142,7 @@ def normalise(name: str, module: str, strip: str = "") -> str:
     return name.strip()
 
 
-def score(key: dict, edges: set, declared: set) -> dict:
+def score(key: dict, edges: set, declared: set, refs: set | None = None) -> dict:
     found = [e for e in key["resolved"] if (e["from"], e["to"]) in edges]
     missed = [e for e in key["resolved"] if (e["from"], e["to"]) not in edges]
     asserted = [e for e in key["absent"] if (e["from"], e["to"]) in edges]
@@ -212,7 +227,22 @@ def score(key: dict, edges: set, declared: set) -> dict:
             "extra": sorted((seen - allowed) & universe),
         })
 
+    # Cross-file type references. Recall only, on purpose: what else counts
+    # as a reference — a method to its receiver, a same-file field, a file
+    # node to a type — is a modelling choice rather than a fact, so there is
+    # no defensible denominator for precision here. `None` means the tool has
+    # no reference concept at all, which is scope, not a score of zero.
+    reference = None
+    if refs is not None:
+        want = {(e["from"], e["to"]) for e in key.get("reference", [])}
+        reference = {
+            "hit": sorted(want & refs),
+            "missing": sorted(want - refs),
+            "total": len(want),
+        }
+
     return {
+        "reference": reference,
         "impact": impact,
         "found": found, "missed": missed, "asserted": asserted,
         "per_site": per_site, "blanket": blanket, "guessed": guessed,
@@ -245,6 +275,17 @@ def report(name: str, key: dict, s: dict) -> None:
         print(f"    WRONG     {e['from']} -> {e['to']}  ({e['why']})")
     for e in s["guessed"]:
         print(f"    GUESSED   {e['from']} picked {e['picked']} at {e['site']}")
+    ref = s.get("reference")
+    if ref is None:
+        if key.get("reference"):
+            print("  reference      n/a   the tool records no reference edges "
+                  "(scope, not a miss)")
+    elif ref["total"]:
+        pct = len(ref["hit"]) / ref["total"] * 100
+        print(f"  reference  {pct:5.1f}%   {len(ref['hit'])}/{ref['total']} "
+              "cross-file type references found")
+        for a, b in ref["missing"]:
+            print(f"    UNSEEN    {a} references {b} across files")
     imp = s.get("impact", [])
     if imp:
         hit = sum(len(i["hit"]) for i in imp)
@@ -298,7 +339,9 @@ def codegraph_adapter(args, corpus: Path, key: dict) -> tuple[set, set]:
         # Scoring an index that was never built reports the tool as hopeless
         # when the harness is at fault. Fail loudly instead.
         sys.exit(f"codegraph init failed for {corpus.name}:\n{r.stdout[-400:]}{r.stderr[-400:]}")
-    return competitors.codegraph_edges(exe, work, key)
+    # codegraph exposes callers/callees and nothing reference-shaped, so the
+    # reference arm is not applicable to it rather than failed.
+    return (*competitors.codegraph_edges(exe, work, key), None)
 
 
 def cbm_adapter(args, corpus: Path, key: dict) -> tuple[set, set]:
@@ -306,6 +349,7 @@ def cbm_adapter(args, corpus: Path, key: dict) -> tuple[set, set]:
     if not exe:
         sys.exit("codebase-memory-mcp is not on PATH — pass --cbm <path>")
     return competitors.cbm_edges(exe, _workdir(corpus, args), key)
+
 
 
 # Each entry takes (args, corpus, key) and returns (edges, declared gaps) in
@@ -339,8 +383,8 @@ def main() -> int:
     adapter = TOOLS[args.tool]
     for corpus in corpora:
         key = tomllib.load((corpus / "key.toml").open("rb"))
-        edges, declared = adapter(args, corpus, key)
-        s = score(key, edges, declared)
+        edges, declared, refs = adapter(args, corpus, key)
+        s = score(key, edges, declared, refs)
         unverified = " — key UNVERIFIED" if key["corpus"].get("unverified") else ""
         report(f"{corpus.name}  ({args.tool}){unverified}", key, s)
     print("\nMISSED is incompleteness. WRONG is a false edge — worse than a miss,"
