@@ -11,9 +11,12 @@ $ uv run --no-project --with tomli python benchmarks/accuracy/crosscheck_go.py
 $ uv run --no-project --with tomli python benchmarks/accuracy/score.py
 ```
 
-## Three numbers, not one
+## Four questions, not one number
 
 A single "accuracy" percentage would hide the distinction that matters most.
+The four arms are the four task types the annual plan names: callers, blast
+radius, cross-file references, and same-name symbols (which is what the
+precision traps are made of).
 
 - **Recall** — of the calls whose target is unambiguous from syntax alone, how
   many does the tool report? A miss is incompleteness: the agent asks who
@@ -21,6 +24,20 @@ A single "accuracy" percentage would hide the distinction that matters most.
 - **Precision** — of the pairs the key marks as traps, how many does the tool
   assert anyway? A false edge is worse than a miss, because it sends an agent
   to rewrite code that was never involved.
+- **Impact** — "what would a change to this reach?", the question an agent
+  asks before it edits anything. Scored as a set, by walking each tool's own
+  edges backwards from a subject. This is where an edge error stops being one
+  line in a report: a missing call hides a whole subtree of callers, and a
+  false one drags in code that was never involved. A reach is only counted
+  against a tool if the key cannot justify it *at all* — including through
+  the candidates at an ambiguous site — so resolving `h = upper; h(s)` is
+  treated as the extra capability it is, not as an invented edge.
+- **Reference** — cross-file type references: a parameter typed by a struct
+  three files away, a literal naming a type from another file. Recall only.
+  There is no honest denominator for precision here, because what *else*
+  counts as a reference — a method to its receiver, a same-file field, a file
+  node to a type — is a modelling choice rather than a fact. A tool with no
+  reference concept is reported as out of scope, not as a zero.
 - **Honesty** — at the sites where syntax genuinely cannot settle the target,
   does the tool say so or pick one and sound certain? Reported in parts: a
   **per-site** gap names the call it could not resolve; a **blanket**
@@ -186,9 +203,67 @@ as its own outcome rather than as either a resolution or a guess, because the
 other seven plugins leave the same shape unresolved. They are incomplete there,
 not dishonest; C is more complete.
 
+## Blast radius, and cross-file references
+
+The two arms added last. Impact is derived from each tool's own edges, so it
+is not an independent measurement — it is what the edge errors *cost* when a
+question is asked through them.
+
+| | impact | cross-file references |
+|---|---|---|
+| drsg | 56/61 | 15/21 |
+| codegraph | 55/61 | — no reference edges |
+| codebase-memory-mcp | 55/61 | 13/21 |
+
+**On impact the three are close, and that is the honest result.** The arm
+mostly re-reads the call edges, so it separates tools only where a false edge
+compounds: codebase-memory-mcp's one wrong edge in the Go fixture
+(`Cache.Get -> AuditStore.note`) puts **five** symbols in the blast radius of
+`AuditStore.note` that never touch it — `Cache.Get`, `Service.Warm`,
+`viaDefer`, `viaGo`, `viaMethodValue`. An agent asking what a change to
+`note` affects is handed five files of unrelated work. That is the cost of a
+false edge stated in the units an agent actually feels, and it is why
+precision is the number to read first.
+
+**On references drsg wins overall and loses where it is otherwise strongest.**
+
+| | declared | drsg | codebase-memory-mcp |
+|---|---|---|---|
+| Go | 7 | 4 | **6** |
+| C | 6 | 4 | 4 |
+| Java | 4 | **4** | 3 |
+| C#, Kotlin, Rust | 1 each | **1** each | 0 each |
+| TypeScript | 1 | 0 | 0 |
+| Python | 0 | — | — |
+
+Three real gaps in drsg, all found by this arm and none of them known before:
+
+1. **Composite literals (Go).** `&Service{store: &AuditStore{...}}` in `main`
+   names three types from two other files. drsg records none of them: it sees
+   types in declarations — fields, parameters — and not in literals.
+   codebase-memory-mcp finds all three, which is why it wins that row.
+2. **Struct fields (C).** `Store base`, `Store *inner`, `Store *store` are
+   references to a type in `store.h`. drsg records the `Store *self`
+   parameters and misses the fields.
+3. **A constructor parameter (TypeScript).** `constructor(private store: Store)`
+   is the one cross-file reference in that fixture, and drsg's TypeScript
+   plugin records no type reference for it at all.
+
+Two notes on what this arm is worth. **It is thin outside Go, Java and C** —
+the other fixtures declare one reference each, because single-purpose files
+with few types is what makes the call arm readable. And **Python declares
+none**: its `Service.__init__(self, store)` carries no annotation, so there
+is no cross-file type reference in that fixture to find. An empty arm there
+is a fact about the code, not a tool failing to see something.
+
+`IMPLEMENTS` counts as a reference for both tools — a class naming the
+interface it implements is a reference to a type declared elsewhere,
+whatever edge kind it lands on. Without that, Java's `MemStore -> Store`
+read as a miss for drsg when it was recorded all along.
+
 ## Against the other two tools
 
-The point of a tool-neutral key. Same fixture, same key, same three questions,
+The point of a tool-neutral key. Same fixture, same key, same questions,
 scored by the same code — `--tool codegraph` or `--tool codebase-memory-mcp`.
 
 drsg 2.21.0, codegraph 1.6.2, codebase-memory-mcp 0.12.1, every fixture:
@@ -250,9 +325,11 @@ false call: codegraph answers `callees Store.Get` with `MemStore.Get` and
 
 ### The harness was wrong before it was right
 
-Nine times, the first result slandered a competitor and the raw output
-disagreed. Worth stating, because a comparative benchmark that has never been
-wrong has probably not been checked:
+Eleven times, the first result slandered a tool and the raw output disagreed.
+Worth stating, because a comparative benchmark that has never been wrong has
+probably not been checked. Nine of the eleven made a *competitor* look worse;
+the last two, added with the reference arm, made **drsg** look worse — the
+bug does not care which way it points:
 
 1. codegraph prints a **subject's** location inline and a **callee's** on the
    next line; parsing only the second made every answer look off-subject, and
@@ -277,10 +354,26 @@ wrong has probably not been checked:
 9. Deriving the other tool's project name by munging a path, instead of
    reading the name its own indexer returned, queried a project that did not
    exist and reported 0% for two more languages.
+10. The reference arm resolved both ends of an edge through `[symbols]`,
+   which holds only functions and methods. Every reference *points at a
+   type*, so nothing resolved and codebase-memory-mcp scored 0 of 7 on a
+   fixture where its own output plainly contained `main -> Service`. Types
+   now live in a separate `[types]` table, kept out of the call universe so
+   that a constructor edge does not become a false call.
+11. The `[types]` entries were then written as bare names — `Service`, `Store`
+   — while each key names symbols its own way (`service::Service` in Rust,
+   `acme.Service` in Java). drsg scored **0% on seven of eight languages**
+   for references it records perfectly. The C key had a second form of the
+   same bug: its `strip` pattern covered `.c::` but not `.h::`, so a type
+   declared in a header could never match. This is bug 8 again, which is the
+   argument for the `[symbols]` table existing at all.
 
 Every number above was checked against the tool's own raw output before being
-written down. The rule that caught all five: when a competitor looks bad, read
-what it actually printed.
+written down. The rule that caught all eleven: **when a tool looks bad, read
+what it actually printed** — and that rule has to apply to the tool this
+benchmark is written for, or it is not a rule. Both new bugs were caught by
+disbelieving a flattering-looking 0% for a rival and an unflattering 0% for
+drsg, in the same way.
 
 ### Not yet covered
 
