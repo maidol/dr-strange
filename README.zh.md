@@ -25,6 +25,10 @@
   <img src="https://img.shields.io/badge/Codex%20CLI-ready-6d28d9" alt="Codex CLI">
   <img src="https://img.shields.io/badge/Gemini%20CLI-ready-6d28d9" alt="Gemini CLI">
   <img src="https://img.shields.io/badge/OpenCode-ready-6d28d9" alt="OpenCode">
+  <img src="https://img.shields.io/badge/Trae-ready-6d28d9" alt="Trae">
+  <img src="https://img.shields.io/badge/Kimi%20Code-ready-6d28d9" alt="Kimi Code">
+  <img src="https://img.shields.io/badge/Qoder-ready-6d28d9" alt="Qoder">
+  <img src="https://img.shields.io/badge/CodeBuddy-ready-6d28d9" alt="CodeBuddy">
 </p>
 
 <p align="center"><a href="README.md">English</a> · <strong>简体中文</strong></p>

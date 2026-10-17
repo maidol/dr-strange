@@ -27,9 +27,23 @@ $ drsg --db codes.drsg context 'WriteTxn::delete_node' --plane myrepo
 代码仓库自身目录下运行后，它会把工作目录图化为一个以其命名的平面，在后台启动一个
 `serve watch` 进程（监听地址随机选定，令牌也随机生成），并写入 `.mcp.json`。这是
 Claude Code 自己的约定，GitHub Copilot 也会原样读取它。随后，它还会为 Cursor、
-OpenCode、Gemini CLI 或 Codex CLI 各自写入一份匹配的 MCP 配置——但只有这个工具
-自己的标记（它会创建的目录，或者已经拥有的配置文件）已经出现在这个仓库里，才会
-写入。
+OpenCode、Gemini CLI、Codex CLI、Trae 或 Kimi Code 各自写入一份匹配的 MCP
+配置——但只有这个工具自己的标记（它会创建的目录，或者已经拥有的配置文件）已经
+出现在这个仓库里、或者出现在这台机器上，才会写入。Qoder 与 CodeBuddy 不需要
+额外的文件：两者都读取项目自己的 `.mcp.json`，所以 `init` 只把这一点说出来，
+而不是再写一份。
+
+令牌写在哪里，取决于每个客户端能做什么。`.mcp.json`、`.cursor/mcp.json` 和
+`.trae/mcp.json` 直接携带令牌——Cursor 和 Trae 都是从桌面启动的 IDE，没有
+shell 环境可供读取——这三个文件都会进入 `init` 维护的 `.gitignore` 段落。
+`.opencode.json` 与 `.gemini/settings.json` 在 `init` 之前就存在，很可能已被
+提交，因此它们改为按各自客户端的语法写入一个环境变量引用（`{env:DRSG_TOKEN}`、
+`$DRSG_TOKEN`），正如 Codex 条目一直采用的 `bearer_token_env_var`，以及
+Kimi Code 通过写下变量名的 `bearerTokenEnvVar`；`init` 会打印出在这里启动这些
+客户端之前需要执行的 `export DRSG_TOKEN=…`。
+
+Trae 把项目级 MCP 放在 **Settings > Beta > Enable Project MCP** 之后，没有打开
+这个开关时，`init` 写入的文件不会生效；`init` 打印的那一行会提醒这一点。
 
 对 Claude Code，它还会安装两个钩子：写在仓库的 `.claude/settings.local.json`
 （每个用户自己的文件，不会进入团队共享的代码树）里，脚本放在插件库旁边。配置

@@ -30,19 +30,28 @@ from the repository itself once its plugins are installed: it digests the
 working directory into a plane named after it, spawns `serve watch` detached
 on a freshly-picked address and bearer token, and writes `.mcp.json` — Claude
 Code's own convention, also read as-is by GitHub Copilot. It then writes a
-matching MCP config for Cursor, OpenCode, Gemini CLI, or Codex CLI, but only
-for a tool whose own marker (a directory it creates, or a config file it
-already owns) is already present in the repository.
+matching MCP config for Cursor, OpenCode, Gemini CLI, Codex CLI, Trae or
+Kimi Code, but only for a tool whose own marker (a directory it creates, or a
+config file it already owns) is already present in the repository or on this
+machine. Qoder and CodeBuddy need nothing extra — both read the project's own
+`.mcp.json` — so `init` says so rather than writing a second file.
 
 Where the token goes follows what each client can do. `.mcp.json` and
 `.cursor/mcp.json` carry it literally — Cursor is a desktop app launched with
 no shell environment to read one from — and both are added to the
 `.gitignore` block `init` maintains (with the database, its sidecars and
-`logs/`). `.opencode.json` and `.gemini/settings.json` existed before `init`
-and are as likely as not committed, so they get an environment reference in
-the client's own syntax (`{env:DRSG_TOKEN}`, `$DRSG_TOKEN`) instead, as the
-Codex entry always has (`bearer_token_env_var`); `init` prints the
-`export DRSG_TOKEN=…` line to run before launching those clients here.
+`logs/`). `.trae/mcp.json` is the same case — Trae is a desktop IDE
+too — and is gitignored with them. `.opencode.json` and
+`.gemini/settings.json` existed before `init` and are as likely as not
+committed, so they get an environment reference in the client's own syntax
+(`{env:DRSG_TOKEN}`, `$DRSG_TOKEN`) instead, as the Codex entry always has
+(`bearer_token_env_var`) and as Kimi Code does by naming the variable
+(`bearerTokenEnvVar`); `init` prints the `export DRSG_TOKEN=…` line to run
+before launching those clients here.
+
+Trae gates project-scoped MCP behind **Settings > Beta > Enable Project MCP**,
+so the file `init` writes is ignored until that is on; `init` says so on the
+line it prints.
 
 For Claude Code it also installs two hooks, in the repository's
 `.claude/settings.local.json` (the per-user file, so nothing lands in the
