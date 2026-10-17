@@ -198,6 +198,7 @@ gate-frontend:
 # flatter anyone. See benchmarks/accuracy/README.md.
 accuracy:
     uv run --no-project --with tomli python benchmarks/accuracy/crosscheck_go.py
+    uv run --no-project --with tomli python benchmarks/accuracy/crosscheck_py.py
     uv run --no-project --with tomli python benchmarks/accuracy/score.py
 
 # Lay out the six npm packages for a release, ready to publish; see

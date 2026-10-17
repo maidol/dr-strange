@@ -47,6 +47,15 @@ thought of is in neither. Two things push against that:
    handle.
 2. `crosscheck_go.py` checks the key against an independent tool.
 
+Python has no oracle of that kind — `pycg` does not install under a current
+interpreter, and a type checker resolves types without emitting a call graph.
+So `crosscheck_py.py` takes the other road: it exercises the fixture under
+`sys.setprofile` and records the calls that **actually happen**. That is truth
+rather than approximation, and it fails the opposite way: a dynamic trace
+cannot over-report, only under-report by not exercising a path. Edges it never
+reaches are printed as uncovered rather than counted as agreement, so a gap in
+the exercise is visible instead of silent.
+
 ## What the cross-check found, including about itself
 
 `callgraph` (golang.org/x/tools) is the obvious oracle for Go, and it is not
@@ -70,33 +79,43 @@ a key that has no symbol for a closure.
 
 ## Results
 
-drsg 2.22.0, Go plugin `go@2+029b2d9d`:
+drsg 2.22.0 — `go@2+029b2d9d`, `py@2+a60536b6`:
 
-| | |
-|---|---|
-| Recall | **100%** — 14/14 unambiguous calls found |
-| Precision | **100%** — 5/5 traps avoided, including the same-name method |
-| Honesty | 6/6 ambiguous sites not guessed at: **2 named the gap**, 4 left only the blanket note |
+| | recall | precision | ambiguous sites not guessed | of those, gap **named** |
+|---|---|---|---|---|
+| Go | **100%** (14/14) | **100%** (5/5) | 6/6 | 2 |
+| Python | **100%** (8/8) | **100%** (5/5) | 7/7 | 5 |
 
-### Known misses
+Nothing guessed, in either language, at any site where syntax cannot settle
+the target. No false edge, including the same-name traps that a tool matching
+on a bare method name would take.
 
-Named here rather than left for a reader to discover:
+### The two plugins do not agree about saying so
 
-- **A call through an interface-typed field leaves no trace.** `s.store.Get(id)`,
-  where `store` is declared `Store` in the same file, produces neither a CALLS
-  edge to `Store.Get` nor an `UnresolvedRef` naming the gap. An agent asking
-  `context Service.Load` is told it has no callees, and learns only from the
-  blanket lower-bound note that this may be incomplete. Four of the six
-  ambiguous sites are this one shape. Pointing such a call at the interface
-  method — which the parser already records as a node — would turn four
-  blanket gaps into four named ones.
+The interesting column is the last one, and it is a difference between plugins
+rather than a property of the engine.
+
+Given the same shape — a call on an attribute whose type is not written down —
+**the Python plugin records the gap by name** (`?::service.py::self.store.get`),
+so an agent reading `context Service.load` sees that a call was made there and
+could not be resolved. **The Go plugin records nothing at all.** For
+`s.store.Get(id)`, where `store` is declared `Store` in the same file, there is
+neither a CALLS edge to `Store.Get` nor an unresolved reference: the call site
+leaves no trace, and the only warning is the blanket lower-bound note every
+answer carries.
+
+That is a fixable asymmetry, not an inherent limit — the Python plugin proves
+the behaviour is available, and the Go parser already records `Store.Get` as a
+node. Four of Go's six ambiguous sites are this one shape.
 
 ### Not yet covered
 
-- **One language.** Go is first because it has an independent oracle. The other
-  seven need their own corpus and key, and only Java has a comparable tool.
+- **Two languages of eight.** Go first because it has an independent oracle,
+  Python second to test the fixture discipline without one. Rust, TypeScript,
+  Java, C, Kotlin and C# need their own corpus and key.
 - **One tool.** The point of a tool-neutral vocabulary is to score codegraph
   and codebase-memory-mcp over the identical corpus; that driver is not
-  written yet.
+  written yet, and until it is this measures drsg against ground truth rather
+  than against anyone.
 - **Call edges only.** `REFERENCES`, `IMPORTS`, `EXTENDS` and route matching
   are unscored.
