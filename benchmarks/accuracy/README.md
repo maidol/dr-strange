@@ -119,16 +119,19 @@ drsg 2.22.0, every language in the official catalog:
 | Java | **100%** (7/7) | **100%** (5/5) | 6/6 | 4 of 6 | compiled bytecode |
 | Python | **100%** (8/8) | **100%** (5/5) | 7/7 | 5 of 7 | a real execution trace |
 | TypeScript | **100%** (7/7) | **100%** (5/5) | 7/7 | 0 of 7 | the TypeScript checker |
-| C# † | 89% (8/9) | **100%** (5/5) | 6/6 | 4 of 6 | **nothing** |
+| C# | 89% (8/9) | **100%** (5/5) | 6/6 | 4 of 6 | Roslyn, in CI |
 | Kotlin | 89% (8/9) | **100%** (5/5) | 5/5 | 4 of 5 | compiled bytecode |
 | C | 86% (6/7) | **100%** (5/5) | 5/5 | 0 of 5, 1 followed | the object code |
 | Rust | 83% (5/6) | **100%** (5/5) | 6/6 | 5 of 6 | `cargo expand`, macro only |
 
-† **C#'s key is unverified.** No C# compiler exists on the machine this was
-written on — no dotnet SDK, and mono's `mcs` needs a package install the
-account cannot perform — so that fixture has never been compiled and nothing
-independent has confirmed its key. Read its row as provisional. `dotnet build`
-plus `ildasm`/`monodis` would settle it, in the same shape as the Java check.
+Every key is now checked by something that is not this project. C#'s oracle
+runs in CI rather than locally — `.github/workflows/accuracy.yml`, because the
+machine these fixtures were written on has no C# compiler — and its first run
+found that the fixture **did not compile**: it leaned on a project's
+`ImplicitUsings`, so `List<>` and `Func<,>` were unresolved to anything reading
+the files directly, and it had already been scored by three tools in that
+state. The check reports a compile failure rather than an empty graph, which
+is the only reason that surfaced instead of passing as "no disagreements".
 
 **Nothing was guessed, in any language, at any site where syntax cannot settle
 the target. No false edge anywhere** — including every same-name trap, which a
@@ -281,8 +284,10 @@ what it actually printed.
 
 ### Not yet covered
 
-- **C#'s key is unverified**, as the table says. That is the one gap in
-  coverage rather than a gap in languages.
+- **Rust's key rests mostly on reading the source.** `cargo expand` settles
+  the macro entry; nothing independent checks the rest, because no call-graph
+  oracle for Rust exists that is smaller than the fixture it would check. It
+  is the one key here without a real second opinion.
 - **The fixtures are small.** Eight programs of a few dozen lines, chosen for
   the shapes they contain rather than for scale. A tool that does well here
   may do worse on a million lines, and nothing here measures that.

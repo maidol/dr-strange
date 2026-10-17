@@ -5,18 +5,20 @@
 [corpus]
 language = "csharp"
 entry = "src"
-# UNVERIFIED. There is no C# compiler on the machine this was written on —
-# no dotnet SDK, and mono's `mcs` needs a package install this account cannot
-# perform — so unlike the other five keys, nothing independent has confirmed
-# this one, and the fixture has never been compiled.
+# Checked by Roslyn's semantic model — the compiler's own answer for what each
+# call binds to, and the same authority an IDE uses. It runs in CI rather than
+# on a laptop (`.github/workflows/accuracy.yml`), because the machine this
+# fixture was written on has no C# compiler at all.
 #
-# What would verify it, in the same shape as the Java and Kotlin checks:
-# compile with `dotnet build`, then read the IL with `ildasm` or `monodis` and
-# match each `call`/`callvirt` against the entries below. Until that is run,
-# read any score for C# as provisional — a syntax error or a wrong assumption
-# here would not have been caught.
-crosscheck = "none — see above"
-unverified = true
+# That first run earned its place: the fixture did not compile. It leaned on a
+# project's `ImplicitUsings`, so `List<>`, `Dictionary<,>` and `Func<,>` were
+# unresolved to anything reading the files directly — and it had already been
+# scored by three tools in that state. The usings are explicit now.
+#
+# Bound, as for TypeScript: the model answers for the *declared* type, so a
+# call through an interface resolves to `Acme.IStore.Get` and never to an
+# implementation.
+crosscheck = "Roslyn's semantic model, in CI"
 
 # ---------------------------------------------------------------------------
 # WHERE EACH SYMBOL IS DECLARED.
