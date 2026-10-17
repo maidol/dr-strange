@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Resolves the C# fixture's calls with Roslyn's semantic model — the same
+       authority an IDE uses for go-to-definition, and the exact analogue of
+       the TypeScript checker used for that fixture. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Drsg.AccuracyOracle</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.14.0" />
+    <PackageReference Include="Basic.Reference.Assemblies.Net80" Version="1.7.9" />
+  </ItemGroup>
+
+</Project>
