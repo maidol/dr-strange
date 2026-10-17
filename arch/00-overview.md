@@ -18,6 +18,7 @@ locked top-level decisions, and everything that spans layers.
 | LLM layer | [07-llm.md](07-llm.md) |
 | Web UI | [08-web-ui.md](08-web-ui.md) |
 | Planes (cross-cutting data model) | [09-planes.md](09-planes.md) |
+| Ops graph (design) | [10-ops.md](10-ops.md) |
 
 ## 1. Vision
 
