@@ -1,0 +1,139 @@
+# Ground truth for the C# fixture.
+#
+# Names are source-level: `Acme.Type.Method`.
+
+[corpus]
+language = "csharp"
+entry = "src"
+# UNVERIFIED. There is no C# compiler on the machine this was written on —
+# no dotnet SDK, and mono's `mcs` needs a package install this account cannot
+# perform — so unlike the other five keys, nothing independent has confirmed
+# this one, and the fixture has never been compiled.
+#
+# What would verify it, in the same shape as the Java and Kotlin checks:
+# compile with `dotnet build`, then read the IL with `ildasm` or `monodis` and
+# match each `call`/`callvirt` against the entries below. Until that is run,
+# read any score for C# as provisional — a syntax error or a wrong assumption
+# here would not have been caught.
+crosscheck = "none — see above"
+unverified = true
+
+# ---------------------------------------------------------------------------
+# RESOLVED — unambiguous from syntax alone.
+# ---------------------------------------------------------------------------
+[[resolved]]
+from = "Acme.Service.Save"
+to = "Acme.Text.Normalize"
+why = "a static method, called by its class name"
+
+[[resolved]]
+from = "Acme.Service.Warm"
+to = "Acme.Cache.Get"
+why = "the parameter is typed Cache, so the target is written down"
+
+[[resolved]]
+from = "Acme.Service.Describe"
+to = "Acme.Service.Label"
+why = "a call on this, within the same class"
+
+[[resolved]]
+from = "Acme.AuditStore.Get"
+to = "Acme.AuditStore.Note"
+why = "a private method on the same class"
+
+[[resolved]]
+from = "Acme.AuditStore.Put"
+to = "Acme.AuditStore.Note"
+why = "a private method on the same class"
+
+[[resolved]]
+from = "Acme.Dispatch.Direct"
+to = "Acme.Text.Normalize"
+why = "the plain case, for contrast with the three below it"
+
+[[resolved]]
+from = "Acme.Dispatch.ViaLambda"
+to = "Acme.Text.Normalize"
+why = """the lambda body calls Normalize. The lambda literal is part of \
+ViaLambda's own text, which is how the other five languages are read here."""
+
+[[resolved]]
+from = "Acme.TextExtensions.Shout"
+to = "Acme.Text.Normalize"
+why = "an extension method's body is an ordinary static method's body"
+
+[[resolved]]
+from = "Acme.Dispatch.ViaExtension"
+to = "Acme.TextExtensions.Shout"
+why = "an extension method is dispatched by the receiver's static type"
+
+# ---------------------------------------------------------------------------
+# AMBIGUOUS — the declared type gives a shape, not an implementation.
+# ---------------------------------------------------------------------------
+[[ambiguous]]
+from = "Acme.Service.Load"
+site = "_store.Get(key)"
+interface_method = "Acme.IStore.Get"
+candidates = ["Acme.MemStore.Get", "Acme.AuditStore.Get"]
+why = "the field is typed IStore; the implementation arrives at construction"
+
+[[ambiguous]]
+from = "Acme.Service.Save"
+site = "_store.Put(...)"
+interface_method = "Acme.IStore.Put"
+candidates = ["Acme.MemStore.Put", "Acme.AuditStore.Put"]
+why = "same, through Put"
+
+[[ambiguous]]
+from = "Acme.AuditStore.Get"
+site = "_inner.Get(key)"
+interface_method = "Acme.IStore.Get"
+candidates = ["Acme.MemStore.Get", "Acme.AuditStore.Get"]
+why = "a decorator holding the interface it decorates"
+
+[[ambiguous]]
+from = "Acme.AuditStore.Put"
+site = "_inner.Put(...)"
+interface_method = "Acme.IStore.Put"
+candidates = ["Acme.MemStore.Put", "Acme.AuditStore.Put"]
+why = "same, through Put"
+
+[[ambiguous]]
+from = "Acme.Dispatch.ViaDelegate"
+site = "f(value)"
+candidates = ["Acme.Text.Normalize"]
+why = "a delegate holding a method group; the call site invokes the delegate"
+
+[[ambiguous]]
+from = "Acme.Dispatch.ViaReflection"
+site = "GetMethod(name)?.Invoke(...)"
+candidates = []
+why = "the method name is a string; nothing static can name the target"
+
+# ---------------------------------------------------------------------------
+# ABSENT — must never be asserted.
+# ---------------------------------------------------------------------------
+[[absent]]
+from = "Acme.Service.Warm"
+to = "Acme.IStore.Get"
+why = "Warm takes a Cache; IStore.Get merely shares the name"
+
+[[absent]]
+from = "Acme.Service.Warm"
+to = "Acme.MemStore.Get"
+why = "same trap, one implementation further"
+
+[[absent]]
+from = "Acme.Service.Load"
+to = "Acme.Cache.Get"
+why = "Cache does not implement IStore"
+
+[[absent]]
+from = "Acme.Text.Normalize"
+to = "Acme.MemStore.Put"
+why = "Normalize touches no store at all"
+
+[[absent]]
+from = "Acme.Dispatch.Direct"
+to = "Acme.Dispatch.ViaLambda"
+why = "neither calls the other; both reach Normalize"
