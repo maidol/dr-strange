@@ -27,6 +27,7 @@ parser plugin needs:
 |---|---|
 | Kubernetes | `Deployment`, `StatefulSet`, `DaemonSet`, `Job`, `CronJob`, `Service`, `Ingress`, `ConfigMap`, `Secret`, `PersistentVolumeClaim`, `Namespace` |
 | Compose | services, networks, volumes, `depends_on`, published ports |
+| Terraform | `resource`, `data`, `module`, `variable`, `output`, `provider`, and the references between them |
 
 Out of scope, and deliberately so: **Pods, nodes, metrics, alerts**. Each is
 cluster state, not a declaration — it needs credentials, it is stale the
@@ -75,6 +76,22 @@ Populated by the first version:
 | `Volume` | `<ns>/Volume/<name>` | A PVC, or a Compose volume |
 | `Network` | `<ns>/Network/<name>` | A Compose network. k8s has no analogue worth a node |
 
+Terraform declares the layer the other two run *on*, and adds:
+
+| Label | Key | What it is |
+|---|---|---|
+| `Infra` | `<type>.<name>` | A managed resource, keyed by Terraform's own address — `aws_instance.web`. The provider's type is a property, because there are thousands of them and a label per type would be a vocabulary nobody could query |
+| `DataSource` | `data.<type>.<name>` | Something read rather than managed |
+| `Module` | `module.<name>` | A module block, with its `source` |
+| `Variable` | `var.<name>` | An input. §7 governs its default |
+| `Output` | `output.<name>` | What the module publishes |
+| `Provider` | `provider.<name>` | A configured provider |
+
+`Infra` rather than `Resource` **on purpose**: the Kubernetes reader already
+uses `Resource` as its catch-all for a kind it does not model, and one label
+meaning both "an unmodelled Kubernetes object" and "a managed cloud resource"
+would make every query over either one wrong.
+
 Reserved, so that later work does not rename these:
 
 `Pod`, `Node` (cluster runtime, Q1) · `Metric`, `Alert` (Prometheus, Q1) ·
@@ -93,6 +110,23 @@ workload kind here and would collide) · `Incident` (Q2).
 | `MOUNTS` | `Container` → `ConfigMap` \| `Secret` \| `Volume` | `as` (`env`, `envFrom`, `file`), `key` where one key is named, `path` for a file |
 | `DEPENDS_ON` | `Workload` → `Workload` | Compose `depends_on`, with `condition` |
 | `ATTACHED_TO` | `Workload` \| `Service` → `Network` | — |
+
+Terraform's edges come from *references*, which is where its graph lives:
+
+| Edge | From → to | Carries |
+|---|---|---|
+| `DEPENDS_ON` | `Infra` → `Infra` \| `DataSource` | `via` (`reference` or `depends_on`) — an interpolated address is a dependency as surely as a declared one |
+| `USES_VARIABLE` | `Infra` \| `Module` → `Variable` | — |
+| `USES_MODULE` | `Namespace` → `Module` | — |
+| `PROVIDED_BY` | `Infra` → `Provider` | — |
+| `EXPOSES` | `Output` → `Infra` | — |
+| `USES_IMAGE` | `Infra` → `Image` | the same edge the other two readers draw, so a task definition reaches a revision |
+
+`USES_IMAGE` from an `Infra` node is the join paying off twice: a container
+image named in Terraform — an ECS task definition, a Cloud Run service, a
+`docker_container` — reaches the same `Image` node the Kubernetes reader
+would mint, under the same key, with the same `revision` parsed by the same
+SDK code.
 
 Reserved: `SCHEDULED_ON` (Pod → Node) · `SCRAPES` (Metric → Workload) ·
 `ALERTS_ON` (Alert → anything) · `CALLS` (Service → Service, from traces) ·
@@ -161,6 +195,17 @@ a real repository sometimes carries things that should have been a Secret —
 a connection string with a password in it is the usual one. **A plane built
 from a repository's manifests should be treated as carrying whatever those
 manifests carry.**
+
+**Terraform states it outright, and that is the rule.** A `variable` or
+`output` marked `sensitive = true` is the author saying so, exactly as
+choosing `ConfigMap` over `Secret` is — so a default or a value is recorded
+unless the block declares itself sensitive.
+
+Two Terraform files are **never read at all**: `*.tfvars` is values rather
+than declarations and is where real credentials are kept, and
+`terraform.tfstate` is runtime state that contains every attribute of every
+resource in plain text, including the secret ones. Neither is a declaration,
+so neither is in scope under §1 even before the secret question arises.
 
 **Secret values are never recorded**, in any encoding. The node carries the
 name, the keys, and the type; `data` and `stringData` values are dropped at
