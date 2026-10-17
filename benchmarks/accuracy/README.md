@@ -188,34 +188,48 @@ not dishonest; C is more complete.
 The point of a tool-neutral key. Same fixture, same key, same three questions,
 scored by the same code — `--tool codegraph` or `--tool codebase-memory-mcp`.
 
-drsg 2.21.0, codegraph 1.6.2, codebase-memory-mcp 0.12.1, over the Go fixture:
+drsg 2.21.0, codegraph 1.6.2, codebase-memory-mcp 0.12.1, every fixture:
 
-| | recall | false edges | ambiguous sites: gap named / followed / blanket |
+| | drsg | codegraph | codebase-memory-mcp |
 |---|---|---|---|
-| **drsg** | **100%** (14/14) | **0** | 2 / 0 / 4 |
-| **codegraph** | 79% (11/14) | **0** | 4 / 2 / 0 |
-| **codebase-memory-mcp** | 71% (10/14) | **2** | 3 / 2 / 1 |
+| C | 6/7 | 6/7 | **7/7** |
+| C# † | 8/9 | 8/9 | **9/9**, 2 false |
+| Go | **14/14** | 11/14 | 10/14, 2 false |
+| Java | **7/7** | 5/7 | 5/7 |
+| Kotlin | 8/9 | **9/9** | **9/9**, 2 false |
+| Python | **8/8** | 7/8 | 7/8 |
+| Rust | 5/6 | 5/6 | 4/6, 2 false |
+| TypeScript | **7/7** | 6/7 | 6/7 |
+| **total recall** | **63/67** | 57/67 | 57/67 |
+| **false edges** | **0** | **0** | **8** |
 
-**codegraph's three misses are all calls into the standard library**, which it
-does not index at all — `callees normalize` returns zero where the source
-calls `strings.TrimSpace`. That is a scope decision rather than a resolution
-failure, and within the fixture's own symbols its recall is 11 of 11. It is
-also the only tool here that resolves both local function bindings.
+Recall separates the three only a little. What separates them is the last row.
 
-**codebase-memory-mcp asserts two calls that do not exist.** It has merged the
-three methods named `Get`. From its own graph:
+**codebase-memory-mcp asserts eight calls that do not exist**, and every one is
+the same mistake: it picks a method by name without regard to the declared
+type of what it was called on. From its own graph, for the Kotlin fixture:
 
 ```
-MATCH (a)-[:CALLS]->(b) WHERE a.file = 'service.go' AND a.start_line = 30
-  Get "30" -> note  store.go:49
-  Get "30" -> Get   store.go:13
+MATCH (a)-[:CALLS]->(b) WHERE a.name = 'load'
+  load  src/Service.kt:14  ->  get  src/Service.kt:7
 ```
 
-`service.go:30` is `func (c *Cache) Get(key int) string { return c.hits[key] }`
-— a one-line map read that calls nothing. This is the same-name collision the
-fixture was built to expose, and it is the failure that matters most: an agent
-told that `Cache.Get` reaches `AuditStore.note` will go and read code that was
-never involved.
+Line 14 is `fun load(key: String): String? = store.get(key)`, where `store` is
+typed `Store`. Line 7 is `fun get(key: Int): String? = hits[key]` — `Cache.get`,
+which `load` never touches. It chose the `get` in the same file over the one
+the declared type names, and it does this in C#, Go, Kotlin and Rust. In Go it
+also has `Cache.Get` calling `AuditStore.note`, where `Cache.Get`'s entire body
+is `return c.hits[key]`.
+
+That is the failure this fixture was built to expose, and the one that costs
+most: an agent told `Cache.Get` reaches `AuditStore.note` goes and reads code
+that was never involved.
+
+**codegraph records no calls into the standard library** — `callees normalize`
+returns zero where the source calls `strings.TrimSpace`. That is a scope
+decision rather than a resolution failure, and it accounts for three of its ten
+misses. It asserts no false edge anywhere, and it is the only tool that
+resolves both local function bindings in the Go fixture.
 
 ### Identity is by file and line, never by name
 
@@ -233,7 +247,7 @@ false call: codegraph answers `callees Store.Get` with `MemStore.Get` and
 
 ### The harness was wrong before it was right
 
-Five times, the first result slandered a competitor and the raw output
+Nine times, the first result slandered a competitor and the raw output
 disagreed. Worth stating, because a comparative benchmark that has never been
 wrong has probably not been checked:
 
@@ -248,6 +262,18 @@ wrong has probably not been checked:
    folding them under the first subject invented eight more.
 5. Externals have no line in the fixture, so three real stdlib edges were
    dropped as missing before name-matching was added for them.
+6. Matching a path by basename worked only for the flat Go fixture and scored
+   every nested corpus at **zero** — four languages reported as finding
+   nothing at all.
+7. `codegraph init` was run with its exit status ignored, so a failed index
+   scored as a hopeless tool rather than a broken harness. It is fatal now.
+8. Reusing one working directory let a tool's background daemon race the
+   copy, and a key named `service.Service.save` was passed to a tool that
+   wanted `Service.save` — TypeScript scored 14% on a fixture it indexes
+   perfectly.
+9. Deriving the other tool's project name by munging a path, instead of
+   reading the name its own indexer returned, queried a project that did not
+   exist and reported 0% for two more languages.
 
 Every number above was checked against the tool's own raw output before being
 written down. The rule that caught all five: when a competitor looks bad, read
@@ -257,8 +283,8 @@ what it actually printed.
 
 - **C#'s key is unverified**, as the table says. That is the one gap in
   coverage rather than a gap in languages.
-- **The comparison covers Go only.** The other seven keys need their
-  `[symbols]` locations before another tool can be scored over them; without
-  those, identity falls back to names, which is what makes a comparison wrong.
+- **The fixtures are small.** Eight programs of a few dozen lines, chosen for
+  the shapes they contain rather than for scale. A tool that does well here
+  may do worse on a million lines, and nothing here measures that.
 - **Call edges only.** `REFERENCES`, `IMPORTS`, `EXTENDS` and route matching
   are unscored.
