@@ -7,9 +7,15 @@ What this measures, and why it is three numbers rather than one:
   does the tool report? A miss here is incompleteness: the agent asks "who
   calls this" and is told less than the source says.
 
-  **Precision** — of the pairs the key marks as traps, how many does the tool
-  assert anyway? These are same-name collisions and plausible-but-wrong
-  targets. A hit here is worse than a miss: a wrong edge sends an agent to
+  **Precision** — how many edges the tool asserts between known symbols are
+  not real? Two things are counted. The key's named traps are same-name
+  collisions and plausible-but-wrong targets, chosen to be tempting. But a
+  trap list only catches what its author thought of, so precision is also
+  measured over the **whole declared universe**: any edge between two symbols
+  the key locates, which is neither a real call nor a candidate at an
+  ambiguous site, is a false edge. That caught a competitor asserting
+  `Cache.Get -> AuditStore.note` — a pair no hand-written trap list had
+  thought to forbid. A false edge is worse than a miss: it sends an agent to
   rewrite code that was never involved.
 
   **Honesty** — at the call sites where syntax genuinely cannot settle the
@@ -44,10 +50,13 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+import tools_competitors as competitors
 
 try:
     import tomllib
@@ -116,6 +125,28 @@ def score(key: dict, edges: set, declared: set) -> dict:
     missed = [e for e in key["resolved"] if (e["from"], e["to"]) not in edges]
     asserted = [e for e in key["absent"] if (e["from"], e["to"]) in edges]
 
+    # Every edge the key accounts for: a real call, or a target the tool could
+    # defensibly reach at a site syntax cannot settle.
+    universe = set(key.get("symbols", {}))
+    legitimate = {(e["from"], e["to"]) for e in key["resolved"]}
+    for e in key["ambiguous"]:
+        for c in [*e.get("candidates", []), e.get("interface_method")]:
+            if c:
+                legitimate.add((e["from"], c))
+        # An interface method to its own implementations is dispatch, not a
+        # call. A tool that models it — codegraph answers `callees Store.Get`
+        # with MemStore.Get and AuditStore.Get — is making a defensible choice
+        # about what an agent wants, and counting it as a false call edge
+        # would misreport that as an error.
+        iface = e.get("interface_method")
+        if iface:
+            for c in e.get("candidates", []):
+                legitimate.add((iface, c))
+    invented = sorted(
+        (a, b) for a, b in edges
+        if a in universe and b in universe and (a, b) not in legitimate
+    )
+
     per_site, blanket, guessed, followed = [], [], [], []
     for e in key["ambiguous"]:
         frm = e["from"]
@@ -140,7 +171,7 @@ def score(key: dict, edges: set, declared: set) -> dict:
     return {
         "found": found, "missed": missed, "asserted": asserted,
         "per_site": per_site, "blanket": blanket, "guessed": guessed,
-        "followed": followed,
+        "followed": followed, "invented": invented,
     }
 
 
@@ -148,10 +179,13 @@ def report(name: str, key: dict, s: dict) -> None:
     nres, nabs, namb = len(key["resolved"]), len(key["absent"]), len(key["ambiguous"])
     rec = len(s["found"]) / nres * 100 if nres else 0.0
     prec = (nabs - len(s["asserted"])) / nabs * 100 if nabs else 0.0
+    invented = s["invented"]
     not_guessed = len(s["per_site"]) + len(s["blanket"]) + len(s["followed"])
     print(f"\n=== {name} ===")
     print(f"  recall     {rec:5.1f}%   {len(s['found'])}/{nres} unambiguous calls found")
-    print(f"  precision  {prec:5.1f}%   {nabs - len(s['asserted'])}/{nabs} traps avoided")
+    print(f"  precision  {prec:5.1f}%   {nabs - len(s['asserted'])}/{nabs} traps avoided"
+          + (f"; {len(invented)} further false edge(s)" if invented else
+             "; no other false edge between known symbols"))
     print(f"  honesty            {not_guessed}/{namb} ambiguous sites not guessed at, of which")
     print(f"                     {len(s['per_site'])} named the gap, "
           f"{len(s['blanket'])} left only the blanket lower-bound note"
@@ -166,6 +200,8 @@ def report(name: str, key: dict, s: dict) -> None:
         print(f"    WRONG     {e['from']} -> {e['to']}  ({e['why']})")
     for e in s["guessed"]:
         print(f"    GUESSED   {e['from']} picked {e['picked']} at {e['site']}")
+    for a, b in invented:
+        print(f"    INVENTED  {a} -> {b}  (no such call, and not a candidate anywhere)")
     for e in s["blanket"]:
         print(f"    BLANKET   {e['from']} at {e['site']} — no edge, no named gap")
 
@@ -178,9 +214,43 @@ def drsg_adapter(args, corpus: Path, key: dict) -> tuple[set, set]:
     )
 
 
+def _workdir(corpus: Path, args) -> Path:
+    """A copy of the corpus for a tool that writes its index beside the source.
+
+    codegraph creates `.codegraph/` in the project it indexes. The fixtures are
+    checked in, so they are copied somewhere disposable first.
+    """
+    work = Path(args.workdir) / corpus.name
+    if work.exists():
+        shutil.rmtree(work)
+    work.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(corpus, work)
+    return work
+
+
+def codegraph_adapter(args, corpus: Path, key: dict) -> tuple[set, set]:
+    exe = args.codegraph or competitors.find("codegraph")
+    if not exe:
+        sys.exit("codegraph is not on PATH — pass --codegraph <path to its bin>")
+    work = _workdir(corpus, args)
+    subprocess.run([exe, "init", "-y", str(work)], capture_output=True, check=False)
+    return competitors.codegraph_edges(exe, work, key)
+
+
+def cbm_adapter(args, corpus: Path, key: dict) -> tuple[set, set]:
+    exe = args.cbm or competitors.find("codebase-memory-mcp")
+    if not exe:
+        sys.exit("codebase-memory-mcp is not on PATH — pass --cbm <path>")
+    return competitors.cbm_edges(exe, _workdir(corpus, args), key)
+
+
 # Each entry takes (args, corpus, key) and returns (edges, declared gaps) in
 # the key's vocabulary. Adding a tool is adding one of these.
-TOOLS = {"drsg": drsg_adapter}
+TOOLS = {
+    "drsg": drsg_adapter,
+    "codegraph": codegraph_adapter,
+    "codebase-memory-mcp": cbm_adapter,
+}
 
 
 def main() -> int:
@@ -189,8 +259,13 @@ def main() -> int:
     ap.add_argument("--only", help="score one corpus by directory name")
     ap.add_argument("--tool", default="drsg", choices=sorted(TOOLS),
                     help="which tool to score over the fixtures")
+    ap.add_argument("--codegraph", help="path to the codegraph binary")
+    ap.add_argument("--cbm", help="path to the codebase-memory-mcp binary")
+    ap.add_argument("--workdir", default=str(Path(tempfile.gettempdir()) / "drsg-accuracy"),
+                    help="where to copy a corpus for tools that index in place")
     args = ap.parse_args()
 
+    sys.path.insert(0, str(ROOT))
     corpora = sorted(p for p in (ROOT / "corpus").iterdir() if (p / "key.toml").exists())
     if args.only:
         corpora = [p for p in corpora if p.name == args.only]
