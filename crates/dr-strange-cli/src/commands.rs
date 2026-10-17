@@ -145,6 +145,8 @@ const GITIGNORE_PATTERNS: &[&str] = &[
     // and must therefore never be committed.
     ".mcp.json",
     ".cursor/mcp.json",
+    // Trae is a desktop IDE too, so its config carries the token outright.
+    ".trae/mcp.json",
 ];
 
 /// What `init` was asked to bootstrap.
@@ -598,6 +600,22 @@ fn write_agent_configs(
             dir.join(".gemini/settings.json").display()
         )?;
     }
+    if probe_and_write_trae(dir, addr, token, user_has(".trae"))? {
+        writeln!(
+            out,
+            "  + Trae: wrote {} (turn on Settings > Beta > Enable Project MCP, \
+             or a project-scoped server is ignored)",
+            dir.join(".trae/mcp.json").display()
+        )?;
+    }
+    if probe_and_write_kimi(dir, addr, user_has(".kimi-code") || user_has(".kimi"))? {
+        writeln!(
+            out,
+            "  + Kimi Code: wrote {} (no token inside it — export \
+             {CODEX_TOKEN_ENV_VAR}={token} before launching `kimi` here)",
+            dir.join(".kimi-code/mcp.json").display()
+        )?;
+    }
     if probe_and_write_codex(dir, addr, user_has(".codex"))? {
         writeln!(
             out,
@@ -1047,6 +1065,61 @@ fn probe_and_write_cursor(
             "type": "http",
             "url": format!("http://{addr}/mcp"),
             "headers": { "Authorization": format!("Bearer {token}") },
+        }),
+    )?;
+    Ok(true)
+}
+
+/// Trae reads `mcpServers` from `.trae/mcp.json`, with no `type` field — a
+/// `url` is what makes an entry remote. Written when `.trae/` is in the
+/// repository or `user` says this machine has Trae.
+///
+/// A desktop IDE like Cursor: launched from a dock with no shell to read a
+/// token out of, so the token goes in the file, which is why
+/// [`GITIGNORE_PATTERNS`] covers it. Trae also gates project-scoped MCP
+/// behind a setting, which the caller's line says to turn on.
+#[cfg(feature = "digest")]
+fn probe_and_write_trae(
+    dir: &Path,
+    addr: &std::net::SocketAddr,
+    token: &str,
+    user: bool,
+) -> Result<bool> {
+    if !dir.join(".trae").is_dir() && !user {
+        return Ok(false);
+    }
+    upsert_json_mcp_entry(
+        &dir.join(".trae").join("mcp.json"),
+        "mcpServers",
+        MCP_SERVER_NAME,
+        json!({
+            "url": format!("http://{addr}/mcp"),
+            "headers": { "Authorization": format!("Bearer {token}") },
+        }),
+    )?;
+    Ok(true)
+}
+
+/// Kimi Code reads `mcpServers` from `.kimi-code/mcp.json`, and takes the
+/// bearer from an environment variable it is told the *name* of —
+/// `bearerTokenEnvVar`, which is the one field here that keeps a token out of
+/// a file without the client needing a substitution syntax.
+///
+/// So no token is written, and this file needs no gitignore entry: Kimi Code
+/// is a terminal client, launched from a shell that can carry
+/// [`CODEX_TOKEN_ENV_VAR`].
+#[cfg(feature = "digest")]
+fn probe_and_write_kimi(dir: &Path, addr: &std::net::SocketAddr, user: bool) -> Result<bool> {
+    if !dir.join(".kimi-code").is_dir() && !user {
+        return Ok(false);
+    }
+    upsert_json_mcp_entry(
+        &dir.join(".kimi-code").join("mcp.json"),
+        "mcpServers",
+        MCP_SERVER_NAME,
+        json!({
+            "url": format!("http://{addr}/mcp"),
+            "bearerTokenEnvVar": CODEX_TOKEN_ENV_VAR,
         }),
     )?;
     Ok(true)
@@ -5979,6 +6052,59 @@ mod tests {
             assert!(!written.contains("Bearer tok"), "{rel} leaked the token");
             assert!(written.contains(CODEX_TOKEN_ENV_VAR), "{rel}");
         }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Trae takes the token outright — a desktop IDE has no shell to read one
+    /// from — and Kimi Code takes only the *name* of an environment variable,
+    /// which is the field that keeps a token out of a terminal client's file.
+    #[cfg(feature = "digest")]
+    #[test]
+    fn the_cn_agents_each_get_their_own_shape() {
+        let dir = scratch_dir("cn-agents");
+        let addr: std::net::SocketAddr = "127.0.0.1:12345".parse().unwrap();
+
+        // Neither signal: nothing is created for either.
+        assert!(!probe_and_write_trae(&dir, &addr, "tok", false).unwrap());
+        assert!(!probe_and_write_kimi(&dir, &addr, false).unwrap());
+        assert!(!dir.join(".trae").exists());
+        assert!(!dir.join(".kimi-code").exists());
+
+        // The machine signal alone is enough, as it is for every other agent.
+        assert!(probe_and_write_trae(&dir, &addr, "tok", true).unwrap());
+        let v: Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join(".trae/mcp.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            v["mcpServers"]["drsg-watch"]["url"],
+            "http://127.0.0.1:12345/mcp"
+        );
+        // No `type`: a url is what makes a Trae entry remote.
+        assert!(v["mcpServers"]["drsg-watch"]["type"].is_null());
+        assert_eq!(
+            v["mcpServers"]["drsg-watch"]["headers"]["Authorization"],
+            "Bearer tok"
+        );
+
+        assert!(probe_and_write_kimi(&dir, &addr, true).unwrap());
+        let v: Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.join(".kimi-code/mcp.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            v["mcpServers"]["drsg-watch"]["bearerTokenEnvVar"],
+            CODEX_TOKEN_ENV_VAR
+        );
+        // The token itself must not be anywhere in that file.
+        let raw = std::fs::read_to_string(dir.join(".kimi-code/mcp.json")).unwrap();
+        assert!(!raw.contains("tok"), "{raw}");
+
+        // A repository marker works without the machine signal.
+        let fresh = scratch_dir("cn-agents-repo");
+        std::fs::create_dir_all(fresh.join(".trae")).unwrap();
+        assert!(probe_and_write_trae(&fresh, &addr, "tok", false).unwrap());
+        let _ = std::fs::remove_dir_all(&fresh);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
