@@ -192,6 +192,14 @@ gate-features:
 gate-frontend:
     cd crates/dr-strange-web/frontend && bun install --frozen-lockfile && bun run lint && bun run build && bun test
 
+# Score the parser plugins against the accuracy fixtures: recall, precision,
+# and whether an ambiguous call site is declared or guessed at. The Go key is
+# cross-checked against `callgraph` first, so a wrong key fails before it can
+# flatter anyone. See benchmarks/accuracy/README.md.
+accuracy:
+    uv run --no-project --with tomli python benchmarks/accuracy/crosscheck_go.py
+    uv run --no-project --with tomli python benchmarks/accuracy/score.py
+
 # Lay out the six npm packages for a release, ready to publish; see
 # packaging/npm/README.md. `src` is a directory of release archives already
 # downloaded (`gh release download v<version> --dir <src>`), which is both
