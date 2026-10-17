@@ -1,0 +1,2 @@
+# `go build` drops the compiled module here; the corpus is source only.
+/orders
