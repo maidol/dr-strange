@@ -30,6 +30,13 @@ against an independent tool where one exists. Run it before trusting a score.
 
     uv run --no-project --with tomli python benchmarks/accuracy/score.py \\
         --drsg target/release/drsg
+
+Scoring another tool over the same corpus is the point of the key's
+tool-neutral vocabulary. A tool is added as an adapter in `TOOLS` below: given
+a corpus it returns the call edges it found and the call sites where it
+declared a gap, both in the key's names. Nothing else about the benchmark
+changes, which is what makes the comparison fair — the same fixtures, the same
+key, the same three questions.
 """
 
 from __future__ import annotations
@@ -163,10 +170,25 @@ def report(name: str, key: dict, s: dict) -> None:
         print(f"    BLANKET   {e['from']} at {e['site']} — no edge, no named gap")
 
 
+def drsg_adapter(args, corpus: Path, key: dict) -> tuple[set, set]:
+    """drsg: digest the corpus, then read every CALLS edge out of the plane."""
+    return drsg_edges(
+        args.drsg, corpus, corpus.name,
+        key["corpus"].get("module", ""), key["corpus"].get("strip", ""),
+    )
+
+
+# Each entry takes (args, corpus, key) and returns (edges, declared gaps) in
+# the key's vocabulary. Adding a tool is adding one of these.
+TOOLS = {"drsg": drsg_adapter}
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--drsg", default=str(REPO / "target/release/drsg"))
     ap.add_argument("--only", help="score one corpus by directory name")
+    ap.add_argument("--tool", default="drsg", choices=sorted(TOOLS),
+                    help="which tool to score over the fixtures")
     args = ap.parse_args()
 
     corpora = sorted(p for p in (ROOT / "corpus").iterdir() if (p / "key.toml").exists())
@@ -175,14 +197,13 @@ def main() -> int:
     if not corpora:
         sys.exit("no corpus with a key.toml")
 
+    adapter = TOOLS[args.tool]
     for corpus in corpora:
         key = tomllib.load((corpus / "key.toml").open("rb"))
-        module = key["corpus"].get("module", "")
-        edges, declared = drsg_edges(
-            args.drsg, corpus, corpus.name, module, key["corpus"].get("strip", "")
-        )
+        edges, declared = adapter(args, corpus, key)
         s = score(key, edges, declared)
-        report(f"{corpus.name}  (drsg)", key, s)
+        unverified = " — key UNVERIFIED" if key["corpus"].get("unverified") else ""
+        report(f"{corpus.name}  ({args.tool}){unverified}", key, s)
     print("\nMISSED is incompleteness. WRONG is a false edge — worse than a miss,"
           "\nsince it sends an agent to code that was never involved. GUESSED is a"
           "\ntool sounding certain where syntax is not. BLANKET is a gap the tool"
