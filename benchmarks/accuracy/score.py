@@ -84,6 +84,27 @@ def run(args: list[str], cwd: Path | None = None) -> str:
     return p.stdout
 
 
+# Set by `--plugins-from`: measure the plugins in a working tree rather than
+# the catalog's. Without it a fix to a parser cannot be scored until it is
+# released, which is the wrong way round.
+LOCAL_PLUGINS: Path | None = None
+
+
+def plugin_arg(lang: str) -> str:
+    """The catalog name, or a built `.wasm` under `--plugins-from`."""
+    if LOCAL_PLUGINS is None:
+        return lang
+    built = [
+        LOCAL_PLUGINS / f"plugins/{lang}/component/{lang}.wasm",
+        LOCAL_PLUGINS
+        / f"plugins/{lang}/component/target/wasm32-wasip2/release/drsg_plugin_{lang}.wasm",
+    ]
+    for w in built:
+        if w.exists():
+            return str(w)
+    sys.exit(f"--plugins-from: no built plugin for {lang} (looked in {built[0].parent})")
+
+
 def drsg_edges(drsg: str, corpus: Path, plane: str, module: str,
                strip: str = "") -> tuple[set, set]:
     """Every CALLS edge drsg records, in the key's vocabulary.
@@ -95,7 +116,7 @@ def drsg_edges(drsg: str, corpus: Path, plane: str, module: str,
     with tempfile.TemporaryDirectory() as td:
         db = str(Path(td) / "acc.drsg")
         lang = corpus.name
-        run([drsg, "--db", db, "plugin", "install", lang])
+        run([drsg, "--db", db, "plugin", "install", plugin_arg(lang)])
         run([drsg, "--db", db, "digest", str(corpus), "--apply", "--code-only", "--no-git"])
         out = run([drsg, "--db", db, "cypher", "--plane", plane,
                    "MATCH (a)-[:CALLS]->(b) RETURN key(a), key(b)"])
@@ -367,12 +388,18 @@ def main() -> int:
     ap.add_argument("--only", help="score one corpus by directory name")
     ap.add_argument("--tool", default="drsg", choices=sorted(TOOLS),
                     help="which tool to score over the fixtures")
+    ap.add_argument("--plugins-from", metavar="DIR",
+                    help="score the plugins built in this extensions checkout "
+                         "instead of the ones the catalog publishes")
     ap.add_argument("--codegraph", help="path to the codegraph binary")
     ap.add_argument("--cbm", help="path to the codebase-memory-mcp binary")
     ap.add_argument("--workdir", default=str(Path(tempfile.gettempdir()) / "drsg-accuracy"),
                     help="where to copy a corpus for tools that index in place")
     args = ap.parse_args()
 
+    if args.plugins_from:
+        global LOCAL_PLUGINS
+        LOCAL_PLUGINS = Path(args.plugins_from).resolve()
     sys.path.insert(0, str(ROOT))
     corpora = sorted(p for p in (ROOT / "corpus").iterdir() if (p / "key.toml").exists())
     if args.only:
