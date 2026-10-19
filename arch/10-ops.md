@@ -237,11 +237,12 @@ The model is shaped so these extend rather than rewrite it:
 
 ## 9. Open questions
 
-1. ~~**Cross-plane reads.**~~ **Settled**: a verb, `deployed`, opening both
-   planes and joining in itself. Not `portals`, which stays unshipped and
-   unneeded until a *query language* need appears. `rev.rs` already resolves
-   an abbreviated sha and already states an ambiguity instead of guessing, so
-   no storage or query change is involved; the reverse direction scans the
+1. ~~**Cross-plane reads.**~~ **Answered, and shipped**: `deployed` opens both
+   planes and joins in itself — `dr-strange-core/src/ops.rs`, with the MCP
+   tool and the CLI arm over it. Not `portals`, which stays unshipped and
+   unneeded until a *query language* need appears. No storage or query change
+   was involved: `rev.rs` already resolved an abbreviated sha and already
+   stated an ambiguity rather than guessing. The reverse direction scans the
    ops plane's `Image` nodes rather than indexing them, which is nothing at
    the size an ops plane is.
 2. **Helm and Kustomize.** The plugins parse rendered YAML; something has to
