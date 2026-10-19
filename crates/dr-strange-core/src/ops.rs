@@ -22,10 +22,18 @@ use crate::api::PlaneHandle;
 use crate::compact::prop_str;
 use crate::error::Result;
 use crate::rev::{CommitRef, RevAnswer, resolve_rev};
-use crate::types::NodeRecord;
+use crate::types::{Dir, NodeRecord};
 
 /// Hex digits of a digest shown before it is cut short.
 const DIGEST_SHOWN: usize = 12;
+/// The label every ops reader mints a container image under.
+const IMAGE: &str = "Image";
+/// The edge from whatever runs an image to the image.
+const USES_IMAGE: &str = "USES_IMAGE";
+/// The edge from a workload to the containers it declares.
+const RUNS: &str = "RUNS";
+/// The edge from anything to the namespace it is in.
+const IN_NAMESPACE: &str = "IN_NAMESPACE";
 
 /// What an `Image` node turned out to say about where it came from.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -159,11 +167,201 @@ fn short_digest(digest: &str) -> String {
     }
 }
 
+/// One thing that runs an image.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Use {
+    /// The workload or infrastructure resource, by key.
+    pub thing: String,
+    /// What kind of thing it is.
+    pub kind: String,
+    /// The namespace it is in, when the plane records one.
+    pub namespace: Option<String>,
+    /// The container the image is named in, when one sits between.
+    pub through: Option<String>,
+}
+
+/// One image an ops plane holds: where it came from, and what runs it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImageRow {
+    /// The reference as written, which is the node's key.
+    pub reference: String,
+    /// What its revision turned out to name.
+    pub provenance: Provenance,
+    /// Everything in this plane that runs it; empty when nothing does.
+    pub used_by: Vec<Use>,
+}
+
+/// One image a thing runs, and where that image came from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Runs {
+    /// The reference as written.
+    pub reference: String,
+    /// The container the image is named in, when one sits between.
+    pub through: Option<String>,
+    /// What its revision turned out to name.
+    pub provenance: Provenance,
+}
+
+/// What one thing in an ops plane runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Running {
+    /// The thing asked about, by key.
+    pub thing: String,
+    /// What kind of thing it is.
+    pub kind: String,
+    /// One row per image it runs, in key order.
+    pub images: Vec<Runs>,
+}
+
+/// What one thing runs and what built each image — the forward direction.
+///
+/// `key` names a `Workload`, a `Container`, an `Infra` resource or an `Image`
+/// itself. `None` means the plane holds no such key, which a surface says
+/// rather than reporting that the thing runs nothing.
+///
+/// The walk is structural, not a list of labels: an image is whatever a
+/// `USES_IMAGE` edge reaches, directly or across one `RUNS` hop. A Kubernetes
+/// workload reaches its images through containers and a Terraform resource
+/// names one directly, and neither case is special-cased here.
+pub fn running(
+    ops: &PlaneHandle<'_>,
+    history: Option<&PlaneHandle<'_>>,
+    key: &str,
+) -> Result<Option<Running>> {
+    let Some(node) = ops.node_by_key(key)? else {
+        return Ok(None);
+    };
+    let mut images = Vec::new();
+    if node.labels.iter().any(|l| l == IMAGE) {
+        images.push(runs_row(&node, None, history)?);
+    } else {
+        for image in step(ops, &node, Dir::Out, USES_IMAGE)? {
+            images.push(runs_row(&image, None, history)?);
+        }
+        for mid in step(ops, &node, Dir::Out, RUNS)? {
+            for image in step(ops, &mid, Dir::Out, USES_IMAGE)? {
+                images.push(runs_row(&image, Some(key_of(&mid)), history)?);
+            }
+        }
+    }
+    images.sort_by(|a, b| (&a.reference, &a.through).cmp(&(&b.reference, &b.through)));
+    images.dedup();
+    Ok(Some(Running {
+        thing: key_of(&node),
+        kind: kind_of(&node),
+        images,
+    }))
+}
+
+/// Every image the plane holds, or only those built from one commit — the
+/// reverse direction and the plane-wide answer, which are one scan.
+///
+/// `sha` is a full object name. The match is a prefix test rather than an
+/// equality, because a tag carries an abbreviation and the history plane holds
+/// the whole thing.
+///
+/// A scan, deliberately: an ops plane holds hundreds of images rather than
+/// millions, so an index over them would be built for no reason.
+pub fn images(
+    ops: &PlaneHandle<'_>,
+    history: Option<&PlaneHandle<'_>>,
+    sha: Option<&str>,
+) -> Result<Vec<ImageRow>> {
+    let wanted = sha.map(str::to_ascii_lowercase);
+    let mut rows = Vec::new();
+    for image in ops.query().scan_label(IMAGE).nodes()? {
+        if let Some(sha) = &wanted {
+            let revision = prop_str(&image.properties, "revision").map(str::to_ascii_lowercase);
+            if !revision.is_some_and(|r| sha.starts_with(&r)) {
+                continue;
+            }
+        }
+        rows.push(ImageRow {
+            reference: key_of(&image),
+            provenance: provenance(&image, history)?,
+            used_by: users_of(ops, &image)?,
+        });
+    }
+    rows.sort_by(|a, b| a.reference.cmp(&b.reference));
+    Ok(rows)
+}
+
+/// Everything that runs one image, through a container or directly.
+fn users_of(ops: &PlaneHandle<'_>, image: &NodeRecord) -> Result<Vec<Use>> {
+    let mut out = Vec::new();
+    for user in step(ops, image, Dir::In, USES_IMAGE)? {
+        let owners = step(ops, &user, Dir::In, RUNS)?;
+        if owners.is_empty() {
+            out.push(use_row(ops, &user, None)?);
+        } else {
+            for owner in owners {
+                out.push(use_row(ops, &owner, Some(key_of(&user)))?);
+            }
+        }
+    }
+    out.sort_by(|a, b| (&a.thing, &a.through).cmp(&(&b.thing, &b.through)));
+    out.dedup();
+    Ok(out)
+}
+
+/// One `Use`, with the namespace the thing sits in when the plane records one.
+fn use_row(ops: &PlaneHandle<'_>, thing: &NodeRecord, through: Option<String>) -> Result<Use> {
+    Ok(Use {
+        thing: key_of(thing),
+        kind: kind_of(thing),
+        namespace: step(ops, thing, Dir::Out, IN_NAMESPACE)?
+            .first()
+            .map(key_of),
+        through,
+    })
+}
+
+/// One image a thing runs, with its provenance resolved.
+fn runs_row(
+    image: &NodeRecord,
+    through: Option<String>,
+    history: Option<&PlaneHandle<'_>>,
+) -> Result<Runs> {
+    Ok(Runs {
+        reference: key_of(image),
+        through,
+        provenance: provenance(image, history)?,
+    })
+}
+
+/// One hop along `ty`, as node records.
+fn step(ops: &PlaneHandle<'_>, from: &NodeRecord, dir: Dir, ty: &str) -> Result<Vec<NodeRecord>> {
+    let mut out = Vec::new();
+    for nb in ops.neighbors(from.id, dir, Some(ty))? {
+        if let Some(node) = ops.node(nb.node)? {
+            out.push(node);
+        }
+    }
+    Ok(out)
+}
+
+/// A node's key, which every ops reader mints it with.
+fn key_of(node: &NodeRecord) -> String {
+    node.external_key
+        .clone()
+        .unwrap_or_else(|| "(no key)".to_string())
+}
+
+/// What a node is: the `kind` an ops reader recorded — `Deployment`,
+/// `CronJob` — else its label, which is all a reader that wrote no `kind`
+/// said.
+fn kind_of(node: &NodeRecord) -> String {
+    prop_str(&node.properties, "kind")
+        .map(str::to_string)
+        .or_else(|| node.labels.first().cloned())
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::Database;
-    use crate::types::{PropDesc, PropValue, Properties};
+    use crate::api::{Database, WriteTxn};
+    use crate::types::{NodeId, PropDesc, PropValue, Properties};
 
     /// Two commits sharing the seven-character prefix `9f2c1b7`, and one that
     /// shares nothing — ambiguity is the case worth a fixture.
@@ -184,10 +382,19 @@ mod tests {
     }
 
     /// A history plane holding the three commits, and an ops plane holding one
-    /// `Image` node per row of `arch/10-ops.md` §5.
+    /// `Image` node per row of `arch/10-ops.md` §5 — plus the topology that
+    /// reaches them: two Kubernetes workloads in two namespaces whose
+    /// containers run the same image, one that runs a third-party image, and a
+    /// Terraform resource that names an image with no container between.
     fn planes() -> Database {
         let db = Database::in_memory().unwrap();
+        commits(&db);
+        topology(&db);
+        db
+    }
 
+    /// Three commits, two of them sharing a seven-character prefix.
+    fn commits(db: &Database) {
         let history = db.create_plane("acme_git", Properties::new()).unwrap();
         let mut txn = history.write().unwrap();
         for (sha, ts, summary) in [
@@ -209,9 +416,13 @@ mod tests {
                 .unwrap();
         }
         txn.commit().unwrap();
+    }
 
+    /// The ops plane: one `Image` per row of §5, and what reaches them.
+    fn topology(db: &Database) {
         let ops = db.create_plane("acme_ops", Properties::new()).unwrap();
         let mut txn = ops.write().unwrap();
+        let mut node = std::collections::HashMap::new();
         for (reference, pairs) in [
             (
                 "ghcr.io/acme/api:sha-abc1234",
@@ -235,12 +446,220 @@ mod tests {
         ] {
             let mut pairs = pairs;
             pairs.push(("reference", reference));
-            txn.create_node_with_key(reference, &["Image"], props(&pairs))
+            let id = txn
+                .create_node_with_key(reference, &["Image"], props(&pairs))
+                .unwrap();
+            node.insert(reference.to_string(), id);
+        }
+        workloads(&mut txn, &node);
+        txn.commit().unwrap();
+    }
+
+    /// Two Kubernetes workloads running the same image in two namespaces, one
+    /// running a third-party image, and a Terraform resource that names an
+    /// image with no container between.
+    fn workloads(txn: &mut WriteTxn<'_>, node: &std::collections::HashMap<String, NodeId>) {
+        let mut node = node.clone();
+        for ns in ["prod", "staging"] {
+            let id = txn
+                .create_node_with_key(ns, &["Namespace"], props(&[("name", ns)]))
+                .unwrap();
+            node.insert(ns.to_string(), id);
+        }
+        for (workload, kind, ns, image) in [
+            (
+                "prod/Deployment/api",
+                "Deployment",
+                "prod",
+                "ghcr.io/acme/api:sha-abc1234",
+            ),
+            (
+                "staging/Deployment/api",
+                "Deployment",
+                "staging",
+                "ghcr.io/acme/api:sha-abc1234",
+            ),
+            (
+                "prod/StatefulSet/postgres",
+                "StatefulSet",
+                "prod",
+                "postgres:17",
+            ),
+        ] {
+            let id = txn
+                .create_node_with_key(workload, &["Workload"], props(&[("kind", kind)]))
+                .unwrap();
+            let container = format!("{workload}/main");
+            let cid = txn
+                .create_node_with_key(&container, &["Container"], props(&[("role", "container")]))
+                .unwrap();
+            txn.create_edge(id, cid, "RUNS", Properties::new()).unwrap();
+            txn.create_edge(cid, node[image], "USES_IMAGE", Properties::new())
+                .unwrap();
+            txn.create_edge(id, node[ns], "IN_NAMESPACE", Properties::new())
                 .unwrap();
         }
-        txn.commit().unwrap();
 
-        db
+        // Terraform's shape: a resource names an image with no container.
+        let task = txn
+            .create_node_with_key(
+                "aws_ecs_task_definition.api",
+                &["Infra"],
+                props(&[("type", "aws_ecs_task_definition")]),
+            )
+            .unwrap();
+        txn.create_edge(
+            task,
+            node["ghcr.io/acme/api:sha-9f2c1b7"],
+            "USES_IMAGE",
+            Properties::new(),
+        )
+        .unwrap();
+    }
+
+    fn what_runs(db: &Database, key: &str) -> Option<Running> {
+        let ops = db.plane("acme_ops").unwrap();
+        let history = db.plane("acme_git").unwrap();
+        running(&ops, Some(&history), key).unwrap()
+    }
+
+    fn rows(db: &Database, sha: Option<&str>) -> Vec<ImageRow> {
+        let ops = db.plane("acme_ops").unwrap();
+        let history = db.plane("acme_git").unwrap();
+        images(&ops, Some(&history), sha).unwrap()
+    }
+
+    #[test]
+    fn a_workload_reaches_its_image_through_its_container() {
+        let db = planes();
+        let run = what_runs(&db, "prod/Deployment/api").expect("a workload");
+        assert_eq!(run.kind, "Deployment");
+        assert_eq!(run.images.len(), 1);
+        let image = &run.images[0];
+        assert_eq!(image.reference, "ghcr.io/acme/api:sha-abc1234");
+        assert_eq!(image.through.as_deref(), Some("prod/Deployment/api/main"));
+        assert_eq!(image.provenance.commit().unwrap().sha.as_str(), SOLO);
+    }
+
+    /// Terraform names an image on the resource itself, so the same walk has
+    /// to reach it without a container in the way.
+    #[test]
+    fn an_infrastructure_resource_names_its_image_directly() {
+        let db = planes();
+        let run = what_runs(&db, "aws_ecs_task_definition.api").expect("a resource");
+        assert_eq!(run.kind, "Infra");
+        assert_eq!(run.images.len(), 1);
+        assert_eq!(run.images[0].through, None);
+    }
+
+    #[test]
+    fn an_image_asked_about_by_itself_answers_for_itself() {
+        let db = planes();
+        let run = what_runs(&db, "ghcr.io/acme/api:v2.1.0").expect("an image");
+        assert_eq!(run.images.len(), 1);
+        assert_eq!(
+            run.images[0].provenance,
+            Provenance::Floating {
+                tag: "v2.1.0".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn a_key_the_plane_does_not_hold_is_no_answer_rather_than_an_empty_one() {
+        let db = planes();
+        assert!(what_runs(&db, "prod/Deployment/nope").is_none());
+    }
+
+    #[test]
+    fn a_commit_lists_every_namespace_running_it() {
+        let db = planes();
+        let found = rows(&db, Some(SOLO));
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].reference, "ghcr.io/acme/api:sha-abc1234");
+        assert_eq!(
+            found[0]
+                .used_by
+                .iter()
+                .map(|u| (u.thing.as_str(), u.namespace.as_deref(), u.kind.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                ("prod/Deployment/api", Some("prod"), "Deployment"),
+                ("staging/Deployment/api", Some("staging"), "Deployment"),
+            ]
+        );
+        assert_eq!(
+            found[0].used_by[0].through.as_deref(),
+            Some("prod/Deployment/api/main")
+        );
+    }
+
+    /// The tag carries seven characters and the history plane holds forty, so
+    /// the reverse match is a prefix test. An equality would find nothing.
+    #[test]
+    fn a_full_sha_matches_the_abbreviation_a_tag_carried() {
+        let db = planes();
+        let found = rows(&db, Some(NEWER));
+        assert_eq!(
+            found
+                .iter()
+                .map(|r| r.reference.as_str())
+                .collect::<Vec<_>>(),
+            ["ghcr.io/acme/api:sha-9f2c1b7"]
+        );
+        assert_eq!(found[0].used_by[0].thing, "aws_ecs_task_definition.api");
+    }
+
+    #[test]
+    fn a_commit_no_image_was_built_from_matches_nothing() {
+        let db = planes();
+        let absent = "ffffffffffffffffffffffffffffffffffffffff";
+        assert!(rows(&db, Some(absent)).is_empty());
+    }
+
+    /// A prefix match cuts both ways: seven characters that fit two commits
+    /// match the image from *either* of them. The row says so — its
+    /// provenance is the candidate list — rather than reporting that this
+    /// particular commit is what runs.
+    #[test]
+    fn an_ambiguous_abbreviation_matches_either_commit_and_says_which() {
+        let db = planes();
+        for sha in [NEWER, OLDER] {
+            let found = rows(&db, Some(sha));
+            assert_eq!(
+                found
+                    .iter()
+                    .map(|r| r.reference.as_str())
+                    .collect::<Vec<_>>(),
+                ["ghcr.io/acme/api:sha-9f2c1b7"],
+                "{sha}"
+            );
+            let Provenance::Candidates(cs) = &found[0].provenance else {
+                panic!("{:?}", found[0].provenance);
+            };
+            assert_eq!(cs.len(), 2);
+        }
+    }
+
+    #[test]
+    fn the_plane_wide_answer_holds_every_image_used_or_not() {
+        let db = planes();
+        let found = rows(&db, None);
+        assert_eq!(found.len(), 7);
+        let orphans = found
+            .iter()
+            .filter(|r| r.used_by.is_empty())
+            .map(|r| r.reference.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            orphans,
+            [
+                "ghcr.io/acme/api",
+                "ghcr.io/acme/api:latest",
+                "ghcr.io/acme/api:sha-deadbee",
+                "ghcr.io/acme/api:v2.1.0",
+            ]
+        );
     }
 
     fn of(db: &Database, reference: &str, with_history: bool) -> Provenance {
