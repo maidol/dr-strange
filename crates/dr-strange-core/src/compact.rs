@@ -2346,6 +2346,19 @@ pub fn history_plane_name(code_plane: &str) -> String {
     format!("{code_plane}{HISTORY_SUFFIX}")
 }
 
+/// The suffix a repository's ops plane takes, beside the code plane it belongs
+/// to: `myrepo` and `myrepo_ops` (`arch/10-ops.md` §2).
+///
+/// Here beside the history suffix rather than in [`crate::ops`], so that the
+/// two plane conventions are read and edited together and cannot drift apart
+/// in style.
+pub const OPS_SUFFIX: &str = "_ops";
+
+/// `<plane>_ops` — where a repository's declared topology lands.
+pub fn ops_plane_name(code_plane: &str) -> String {
+    format!("{code_plane}{OPS_SUFFIX}")
+}
+
 /// Commits shown when the caller names no limit.
 const HISTORY_COMMITS: usize = 15;
 /// Branches, tags and rebases shown before the listing is cut short.
