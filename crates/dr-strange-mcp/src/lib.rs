@@ -1978,17 +1978,8 @@ fn deployed_logic(db: &Database, req: DeployedReq) -> AnyResult<Value> {
     )?))
 }
 
-/// The two planes a `deployed` answer reads.
-///
-/// The convention is a default and not a promise, so `ops` and `history`
-/// override it. Omitted, the code plane's name is taken from what was asked
-/// for — `myrepo_ops` and `myrepo` both give `myrepo` — and the siblings
-/// derived from that.
-///
-/// A plane with no `_ops` sibling is read as the ops plane itself: a digest of
-/// a manifest tree names its plane after the directory, so that is where the
-/// images of such a tree are. Missing history is `None` rather than an error,
-/// because the answer for an image is worth having without it.
+/// The planes this request names, resolved by core's own convention — the
+/// same one the CLI arm reads, so the two cannot pair planes differently.
 fn ops_planes<'db>(
     db: &'db Database,
     req: &DeployedReq,
@@ -1996,24 +1987,14 @@ fn ops_planes<'db>(
     dr_strange_core::PlaneHandle<'db>,
     Option<dr_strange_core::PlaneHandle<'db>>,
 )> {
-    let code = req
-        .plane
-        .strip_suffix(dr_strange_core::compact::OPS_SUFFIX)
-        .unwrap_or(&req.plane);
-    let ops = match &req.ops {
-        Some(named) => db.plane(named)?,
-        None => match db.plane(&dr_strange_core::compact::ops_plane_name(code)) {
-            Ok(plane) => plane,
-            Err(_) => db.plane(&req.plane)?,
+    Ok(dr_strange_core::ops::planes(
+        db,
+        &dr_strange_core::ops::Asked {
+            plane: &req.plane,
+            ops: req.ops.as_deref(),
+            history: req.history.as_deref(),
         },
-    };
-    let history = match &req.history {
-        Some(named) => Some(db.plane(named)?),
-        None => db
-            .plane(&dr_strange_core::compact::history_plane_name(code))
-            .ok(),
-    };
-    Ok((ops, history))
+    )?)
 }
 
 fn get_node_logic(db: &Database, req: GetNode) -> AnyResult<Value> {

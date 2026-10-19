@@ -18,8 +18,8 @@
 //! returned nothing for all three would not answer the only question worth
 //! asking of it.
 
-use crate::api::PlaneHandle;
-use crate::compact::prop_str;
+use crate::api::{Database, PlaneHandle};
+use crate::compact::{history_plane_name, ops_plane_name, prop_str};
 use crate::error::Result;
 use crate::rev::{CommitRef, RevAnswer, resolve_rev};
 use crate::types::{Dir, NodeRecord};
@@ -364,6 +364,51 @@ fn kind_of(node: &NodeRecord) -> String {
         .unwrap_or_default()
 }
 
+/// Which planes a `deployed` answer should read, as a caller named them.
+#[derive(Debug, Clone, Copy)]
+pub struct Asked<'a> {
+    /// The code plane, or the ops plane beside it.
+    pub plane: &'a str,
+    /// The ops plane, when the convention does not name it.
+    pub ops: Option<&'a str>,
+    /// The history plane, when the convention does not name it.
+    pub history: Option<&'a str>,
+}
+
+/// The ops plane and the history plane [`Asked`] names.
+///
+/// Here rather than in each surface, because the MCP verb and the CLI arm
+/// resolving a pair of planes differently would be the one failure neither
+/// could see.
+///
+/// `myrepo` and `myrepo_ops` both name the same repository: the suffix is
+/// stripped and both siblings derived from what is left. A plane with no
+/// `_ops` sibling is read as the ops plane itself — a digest of a manifest
+/// tree names its plane after the directory, so that is where such a tree's
+/// images are. Missing history is `None` rather than an error, because an
+/// image's own answer is worth having without it.
+pub fn planes<'db>(
+    db: &'db Database,
+    asked: &Asked<'_>,
+) -> Result<(PlaneHandle<'db>, Option<PlaneHandle<'db>>)> {
+    let code = asked
+        .plane
+        .strip_suffix(crate::compact::OPS_SUFFIX)
+        .unwrap_or(asked.plane);
+    let ops = match asked.ops {
+        Some(named) => db.plane(named)?,
+        None => match db.plane(&ops_plane_name(code)) {
+            Ok(plane) => plane,
+            Err(_) => db.plane(asked.plane)?,
+        },
+    };
+    let history = match asked.history {
+        Some(named) => Some(db.plane(named)?),
+        None => db.plane(&history_plane_name(code)).ok(),
+    };
+    Ok((ops, history))
+}
+
 /// What built a running thing, or what runs a commit — `deployed`.
 ///
 /// `target` is a key in the ops plane, a revision, or `None` for the plane as
@@ -563,7 +608,7 @@ mod tests {
     /// reaches them: two Kubernetes workloads in two namespaces whose
     /// containers run the same image, one that runs a third-party image, and a
     /// Terraform resource that names an image with no container between.
-    fn planes() -> Database {
+    fn fixture() -> Database {
         let db = Database::in_memory().unwrap();
         commits(&db);
         topology(&db);
@@ -708,7 +753,7 @@ mod tests {
 
     #[test]
     fn a_workload_reaches_its_image_through_its_container() {
-        let db = planes();
+        let db = fixture();
         let run = what_runs(&db, "prod/Deployment/api").expect("a workload");
         assert_eq!(run.kind, "Deployment");
         assert_eq!(run.images.len(), 1);
@@ -722,7 +767,7 @@ mod tests {
     /// to reach it without a container in the way.
     #[test]
     fn an_infrastructure_resource_names_its_image_directly() {
-        let db = planes();
+        let db = fixture();
         let run = what_runs(&db, "aws_ecs_task_definition.api").expect("a resource");
         assert_eq!(run.kind, "Infra");
         assert_eq!(run.images.len(), 1);
@@ -731,7 +776,7 @@ mod tests {
 
     #[test]
     fn an_image_asked_about_by_itself_answers_for_itself() {
-        let db = planes();
+        let db = fixture();
         let run = what_runs(&db, "ghcr.io/acme/api:v2.1.0").expect("an image");
         assert_eq!(run.images.len(), 1);
         assert_eq!(
@@ -744,13 +789,13 @@ mod tests {
 
     #[test]
     fn a_key_the_plane_does_not_hold_is_no_answer_rather_than_an_empty_one() {
-        let db = planes();
+        let db = fixture();
         assert!(what_runs(&db, "prod/Deployment/nope").is_none());
     }
 
     #[test]
     fn a_commit_lists_every_namespace_running_it() {
-        let db = planes();
+        let db = fixture();
         let found = rows(&db, Some(SOLO));
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].reference, "ghcr.io/acme/api:sha-abc1234");
@@ -775,7 +820,7 @@ mod tests {
     /// the reverse match is a prefix test. An equality would find nothing.
     #[test]
     fn a_full_sha_matches_the_abbreviation_a_tag_carried() {
-        let db = planes();
+        let db = fixture();
         let found = rows(&db, Some(NEWER));
         assert_eq!(
             found
@@ -789,7 +834,7 @@ mod tests {
 
     #[test]
     fn a_commit_no_image_was_built_from_matches_nothing() {
-        let db = planes();
+        let db = fixture();
         let absent = "ffffffffffffffffffffffffffffffffffffffff";
         assert!(rows(&db, Some(absent)).is_empty());
     }
@@ -800,7 +845,7 @@ mod tests {
     /// particular commit is what runs.
     #[test]
     fn an_ambiguous_abbreviation_matches_either_commit_and_says_which() {
-        let db = planes();
+        let db = fixture();
         for sha in [NEWER, OLDER] {
             let found = rows(&db, Some(sha));
             assert_eq!(
@@ -820,7 +865,7 @@ mod tests {
 
     #[test]
     fn the_plane_wide_answer_holds_every_image_used_or_not() {
-        let db = planes();
+        let db = fixture();
         let found = rows(&db, None);
         assert_eq!(found.len(), 7);
         let orphans = found
@@ -839,6 +884,63 @@ mod tests {
         );
     }
 
+    fn asked(db: &Database, plane: &str) -> String {
+        let (ops, history) = planes(
+            db,
+            &Asked {
+                plane,
+                ops: None,
+                history: None,
+            },
+        )
+        .unwrap();
+        deployed(&ops, history.as_ref(), None).unwrap()
+    }
+
+    #[test]
+    fn the_code_plane_and_the_ops_plane_name_the_same_pair() {
+        let db = fixture();
+        for named in ["acme", "acme_ops"] {
+            assert!(
+                asked(&db, named)
+                    .contains("read the ops plane `acme_ops` against the history plane `acme_git`"),
+                "{named}"
+            );
+        }
+    }
+
+    /// A digest of a manifest tree names its plane after the directory, so
+    /// until one routes ops facts to a sibling, the plane asked for holds them.
+    #[test]
+    fn a_plane_with_no_ops_sibling_is_read_as_the_ops_plane_itself() {
+        let db = Database::in_memory().unwrap();
+        let tree = db.create_plane("k8srepo", Properties::new()).unwrap();
+        let mut txn = tree.write().unwrap();
+        txn.create_node_with_key("postgres:17", &["Image"], props(&[("tag", "17")]))
+            .unwrap();
+        txn.commit().unwrap();
+
+        let out = asked(&db, "k8srepo");
+        assert!(out.starts_with("1 image(s)"), "{out}");
+        assert!(out.contains("read the ops plane `k8srepo` alone"), "{out}");
+    }
+
+    #[test]
+    fn an_explicit_pairing_overrides_the_convention() {
+        let db = fixture();
+        let (ops, history) = planes(
+            &db,
+            &Asked {
+                plane: "acme",
+                ops: Some("acme_ops"),
+                history: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(ops.name().unwrap(), "acme_ops");
+        assert_eq!(history.unwrap().name().unwrap(), "acme_git");
+    }
+
     fn answer(db: &Database, target: Option<&str>, with_history: bool) -> String {
         let ops = db.plane("acme_ops").unwrap();
         let history = db.plane("acme_git").unwrap();
@@ -847,7 +949,7 @@ mod tests {
 
     #[test]
     fn a_workload_answers_with_the_commit_its_image_was_built_from() {
-        let db = planes();
+        let db = fixture();
         let out = answer(&db, Some("prod/Deployment/api"), true);
         assert!(out.starts_with("Deployment prod/Deployment/api\n"), "{out}");
         assert!(
@@ -859,7 +961,7 @@ mod tests {
 
     #[test]
     fn a_revision_answers_with_everything_running_it() {
-        let db = planes();
+        let db = fixture();
         let out = answer(&db, Some("abc1234"), true);
         assert!(out.starts_with("abc1234ef567  2026-10-12"), "{out}");
         assert!(
@@ -876,14 +978,14 @@ mod tests {
     /// hex is still a key.
     #[test]
     fn a_key_wins_over_a_revision_of_the_same_text() {
-        let db = planes();
+        let db = fixture();
         let out = answer(&db, Some("postgres:17"), true);
         assert!(out.starts_with("Image postgres:17\n"), "{out}");
     }
 
     #[test]
     fn an_ambiguous_revision_lists_candidates_rather_than_picking_one() {
-        let db = planes();
+        let db = fixture();
         let out = answer(&db, Some("9f2c1b7"), true);
         assert!(out.contains("is ambiguous"), "{out}");
         assert!(out.contains("call again with more of the sha"), "{out}");
@@ -891,7 +993,7 @@ mod tests {
 
     #[test]
     fn an_argument_that_is_neither_a_key_nor_a_revision_is_told_so() {
-        let db = planes();
+        let db = fixture();
         let out = answer(&db, Some("prod/Deployment/nope"), true);
         assert!(
             out.contains("neither a key in this ops plane nor a revision"),
@@ -901,7 +1003,7 @@ mod tests {
 
     #[test]
     fn the_plane_wide_answer_counts_what_joined() {
-        let db = planes();
+        let db = fixture();
         let out = answer(&db, None, true);
         assert!(
             out.starts_with("7 image(s), 1 of them joined to a commit of this history\n"),
@@ -916,7 +1018,7 @@ mod tests {
 
     #[test]
     fn every_answer_names_the_planes_it_read() {
-        let db = planes();
+        let db = fixture();
         assert!(
             answer(&db, None, true).contains(
                 "note: read the ops plane `acme_ops` against the history plane `acme_git`"
@@ -942,7 +1044,7 @@ mod tests {
 
     #[test]
     fn a_revision_tagged_image_names_the_commit_that_built_it() {
-        let db = planes();
+        let db = fixture();
         let p = of(&db, "ghcr.io/acme/api:sha-abc1234", true);
         let commit = p.commit().expect("one commit");
         assert_eq!(commit.sha.as_str(), SOLO);
@@ -952,7 +1054,7 @@ mod tests {
 
     #[test]
     fn an_abbreviated_revision_that_fits_two_commits_lists_both_newest_first() {
-        let db = planes();
+        let db = fixture();
         let p = of(&db, "ghcr.io/acme/api:sha-9f2c1b7", true);
         let Provenance::Candidates(cs) = &p else {
             panic!("{p:?}");
@@ -966,7 +1068,7 @@ mod tests {
 
     #[test]
     fn a_revision_this_history_does_not_hold_reads_as_built_elsewhere() {
-        let db = planes();
+        let db = fixture();
         let p = of(&db, "ghcr.io/acme/api:sha-deadbee", true);
         assert_eq!(
             p,
@@ -979,7 +1081,7 @@ mod tests {
 
     #[test]
     fn a_floating_tag_says_the_tag_names_no_revision() {
-        let db = planes();
+        let db = fixture();
         let p = of(&db, "ghcr.io/acme/api:v2.1.0", true);
         assert_eq!(
             p,
@@ -992,7 +1094,7 @@ mod tests {
 
     #[test]
     fn a_digest_outranks_the_tag_beside_it_and_asks_for_a_registry() {
-        let db = planes();
+        let db = fixture();
         let p = of(&db, "ghcr.io/acme/api:latest", true);
         assert_eq!(
             p,
@@ -1011,7 +1113,7 @@ mod tests {
 
     #[test]
     fn a_reference_with_neither_tag_nor_digest_names_no_revision() {
-        let db = planes();
+        let db = fixture();
         let p = of(&db, "ghcr.io/acme/api", true);
         assert_eq!(p, Provenance::Untagged);
         assert!(p.stated().contains("neither tag nor digest"));
@@ -1019,7 +1121,7 @@ mod tests {
 
     #[test]
     fn with_no_history_plane_the_revision_is_reported_unresolved() {
-        let db = planes();
+        let db = fixture();
         let p = of(&db, "ghcr.io/acme/api:sha-abc1234", false);
         assert_eq!(
             p,
@@ -1037,7 +1139,7 @@ mod tests {
     /// revision said so.
     #[test]
     fn a_third_party_image_is_a_tag_that_names_no_revision_not_a_guess() {
-        let db = planes();
+        let db = fixture();
         let p = of(&db, "postgres:17", true);
         assert_eq!(
             p,
@@ -1049,7 +1151,7 @@ mod tests {
 
     #[test]
     fn a_commit_a_rewrite_left_behind_is_flagged_in_the_line() {
-        let db = planes();
+        let db = fixture();
         let history = db.plane("acme_git").unwrap();
         let mut txn = history.write().unwrap();
         let commit = history
