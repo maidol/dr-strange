@@ -26,6 +26,10 @@ use crate::types::{Dir, NodeRecord};
 
 /// Hex digits of a digest shown before it is cut short.
 const DIGEST_SHOWN: usize = 12;
+/// Images listed before a plane-wide answer says how many it left out.
+const IMAGES_SHOWN: usize = 50;
+/// Things named on one image's "run by" line before the same.
+const RUNNERS_SHOWN: usize = 6;
 /// The label every ops reader mints a container image under.
 const IMAGE: &str = "Image";
 /// The edge from whatever runs an image to the image.
@@ -74,19 +78,7 @@ impl Provenance {
     /// disagreement waiting.
     pub fn stated(&self) -> String {
         match self {
-            Provenance::Commit(c) => {
-                let mut out = format!(
-                    "{}  {}  \"{}\"  ({})",
-                    c.sha.short(),
-                    c.date,
-                    c.summary,
-                    c.author
-                );
-                if !c.reachable {
-                    out.push_str("  [a rewrite left this commit behind]");
-                }
-                out
-            }
+            Provenance::Commit(c) => commit_line(c),
             Provenance::Candidates(cs) => format!(
                 "{} commits fit that revision, newest first: {}",
                 cs.len(),
@@ -96,7 +88,7 @@ impl Provenance {
                     .join(", ")
             ),
             Provenance::Elsewhere { revision } => format!(
-                "revision `{revision}` is in no commit of this history — the usual cause is an \
+                "revision `{revision}` is in no commit of this history; the usual cause is an \
                  image built from another repository"
             ),
             Provenance::Floating { tag } => format!("no revision: the tag `{tag}` names none"),
@@ -156,6 +148,21 @@ pub fn provenance(image: &NodeRecord, history: Option<&PlaneHandle<'_>>) -> Resu
             revision: revision.to_string(),
         },
     })
+}
+
+/// The one line a commit is printed on, wherever it is printed.
+fn commit_line(c: &CommitRef) -> String {
+    let mut out = format!(
+        "{}  {}  \"{}\"  ({})",
+        c.sha.short(),
+        c.date,
+        c.summary,
+        c.author
+    );
+    if !c.reachable {
+        out.push_str("  [a rewrite left this commit behind]");
+    }
+    out
 }
 
 /// A digest cut down the way a registry client prints one: the algorithm and
@@ -355,6 +362,176 @@ fn kind_of(node: &NodeRecord) -> String {
         .map(str::to_string)
         .or_else(|| node.labels.first().cloned())
         .unwrap_or_default()
+}
+
+/// What built a running thing, or what runs a commit — `deployed`.
+///
+/// `target` is a key in the ops plane, a revision, or `None` for the plane as
+/// a whole. One verb in whichever direction the argument points, the shape
+/// [`crate::compact::trace`] uses when it tries the reverse direction and
+/// says so: a key is tried first, then a revision, and an argument that is
+/// neither is told it is neither.
+///
+/// Every answer ends by naming the planes it read, because a verb that joined
+/// the wrong pair of planes would otherwise look like one that found nothing.
+pub fn deployed(
+    ops: &PlaneHandle<'_>,
+    history: Option<&PlaneHandle<'_>>,
+    target: Option<&str>,
+) -> Result<String> {
+    let mut out = match target {
+        None => plane_wide(ops, history)?,
+        Some(target) => match running(ops, history, target)? {
+            Some(run) => forward(&run),
+            None => reverse(ops, history, target)?,
+        },
+    };
+    out.push_str(&planes_read(ops, history)?);
+    Ok(out)
+}
+
+/// What one thing runs, each image with what built it.
+fn forward(run: &Running) -> String {
+    let mut out = format!("{} {}\n", run.kind, run.thing);
+    if run.images.is_empty() {
+        out.push_str("  nothing this plane records says it runs an image\n");
+    }
+    for image in &run.images {
+        let named = match &image.through {
+            Some(through) => format!("{} ({})", image.reference, under(through, &run.thing)),
+            None => image.reference.clone(),
+        };
+        out.push_str(&format!("  {}\n", joined(&named, &image.provenance)));
+    }
+    out
+}
+
+/// What runs the commit a revision names.
+fn reverse(
+    ops: &PlaneHandle<'_>,
+    history: Option<&PlaneHandle<'_>>,
+    target: &str,
+) -> Result<String> {
+    let Some(history) = history else {
+        return Ok(format!(
+            "`{target}` is no key in this ops plane, and with no history plane a revision \
+             cannot be resolved\n"
+        ));
+    };
+    let commit = match resolve_rev(history, None, target)? {
+        RevAnswer::One(commit) => commit,
+        RevAnswer::Many(commits) => return Ok(crate::rev::ambiguous(target, &commits)),
+        RevAnswer::None(why) => {
+            return Ok(format!(
+                "`{target}` is neither a key in this ops plane nor a revision in its history: \
+                 {why}\n"
+            ));
+        }
+    };
+    let mut out = format!("{}\n", commit_line(&commit));
+    let rows = images(ops, Some(history), Some(commit.sha.as_str()))?;
+    if rows.is_empty() {
+        out.push_str("  nothing in this plane runs an image built from it\n");
+    }
+    for row in &rows {
+        for user in &row.used_by {
+            let through = user
+                .through
+                .as_ref()
+                .map(|t| format!(" ({})", under(t, &user.thing)))
+                .unwrap_or_default();
+            out.push_str(&format!("  {}  {}{through}\n", user.thing, row.reference));
+        }
+        if row.used_by.is_empty() {
+            out.push_str(&format!(
+                "  {}  (no workload in this plane runs it)\n",
+                row.reference
+            ));
+        }
+    }
+    Ok(out)
+}
+
+/// Every image the plane holds, with what built it and what runs it.
+fn plane_wide(ops: &PlaneHandle<'_>, history: Option<&PlaneHandle<'_>>) -> Result<String> {
+    let rows = images(ops, history, None)?;
+    if rows.is_empty() {
+        return Ok(
+            "this plane holds no images — digesting a manifest tree is what records \
+                   them\n"
+                .to_string(),
+        );
+    }
+    let commits = rows
+        .iter()
+        .filter(|r| r.provenance.commit().is_some())
+        .count();
+    let mut out = format!(
+        "{} image(s), {commits} of them joined to a commit of this history\n",
+        rows.len()
+    );
+    for row in rows.iter().take(IMAGES_SHOWN) {
+        out.push_str(&format!("  {}\n", joined(&row.reference, &row.provenance)));
+        out.push_str(&format!("    {}\n", run_by(&row.used_by)));
+    }
+    if rows.len() > IMAGES_SHOWN {
+        out.push_str(&format!("  … and {} more\n", rows.len() - IMAGES_SHOWN));
+    }
+    Ok(out)
+}
+
+/// One image's line: an arrow when the join held, a dash when it did not, so
+/// a reader can see at a glance which is which.
+fn joined(named: &str, provenance: &Provenance) -> String {
+    let mark = if provenance.commit().is_some() {
+        '→'
+    } else {
+        '—'
+    };
+    format!("{named}  {mark} {}", provenance.stated())
+}
+
+/// The things that run an image, as one line.
+fn run_by(used_by: &[Use]) -> String {
+    if used_by.is_empty() {
+        return "run by nothing this plane records".to_string();
+    }
+    let mut out = format!(
+        "run by {}",
+        used_by
+            .iter()
+            .take(RUNNERS_SHOWN)
+            .map(|u| u.thing.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    if used_by.len() > RUNNERS_SHOWN {
+        out.push_str(&format!(" … and {} more", used_by.len() - RUNNERS_SHOWN));
+    }
+    out
+}
+
+/// A key shown relative to the thing it belongs to: the container `main`
+/// rather than `prod/Deployment/api/main`.
+fn under(key: &str, owner: &str) -> String {
+    key.strip_prefix(&format!("{owner}/"))
+        .unwrap_or(key)
+        .to_string()
+}
+
+/// The planes an answer read, named so a wrong pairing is visible.
+fn planes_read(ops: &PlaneHandle<'_>, history: Option<&PlaneHandle<'_>>) -> Result<String> {
+    let ops = ops.name()?;
+    Ok(match history {
+        Some(history) => format!(
+            "note: read the ops plane `{ops}` against the history plane `{}`\n",
+            history.name()?
+        ),
+        None => format!(
+            "note: read the ops plane `{ops}` alone — with no history plane, no revision \
+             resolves to a commit\n"
+        ),
+    })
 }
 
 #[cfg(test)]
@@ -659,6 +836,100 @@ mod tests {
                 "ghcr.io/acme/api:sha-deadbee",
                 "ghcr.io/acme/api:v2.1.0",
             ]
+        );
+    }
+
+    fn answer(db: &Database, target: Option<&str>, with_history: bool) -> String {
+        let ops = db.plane("acme_ops").unwrap();
+        let history = db.plane("acme_git").unwrap();
+        deployed(&ops, with_history.then_some(&history), target).unwrap()
+    }
+
+    #[test]
+    fn a_workload_answers_with_the_commit_its_image_was_built_from() {
+        let db = planes();
+        let out = answer(&db, Some("prod/Deployment/api"), true);
+        assert!(out.starts_with("Deployment prod/Deployment/api\n"), "{out}");
+        assert!(
+            out.contains("ghcr.io/acme/api:sha-abc1234 (main)  → abc1234ef567"),
+            "{out}"
+        );
+        assert!(out.contains("the one with its own prefix"), "{out}");
+    }
+
+    #[test]
+    fn a_revision_answers_with_everything_running_it() {
+        let db = planes();
+        let out = answer(&db, Some("abc1234"), true);
+        assert!(out.starts_with("abc1234ef567  2026-10-12"), "{out}");
+        assert!(
+            out.contains("prod/Deployment/api  ghcr.io/acme/api:sha-abc1234 (main)"),
+            "{out}"
+        );
+        assert!(
+            out.contains("staging/Deployment/api  ghcr.io/acme/api:sha-abc1234"),
+            "{out}"
+        );
+    }
+
+    /// The forward direction is tried first, so a key that could be read as
+    /// hex is still a key.
+    #[test]
+    fn a_key_wins_over_a_revision_of_the_same_text() {
+        let db = planes();
+        let out = answer(&db, Some("postgres:17"), true);
+        assert!(out.starts_with("Image postgres:17\n"), "{out}");
+    }
+
+    #[test]
+    fn an_ambiguous_revision_lists_candidates_rather_than_picking_one() {
+        let db = planes();
+        let out = answer(&db, Some("9f2c1b7"), true);
+        assert!(out.contains("is ambiguous"), "{out}");
+        assert!(out.contains("call again with more of the sha"), "{out}");
+    }
+
+    #[test]
+    fn an_argument_that_is_neither_a_key_nor_a_revision_is_told_so() {
+        let db = planes();
+        let out = answer(&db, Some("prod/Deployment/nope"), true);
+        assert!(
+            out.contains("neither a key in this ops plane nor a revision"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn the_plane_wide_answer_counts_what_joined() {
+        let db = planes();
+        let out = answer(&db, None, true);
+        assert!(
+            out.starts_with("7 image(s), 1 of them joined to a commit of this history\n"),
+            "{out}"
+        );
+        assert!(
+            out.contains("run by prod/Deployment/api, staging/Deployment/api"),
+            "{out}"
+        );
+        assert!(out.contains("run by nothing this plane records"), "{out}");
+    }
+
+    #[test]
+    fn every_answer_names_the_planes_it_read() {
+        let db = planes();
+        assert!(
+            answer(&db, None, true).contains(
+                "note: read the ops plane `acme_ops` against the history plane `acme_git`"
+            ),
+        );
+        let alone = answer(&db, Some("abc1234"), false);
+        assert!(
+            alone.contains("read the ops plane `acme_ops` alone"),
+            "{alone}"
+        );
+        assert!(
+            alone.contains("with no history plane a revision cannot be resolved"),
+            "{alone}"
         );
     }
 
