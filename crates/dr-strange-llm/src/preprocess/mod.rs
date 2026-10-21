@@ -44,6 +44,7 @@
 mod catalog;
 mod ground;
 mod ledger;
+mod ops;
 #[cfg(feature = "plugins")]
 mod registry;
 mod repo;
@@ -91,6 +92,10 @@ pub fn plugin_memory_bytes() -> usize {
         0
     }
 }
+pub use ops::{
+    OPS_PLUGINS, PLANE_SUFFIX as OPS_PLANE_SUFFIX, from_ops_reader, ops_facts,
+    plane_name as ops_plane_name, take_ops, take_ops_facts,
+};
 #[cfg(feature = "plugins")]
 pub use registry::{InstalledPlugin, PluginStore, StoreStamp};
 pub use repo::{
