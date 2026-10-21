@@ -203,6 +203,100 @@ def cbm_edges(exe: str, workdir: Path, key: dict) -> tuple[set, set, set]:
     return edges, set(), refs
 
 
+# --------------------------------------------------------------------------
+# A plain text search — the baseline the comparison is meaningless without.
+# Every score above only means something against what an agent gets with no
+# index at all: `rg '\bGet\b'` and read the hits.
+#
+# It is given the strongest form of that, not a strawman. Matching is on word
+# boundaries rather than substrings, a declaration is not counted as a use of
+# itself, a hit is attributed to the declaration it falls inside — what a
+# careful reader does with grep output, since grep names only a file and a
+# line — and a comment-only line is discarded, because attributing a doc
+# comment to the declaration *above* it is an artefact of that attribution
+# rather than anything a reader would conclude.
+#
+# What it cannot be given is language awareness. A name inside a string still
+# counts, and three symbols sharing a bare name cannot be told apart, so one
+# mention of `Get` reaches all three. That is the measurement, not a flaw in
+# the adapter.
+# --------------------------------------------------------------------------
+# Enough to recognise a comment in all eight fixture languages; a line that is
+# only a comment carries no call.
+COMMENT = re.compile(r'^\s*(//|#|\*|/\*|--|"""|\'\'\')')
+def _declarations(key: dict, types: bool) -> dict[str, list[tuple[int, str]]]:
+    """file -> [(line, key name)], ascending: who owns each line."""
+    by_file: dict[str, list[tuple[int, str]]] = {}
+    for table in ["symbols"] + (["types"] if types else []):
+        for name, where in key.get(table, {}).items():
+            file, _, line = where.rpartition(":")
+            by_file.setdefault(file, []).append((int(line), name))
+    for decls in by_file.values():
+        decls.sort()
+    return by_file
+
+
+def _owner(decls: list[tuple[int, str]], line: int) -> str | None:
+    """The declaration a line falls inside: the last one at or above it."""
+    owner = None
+    for at, name in decls:
+        if at > line:
+            break
+        owner = name
+    return owner
+
+
+def _bare(name: str) -> str:
+    """`acme/orders.Cache.Get` -> `Get` — what the text actually carries."""
+    return re.split(r"::|\.|/", name)[-1]
+
+
+def _mentions(corpus: Path, key: dict, targets: dict, types: bool) -> set:
+    decls = _declarations(key, types=types)
+    # A bare name maps to every key name it could mean. Narrowing it would be
+    # crediting the baseline with knowledge it does not have.
+    wanted: dict[str, set[str]] = {}
+    for name in targets:
+        wanted.setdefault(_bare(name), set()).add(name)
+    found: set[tuple[str, str]] = set()
+    for file, file_decls in decls.items():
+        path = corpus / file
+        if not path.exists():
+            continue
+        lines = path.read_text(errors="replace").splitlines()
+        for n, text in enumerate(lines, start=1):
+            owner = _owner(file_decls, n)
+            if owner is None or COMMENT.match(text):
+                continue
+            for bare, names in wanted.items():
+                if not re.search(rf"\b{re.escape(bare)}\b", text):
+                    continue
+                for name in names:
+                    # A declaration line, and a name mentioned inside its own
+                    # body, are not calls. No key records a self-edge.
+                    if targets[name] == f"{file}:{n}" or name == owner:
+                        continue
+                    found.add((owner, name))
+    return found
+
+
+def text_edges(corpus: Path, key: dict) -> tuple[set, set, set]:
+    """Call edges and type references as a text search yields them.
+
+    The gap set is empty, and that is the point: a text search declares
+    nothing about what it may have missed or where a name was ambiguous.
+    """
+    # Externals carry no line in the fixture, so they are searched for by
+    # name — the same allowance the codegraph adapter makes, and it raises
+    # this baseline's recall rather than lowering it.
+    external = {
+        e["to"]: "" for e in key["resolved"] if e["to"] not in key.get("symbols", {})
+    }
+    calls = _mentions(corpus, key, {**key.get("symbols", {}), **external}, types=False)
+    refs = _mentions(corpus, key, key.get("types", {}), types=True)
+    return calls, set(), refs
+
+
 def find(*names: str) -> str | None:
     for n in names:
         p = shutil.which(n)

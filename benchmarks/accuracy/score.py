@@ -372,6 +372,15 @@ def cbm_adapter(args, corpus: Path, key: dict) -> tuple[set, set]:
     return competitors.cbm_edges(exe, _workdir(corpus, args), key)
 
 
+def text_adapter(args, corpus: Path, key: dict) -> tuple[set, set, set]:
+    """The no-index baseline: what a word-boundary text search yields.
+
+    Nothing to install and nothing to index, so it is scored in place rather
+    than in a copy of the corpus.
+    """
+    return competitors.text_edges(corpus, key)
+
+
 
 # Each entry takes (args, corpus, key) and returns (edges, declared gaps) in
 # the key's vocabulary. Adding a tool is adding one of these.
@@ -379,6 +388,7 @@ TOOLS = {
     "drsg": drsg_adapter,
     "codegraph": codegraph_adapter,
     "codebase-memory-mcp": cbm_adapter,
+    "text-search": text_adapter,
 }
 
 
