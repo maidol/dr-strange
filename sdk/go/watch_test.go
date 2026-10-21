@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"runtime"
 	"strings"
 	"testing"
@@ -256,5 +257,33 @@ func TestWatchRejectsOversizedFrame(t *testing.T) {
 	}
 	if err := <-serverSawClose; !errors.Is(err, net.ErrClosed) && !strings.Contains(err.Error(), "EOF") {
 		t.Fatalf("client did not hang up on the oversized frame: %v", err)
+	}
+}
+
+// The mapping that made TestWatchDialHonoursContext flaky: a socket deadline
+// fires on its own clock, and `ctx.Err()` is not yet set when it does.
+func TestCtxErrReportsTheContextsDeadline(t *testing.T) {
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if got := ctxErr(cancelled, errors.New("whatever")); !errors.Is(got, context.Canceled) {
+		t.Fatalf("a cancelled context: want context.Canceled, got %v", got)
+	}
+
+	// A deadline far enough out that `ctx.Err()` is certainly nil — the race
+	// the real failure needed, made deterministic.
+	timed, stop := context.WithTimeout(context.Background(), time.Hour)
+	defer stop()
+	if got := ctxErr(timed, os.ErrDeadlineExceeded); !errors.Is(got, context.DeadlineExceeded) {
+		t.Fatalf("a socket deadline under a timed context: want context.DeadlineExceeded, got %v", got)
+	}
+
+	// Without a deadline of our own, a transport error is the caller's to see.
+	plain := errors.New("connection reset")
+	if got := ctxErr(context.Background(), plain); !errors.Is(got, plain) {
+		t.Fatalf("no deadline: want the error unchanged, got %v", got)
+	}
+	// And a timed context must not rewrite an unrelated failure.
+	if got := ctxErr(timed, plain); !errors.Is(got, plain) {
+		t.Fatalf("a timed context rewrote an unrelated error: %v", got)
 	}
 }

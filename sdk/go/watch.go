@@ -14,9 +14,11 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -153,6 +155,24 @@ func validHeaderToken(token string) bool {
 	return true
 }
 
+// ctxErr says what a failed handshake read or write means to the caller.
+//
+// An expired context is reported as such. So is a socket deadline that fired:
+// the only deadline on that socket is the one taken from the context, and the
+// two are separate clocks for one instant — the read can fail on the socket's
+// before the context's timer has set `ctx.Err()`. Leaking `i/o timeout` there
+// would leave a caller unable to tell its own deadline from a server that went
+// quiet, and which of the two it sees would depend on a race.
+func ctxErr(ctx context.Context, err error) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if _, timed := ctx.Deadline(); timed && errors.Is(err, os.ErrDeadlineExceeded) {
+		return context.DeadlineExceeded
+	}
+	return err
+}
+
 func dialWebSocket(ctx context.Context, baseURL, token string) (*wsConn, error) {
 	u, err := url.Parse(baseURL)
 	if err != nil {
@@ -200,12 +220,6 @@ func dialWebSocket(ctx context.Context, baseURL, token string) (*wsConn, error) 
 	}
 	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
 	defer stop()
-	ctxErr := func(err error) error {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		return err
-	}
 
 	authz := ""
 	if token != "" {
@@ -223,14 +237,14 @@ func dialWebSocket(ctx context.Context, baseURL, token string) (*wsConn, error) 
 		"Sec-WebSocket-Version: 13\r\n\r\n"
 	if _, err := conn.Write([]byte(handshake)); err != nil {
 		conn.Close()
-		return nil, &Error{Code: -32000, Message: "handshake write failed: " + ctxErr(err).Error()}
+		return nil, &Error{Code: -32000, Message: "handshake write failed: " + ctxErr(ctx, err).Error()}
 	}
 
 	r := bufio.NewReader(conn)
 	status, err := r.ReadString('\n')
 	if err != nil {
 		conn.Close()
-		return nil, &Error{Code: -32000, Message: "handshake read failed: " + ctxErr(err).Error()}
+		return nil, &Error{Code: -32000, Message: "handshake read failed: " + ctxErr(ctx, err).Error()}
 	}
 	if !strings.Contains(status, " 101 ") {
 		conn.Close()
@@ -241,7 +255,7 @@ func dialWebSocket(ctx context.Context, baseURL, token string) (*wsConn, error) 
 		line, err := r.ReadString('\n')
 		if err != nil {
 			conn.Close()
-			return nil, &Error{Code: -32000, Message: "handshake read failed: " + ctxErr(err).Error()}
+			return nil, &Error{Code: -32000, Message: "handshake read failed: " + ctxErr(ctx, err).Error()}
 		}
 		if line == "\r\n" || line == "\n" {
 			break
