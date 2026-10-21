@@ -1217,7 +1217,7 @@ dependencies = [
 
 [[package]]
 name = "dr-strange-cli"
-version = "2.22.0"
+version = "2.23.0"
 dependencies = [
  "ahash",
  "anyhow",
@@ -1239,7 +1239,7 @@ dependencies = [
 
 [[package]]
 name = "dr-strange-core"
-version = "2.22.0"
+version = "2.23.0"
 dependencies = [
  "ahash",
  "criterion",
@@ -1259,7 +1259,7 @@ dependencies = [
 
 [[package]]
 name = "dr-strange-llm"
-version = "2.22.0"
+version = "2.23.0"
 dependencies = [
  "ahash",
  "anydoc",
@@ -1281,7 +1281,7 @@ dependencies = [
 
 [[package]]
 name = "dr-strange-log"
-version = "2.22.0"
+version = "2.23.0"
 dependencies = [
  "tracing",
  "tracing-appender",
@@ -1290,7 +1290,7 @@ dependencies = [
 
 [[package]]
 name = "dr-strange-mcp"
-version = "2.22.0"
+version = "2.23.0"
 dependencies = [
  "anyhow",
  "dr-strange-core",
@@ -1313,7 +1313,7 @@ dependencies = [
 
 [[package]]
 name = "dr-strange-parser"
-version = "2.22.0"
+version = "2.23.0"
 dependencies = [
  "ahash",
  "dr-strange-core",
@@ -1322,7 +1322,7 @@ dependencies = [
 
 [[package]]
 name = "dr-strange-web"
-version = "2.22.0"
+version = "2.23.0"
 dependencies = [
  "ahash",
  "anyhow",
@@ -1359,7 +1359,7 @@ dependencies = [
 
 [[package]]
 name = "drsg-bench"
-version = "2.22.0"
+version = "2.23.0"
 dependencies = [
  "ahash",
  "anyhow",
