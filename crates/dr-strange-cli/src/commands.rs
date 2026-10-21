@@ -4011,6 +4011,16 @@ pub fn digest(db: &Database, args: &DigestArgs, out: &mut dyn Write) -> Result<(
         if result.nodes.len() > 12 {
             writeln!(out, "  … and {} more", result.nodes.len() - 12)?;
         }
+        // Said before anything is written: the listing above does not show
+        // which plane a fact is bound for.
+        let (nodes, edges) = dr_strange_llm::ops_facts(&result);
+        if nodes + edges > 0 {
+            writeln!(
+                out,
+                "  of those, {nodes} node(s) and {edges} edge(s) would go to plane '{}'",
+                dr_strange_llm::ops_plane_name(args.plane)
+            )?;
+        }
         writeln!(out, "dry run — re-run with --apply to write")?;
         return Ok(());
     }
@@ -4030,6 +4040,10 @@ fn apply_digest(
     out: &mut dyn Write,
 ) -> Result<()> {
     let embed_tokens = result.report.embed_tokens;
+    // The ops readers' facts leave first: a workload belongs beside the code,
+    // not in it.
+    let mut result = result;
+    let ops = dr_strange_llm::take_ops(&mut result);
     let mut txn = p.write()?;
     let stats = result.apply(p, &mut txn)?;
     txn.commit()?;
@@ -4047,6 +4061,7 @@ fn apply_digest(
             stats.skipped.join(", ")
         )?;
     }
+    apply_ops(db, args.plane, &ops, out)?;
     // Only when something was actually embedded: a facts-only digest calls no
     // provider at all, and pointing at an `embedding` property nothing wrote
     // would send a reader to build an index over empty vectors.
@@ -4071,6 +4086,43 @@ fn apply_digest(
     // And the set the graph was built under, which the ledger cannot answer:
     // it names only the handlers that produced facts (issue #39).
     dr_strange_llm::record_built_by(db, args.plane, ran_plugins)?;
+    Ok(())
+}
+
+/// The ops readers' facts, into the plane beside the code one.
+///
+/// Nothing asked for this plane, so it is created only when there is something
+/// to put in it — a tree with no manifests leaves no empty `_ops` behind.
+#[cfg(feature = "digest")]
+fn apply_ops(
+    db: &Database,
+    code_plane: &str,
+    ops: &dr_strange_llm::DigestResult,
+    out: &mut dyn Write,
+) -> Result<()> {
+    if ops.nodes.is_empty() && ops.edges.is_empty() {
+        return Ok(());
+    }
+    let name = dr_strange_llm::ops_plane_name(code_plane);
+    if db.plane(&name).is_err() {
+        db.create_plane(&name, Properties::new())?;
+    }
+    let plane = db.plane(&name)?;
+    let mut txn = plane.write()?;
+    let stats = ops.apply(&plane, &mut txn)?;
+    txn.commit()?;
+    writeln!(
+        out,
+        "ops: wrote {} node(s), {} edge(s) → plane '{name}'",
+        stats.written.nodes, stats.written.edges
+    )?;
+    if !stats.skipped.is_empty() {
+        writeln!(
+            out,
+            "  {} already there, left untouched",
+            stats.skipped.len()
+        )?;
+    }
     Ok(())
 }
 
