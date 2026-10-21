@@ -1534,16 +1534,41 @@ fn replay(file: &mut File, store: &mut Store) -> Result<u64> {
     Ok(valid)
 }
 
-/// Bitwise CRC-32 (IEEE 802.3 polynomial) — no dependency; used by the WAL and
-/// SST footers. Not a throughput bottleneck at this phase.
+/// The CRC-32 table for the IEEE 802.3 polynomial, reflected — built at
+/// compile time, so this costs nothing at run time and needs no dependency.
+const CRC32_TABLE: [u32; 256] = {
+    let mut table = [0u32; 256];
+    let mut i = 0;
+    while i < 256 {
+        let mut crc = i as u32;
+        let mut bit = 0;
+        while bit < 8 {
+            let mask = (crc & 1).wrapping_neg();
+            crc = (crc >> 1) ^ (0xEDB8_8320 & mask);
+            bit += 1;
+        }
+        table[i] = crc;
+        i += 1;
+    }
+    table
+};
+
+/// CRC-32 (IEEE 802.3 polynomial) over `bytes` — the WAL's per-batch trailer,
+/// every SST block's, and the verification both do on the way back in.
+///
+/// Table-driven rather than bitwise. It was bitwise, "not a throughput
+/// bottleneck at this phase", and a profile of a 600k-row bulk load then put
+/// **25% of all CPU in `seal_block`** — eight shift/xor rounds per byte over
+/// every block of a ~100 MB flush, plus the WAL body on every commit.
+///
+/// Same polynomial, same reflection, so every byte it produces is what the
+/// bitwise version produced: the on-disk format is untouched and a file
+/// written by either reads under the other. `crc32_matches_the_bitwise_reference`
+/// holds that claim to the old code rather than to this comment.
 fn crc32(bytes: &[u8]) -> u32 {
     let mut crc = !0u32;
     for &b in bytes {
-        crc ^= b as u32;
-        for _ in 0..8 {
-            let mask = (crc & 1).wrapping_neg();
-            crc = (crc >> 1) ^ (0xEDB8_8320 & mask);
-        }
+        crc = (crc >> 8) ^ CRC32_TABLE[((crc ^ b as u32) & 0xff) as usize];
     }
     !crc
 }

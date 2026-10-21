@@ -388,3 +388,48 @@ fn an_old_run_is_rewritten_with_checksums_and_keeps_its_entries() {
         other => panic!("corruption went unreported: {:?}", other.map(|v| v.len())),
     }
 }
+
+/// The table-driven CRC must agree with the bitwise one it replaced, byte for
+/// byte, or every SST and WAL frame written before the change would fail
+/// verification after it. The reference is the old implementation, kept here
+/// as the thing the claim is held to.
+#[test]
+fn crc32_matches_the_bitwise_reference() {
+    fn bitwise(bytes: &[u8]) -> u32 {
+        let mut crc = !0u32;
+        for &b in bytes {
+            crc ^= b as u32;
+            for _ in 0..8 {
+                let mask = (crc & 1).wrapping_neg();
+                crc = (crc >> 1) ^ (0xEDB8_8320 & mask);
+            }
+        }
+        !crc
+    }
+
+    // The standard check value for this polynomial, so the pair being equal
+    // cannot be two implementations of the same mistake.
+    assert_eq!(super::crc32(b"123456789"), 0xCBF4_3926);
+
+    // Empty, every single byte, and lengths either side of a word boundary —
+    // where a table-driven loop would differ if it mishandled a tail.
+    let mut cases: Vec<Vec<u8>> = vec![Vec::new()];
+    cases.extend((0u8..=255).map(|b| vec![b]));
+    for len in [
+        1usize, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 63, 64, 65, 1021, 4096,
+    ] {
+        cases.push(
+            (0..len)
+                .map(|i| (i as u8).wrapping_mul(31).wrapping_add(7))
+                .collect(),
+        );
+    }
+    for bytes in &cases {
+        assert_eq!(
+            super::crc32(bytes),
+            bitwise(bytes),
+            "the two disagree on {} bytes",
+            bytes.len()
+        );
+    }
+}
