@@ -4,6 +4,101 @@ All notable changes to Dr Strange are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.23.0] - 2026-10-21
+
+The thesis of this project is that a commit and a production incident are two
+ends of one graph. This release makes the first half real: a repository's
+declared topology — the workloads it runs, the images they carry, the
+infrastructure beneath them — becomes a plane of its own, and one verb joins it
+back to the history plane beside it. The other half is measurement: an accuracy
+benchmark that scores this project against two others over eight languages,
+with every answer key checked by a compiler rather than by us.
+
+### Added
+
+- **`deployed` — what commit a running thing was built from, and what runs a
+  commit.** It reads the ops plane (`<plane>_ops`: namespaces, workloads,
+  containers, images, infrastructure) against the history plane
+  (`<plane>_git`), joined by the revision an image's tag carries. Name a
+  workload, container, resource or image key for the commit behind it; name a
+  revision for everything declared to run it; name nothing for every image at
+  once, each line marked `→` where the join held and `—` where it did not, so
+  one glance says how much of a plane is traceable. Planes are hard namespaces
+  and a cross-plane edge is rejected at storage, so this is a read of two
+  planes rather than an edge between them; `arch/10-ops.md` §9 records why, and
+  why the `portals` concept stays unshipped. MCP and the CLI, never
+  `openrpc.json`.
+- **Every way that join fails is named rather than answered with nothing.** A
+  floating tag (`latest`, a version number), a digest that pins the bytes and
+  says nothing about provenance, a revision no commit of this history holds, an
+  abbreviated revision that fits two commits, and a missing history plane are
+  five different facts; a verb that returned nothing for all of them would
+  leave a reader unable to tell a gap from a fact. A third-party image is
+  deliberately not guessed at — nothing in a manifest distinguishes
+  `postgres:17` from a locally built `myapp:17` — so the verb claims an image
+  came from elsewhere only when a revision said so.
+- **The ops graph's model** (`arch/10-ops.md`): the nodes and edges a manifest
+  becomes, what the container image joins and where it cannot, and the rule
+  that ConfigMap values are recorded while Secret values never are. The three
+  readers that write it — Compose, Kubernetes and Terraform — ship from the
+  extensions repository and install from the plugin catalog.
+- **A compose file is routed by its name.** `compose.yaml`,
+  `docker-compose.yml` and their variants reach the Compose reader without
+  `--handler`, the way the manifests the host reserves a name for already did.
+- **An accuracy benchmark with a cross-checked ground truth.** Eight language
+  fixtures whose answer keys are each verified by an oracle that is not this
+  project — Roslyn's semantic model, `callgraph` over Java bytecode,
+  `sys.setprofile`, the TypeScript checker, `javap -c`, `objdump -d -r`,
+  `cargo expand`, the Kotlin compiler — and four task sets: who calls a symbol,
+  what a change would reach, which types are referenced across files, and how
+  same-name symbols are told apart. Three tools are scored over the same
+  fixtures, identity is by `file:line` and never by name, and the harness bugs
+  that flattered this project are written down beside the numbers.
+- **`drsg init` configures four more agents.** Trae and Kimi Code each get
+  their own MCP config; Qoder and CodeBuddy read the `.mcp.json` that is
+  already written, and `init` now says so rather than writing a second copy.
+- **A contributor guide** (`CONTRIBUTING.md`) stating what CI already enforces,
+  with issue and pull-request templates.
+- **A landing page** for the code-intelligence case, served as the site root.
+- **The provenance bundle ships beside the archives.** It can then be verified
+  offline against the archive alone, and an audit that reads releases — OpenSSF
+  Scorecard among them — can see provenance that was previously recorded only
+  against the repository.
+
+### Changed
+
+- **rmcp 2.2 → 3.** `ServerInfo` is now `ServerConfig`: the same
+  `InitializeResult` under a name that does not collide with the protocol's own
+  `serverInfo` field. The advertised protocol version moves to `2026-07-28`;
+  existing clients are unaffected, since negotiation answers with the client's
+  own version whenever the server supports it, and it supports every known one.
+- **nom 7 → 8.** Combinators are parsers rather than callables, so the Cypher
+  grammar drives them with `.parse(input)` throughout and `tuple((…))` is gone
+  — a tuple is itself a parser now. The grammar is unchanged, and its 195 tests
+  pass as they stood.
+- **sha2 0.11, jieba-rs 0.11** and fourteen patch-level crates.
+- **The GitHub Actions set** moves up a major in several places: checkout v7,
+  upload-artifact v7, download-artifact v8, setup-java v6, setup-node v7,
+  setup-uv v10, and the Docker actions to v4/v6/v7. That also clears the
+  Node 20 deprecation warning every SDK job was carrying. The Java SDK builds
+  against Maven 3.10, JUnit 6 and Jackson 2.22.
+
+### Fixed
+
+- **Five RUSTSEC advisories.** `rustls-webpki` 0.103.16 and `webpki-roots` /
+  `webpki-root-certs` 1.0.10 reject certificate paths through the distrusted
+  emSign intermediates whose private keys are now well known
+  (RUSTSEC-2026-0381, -0382, -0383). `wasmtime` 48.0.7 fixes a panic lowering a
+  host-created component-model stream into a guest expecting another payload
+  type, and an aarch64 `br_table` that could jump to the wrong target
+  (RUSTSEC-2026-0378, -0379).
+- **`drsg init` ignores the temp sidecars a running server leaves.** A `.hnsw`
+  or `.bm25` file caught mid-write looked like an untracked file worth
+  committing.
+- **The toolchain pin says which master commit it is.** Dependabot rewrites the
+  sha and leaves the comment beside it, so `# master 2026-09-11` had come to
+  describe a commit of 2026-10-16.
+
 ## [2.22.0] - 2026-10-17
 
 `drsg init` now configures the agent you run, not only the one this repository
