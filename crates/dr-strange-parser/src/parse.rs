@@ -4,13 +4,13 @@
 
 use std::cell::{Cell, RefCell};
 
-use nom::IResult;
 use nom::branch::alt;
 use nom::bytes::complete::{tag, tag_no_case, take_while};
 use nom::character::complete::{char, digit1, multispace0, one_of, satisfy};
 use nom::combinator::{consumed, cut, map, map_res, not, opt, recognize, value, verify};
 use nom::multi::{many0, many1, separated_list0, separated_list1};
-use nom::sequence::{delimited, pair, preceded, tuple};
+use nom::sequence::{delimited, pair, preceded};
+use nom::{IResult, Parser};
 
 use dr_strange_core::AggFunc;
 use dr_strange_core::Metric;
@@ -25,7 +25,7 @@ use crate::ast::*;
 
 /// A literal symbol, tolerant of leading whitespace: `symbol("(")`.
 fn symbol<'a>(s: &'static str) -> impl Fn(&'a str) -> IResult<&'a str, &'a str> {
-    move |i: &'a str| preceded(multispace0, tag(s))(i)
+    move |i: &'a str| preceded(multispace0, tag(s)).parse(i)
 }
 
 /// A case-insensitive keyword with a word boundary, so `RETURN` doesn't match
@@ -33,8 +33,8 @@ fn symbol<'a>(s: &'static str) -> impl Fn(&'a str) -> IResult<&'a str, &'a str> 
 fn kw<'a>(word: &'static str) -> impl Fn(&'a str) -> IResult<&'a str, ()> {
     move |i: &'a str| {
         let (i, _) = multispace0(i)?;
-        let (i, _) = tag_no_case(word)(i)?;
-        let (i, _) = not(satisfy(is_ident_char))(i)?;
+        let (i, _) = tag_no_case(word).parse(i)?;
+        let (i, _) = not(satisfy(is_ident_char)).parse(i)?;
         Ok((i, ()))
     }
 }
@@ -67,7 +67,8 @@ fn ident(i: &str) -> IResult<&str, String> {
             ),
             str::to_string,
         ),
-    ))(i)
+    ))
+    .parse(i)
 }
 
 // ---- nesting depth ----------------------------------------------------------
@@ -156,41 +157,41 @@ pub fn take_unsupported() -> Option<String> {
 /// openCypher allows here and this cut does not each get their own message,
 /// rather than "expected RETURN".
 fn clause_boundary(i: &str) -> IResult<&str, ()> {
-    if kw("optional")(i).is_ok() {
+    if kw("optional").parse(i).is_ok() {
         return unsupported(
             i,
             "OPTIONAL MATCH isn't supported; a pattern either matches or drops the row \
              — run one MATCH per pattern and merge the results client-side",
         );
     }
-    if kw("match")(i).is_ok() {
+    if kw("match").parse(i).is_ok() {
         return unsupported(
             i,
             "a second MATCH isn't supported; a query holds one linear path — chain the \
              hop onto the first pattern (`MATCH (a)-[:T]->(b)`) or run one MATCH per pattern",
         );
     }
-    if kw("with")(i).is_ok() {
+    if kw("with").parse(i).is_ok() {
         return unsupported(
             i,
             "WITH isn't supported; a projection ends the query, so nothing can follow it \
              — fold the second stage into RETURN (`RETURN a.name, count(*) AS n`) or run two queries",
         );
     }
-    if kw("unwind")(i).is_ok() {
+    if kw("unwind").parse(i).is_ok() {
         return unsupported(
             i,
             "UNWIND isn't supported; there are no list rows — use `x IN [..]` in WHERE, \
              or run one query per value",
         );
     }
-    if kw("union")(i).is_ok() {
+    if kw("union").parse(i).is_ok() {
         return unsupported(
             i,
             "UNION isn't supported; run each side as its own query and concatenate the results",
         );
     }
-    if pair(symbol(","), symbol("("))(i).is_ok() {
+    if pair(symbol(","), symbol("(")).parse(i).is_ok() {
         return unsupported(
             i,
             "a pattern with several paths (`(a)-->(b), (a)-->(c)`) isn't supported; a query \
@@ -201,23 +202,23 @@ fn clause_boundary(i: &str) -> IResult<&str, ()> {
 }
 
 fn uint(i: &str) -> IResult<&str, u64> {
-    map_res(preceded(multispace0, digit1), str::parse::<u64>)(i)
+    map_res(preceded(multispace0, digit1), str::parse::<u64>).parse(i)
 }
 
 // Operator lexers as concrete-typed fns so nom can infer the error type when
 // they're called inline (an `impl Fn` return, or an untyped `let`, leaves the
 // `ParseError` impl ambiguous).
 fn add_op(i: &str) -> IResult<&str, char> {
-    preceded(multispace0, one_of("+-"))(i)
+    preceded(multispace0, one_of("+-")).parse(i)
 }
 
 fn mul_op(i: &str) -> IResult<&str, char> {
-    preceded(multispace0, one_of("*/"))(i)
+    preceded(multispace0, one_of("*/")).parse(i)
 }
 
 /// The arithmetic operators openCypher has and this cut lacks.
 fn other_op(i: &str) -> IResult<&str, char> {
-    preceded(multispace0, one_of("%^"))(i)
+    preceded(multispace0, one_of("%^")).parse(i)
 }
 
 fn cmp_op(i: &str) -> IResult<&str, CmpOp> {
@@ -234,7 +235,8 @@ fn cmp_op(i: &str) -> IResult<&str, CmpOp> {
             value(CmpOp::Lt, tag("<")),
             value(CmpOp::Gt, tag(">")),
         )),
-    )(i)
+    )
+    .parse(i)
 }
 
 /// `CONTAINS` / `STARTS WITH` / `ENDS WITH`. Two-word forms are a keyword
@@ -245,7 +247,8 @@ fn str_op(i: &str) -> IResult<&str, StrOp> {
         value(StrOp::Contains, kw("contains")),
         value(StrOp::StartsWith, pair(kw("starts"), kw("with"))),
         value(StrOp::EndsWith, pair(kw("ends"), kw("with"))),
-    ))(i)
+    ))
+    .parse(i)
 }
 
 // ---- literals -------------------------------------------------------------
@@ -254,11 +257,12 @@ fn str_op(i: &str) -> IResult<&str, StrOp> {
 /// exponent makes it a float; a bare run of digits is an int.
 fn number(i: &str) -> IResult<&str, PropValue> {
     let (i, _) = multispace0(i)?;
-    let (rest, text) = recognize(tuple((
+    let (rest, text) = recognize((
         digit1,
         opt(pair(char('.'), digit1)),
-        opt(tuple((one_of("eE"), opt(one_of("+-")), digit1))),
-    )))(i)?;
+        opt((one_of("eE"), opt(one_of("+-")), digit1)),
+    ))
+    .parse(i)?;
     let parsed = if text.bytes().all(|b| b.is_ascii_digit()) {
         text.parse::<i64>().map(PropValue::Int).ok()
     } else {
@@ -275,7 +279,7 @@ fn number(i: &str) -> IResult<&str, PropValue> {
 }
 
 fn quoted<'a>(q: char) -> impl Fn(&'a str) -> IResult<&'a str, PropValue> {
-    move |i: &'a str| map(quoted_str(q), PropValue::Str)(i)
+    move |i: &'a str| map(quoted_str(q), PropValue::Str).parse(i)
 }
 
 fn literal(i: &str) -> IResult<&str, PExpr> {
@@ -286,7 +290,8 @@ fn literal(i: &str) -> IResult<&str, PExpr> {
         map(kw("true"), |_| PExpr::Lit(PropValue::Bool(true))),
         map(kw("false"), |_| PExpr::Lit(PropValue::Bool(false))),
         map(kw("null"), |_| PExpr::Lit(PropValue::Null)),
-    ))(i)
+    ))
+    .parse(i)
 }
 
 // ---- expression grammar (precedence climbing) -----------------------------
@@ -301,7 +306,7 @@ fn expr(i: &str) -> IResult<&str, PExpr> {
 fn or_expr(i: &str) -> IResult<&str, PExpr> {
     let (mut i, mut lhs) = and_expr(i)?;
     let mut chain = Vec::new();
-    while let Ok((rest, _)) = kw("or")(i) {
+    while let Ok((rest, _)) = kw("or").parse(i) {
         chain.push(descend(rest)?.1);
         let (rest, rhs) = and_expr(rest)?;
         lhs = PExpr::Logic {
@@ -317,7 +322,7 @@ fn or_expr(i: &str) -> IResult<&str, PExpr> {
 fn and_expr(i: &str) -> IResult<&str, PExpr> {
     let (mut i, mut lhs) = not_expr(i)?;
     let mut chain = Vec::new();
-    while let Ok((rest, _)) = kw("and")(i) {
+    while let Ok((rest, _)) = kw("and").parse(i) {
         chain.push(descend(rest)?.1);
         let (rest, rhs) = not_expr(rest)?;
         lhs = PExpr::Logic {
@@ -331,7 +336,7 @@ fn and_expr(i: &str) -> IResult<&str, PExpr> {
 }
 
 fn not_expr(i: &str) -> IResult<&str, PExpr> {
-    if let Ok((rest, _)) = kw("not")(i) {
+    if let Ok((rest, _)) = kw("not").parse(i) {
         let (rest, _nesting) = descend(rest)?;
         let (rest, e) = not_expr(rest)?;
         return Ok((rest, PExpr::Not(Box::new(e))));
@@ -343,9 +348,9 @@ fn comparison(i: &str) -> IResult<&str, PExpr> {
     let (i, lhs) = additive(i)?;
 
     // `IS NULL` / `IS NOT NULL`
-    if let Ok((rest, _)) = kw("is")(i) {
-        let (rest, negated) = opt(kw("not"))(rest)?;
-        let (rest, _) = kw("null")(rest)?;
+    if let Ok((rest, _)) = kw("is").parse(i) {
+        let (rest, negated) = opt(kw("not")).parse(rest)?;
+        let (rest, _) = kw("null").parse(rest)?;
         let is_null = PExpr::IsNull(Box::new(lhs));
         let out = if negated.is_some() {
             PExpr::Not(Box::new(is_null))
@@ -355,12 +360,12 @@ fn comparison(i: &str) -> IResult<&str, PExpr> {
         return Ok((rest, out));
     }
 
-    if let Ok((rest, _)) = kw("in")(i) {
+    if let Ok((rest, _)) = kw("in").parse(i) {
         // `x IN [a, b, …]` — sugar the compiler expands into equalities (and,
         // on `key(n)` at the source, into a multi-key seek).
-        if let Ok((rest, _)) = symbol("[")(rest) {
-            let (rest, list) = separated_list0(symbol(","), expr)(rest)?;
-            let (rest, _) = symbol("]")(rest)?;
+        if let Ok((rest, _)) = symbol("[").parse(rest) {
+            let (rest, list) = separated_list0(symbol(","), expr).parse(rest)?;
+            let (rest, _) = symbol("]").parse(rest)?;
             return Ok((
                 rest,
                 PExpr::In {
@@ -468,7 +473,7 @@ fn multiplicative(i: &str) -> IResult<&str, PExpr> {
 }
 
 fn unary(i: &str) -> IResult<&str, PExpr> {
-    if let Ok((rest, _)) = symbol("-")(i) {
+    if let Ok((rest, _)) = symbol("-").parse(i) {
         let (rest, _nesting) = descend(rest)?;
         let (rest, e) = unary(rest)?;
         return Ok((rest, PExpr::Neg(Box::new(e))));
@@ -483,7 +488,8 @@ fn primary(i: &str) -> IResult<&str, PExpr> {
         literal,
         func_or_var,
         composite_literal,
-    ))(i)
+    ))
+    .parse(i)
 }
 
 /// A `[`/`{` where a term should be: a list or map literal. Neither is a value
@@ -512,9 +518,9 @@ fn composite_literal(i: &str) -> IResult<&str, PExpr> {
 }
 
 fn paren_expr(i: &str) -> IResult<&str, PExpr> {
-    let (i, _) = symbol("(")(i)?;
+    let (i, _) = symbol("(").parse(i)?;
     let (i, e) = expr(i)?;
-    let (i, _) = symbol(")")(i)?;
+    let (i, _) = symbol(")").parse(i)?;
     Ok((i, e))
 }
 
@@ -529,7 +535,7 @@ fn func_or_var(i: &str) -> IResult<&str, PExpr> {
         // error, not a fall-through to the property/label form.
         return func_call(&name, after_ws);
     }
-    let (i, sep) = one_of(".:")(after_ws)?;
+    let (i, sep) = one_of(".:").parse(after_ws)?;
     let (i, member) = ident(i)?;
     let out = if sep == '.' {
         PExpr::Prop {
@@ -549,29 +555,29 @@ fn func_or_var(i: &str) -> IResult<&str, PExpr> {
 /// `similarity(v.prop, <vector>[, metric])`, `distance(v.prop, <vector>[, metric])`.
 /// Names are case-insensitive, like keywords: `Score()` is `score()`.
 fn func_call<'a>(name: &str, i: &'a str) -> IResult<&'a str, PExpr> {
-    let (i, _) = symbol("(")(i)?;
+    let (i, _) = symbol("(").parse(i)?;
     let name = name.to_ascii_lowercase();
     match name.as_str() {
         "score" => {
-            let (i, _) = symbol(")")(i)?;
+            let (i, _) = symbol(")").parse(i)?;
             Ok((i, PExpr::Score))
         }
         "hops" => {
-            let (i, _) = symbol(")")(i)?;
+            let (i, _) = symbol(")").parse(i)?;
             Ok((i, PExpr::Hops))
         }
         // `key(v)` — the node's external key.
         "key" => {
             let (i, var) = ident(i)?;
-            let (i, _) = symbol(")")(i)?;
+            let (i, _) = symbol(")").parse(i)?;
             Ok((i, PExpr::ExternalKey { var }))
         }
         "similarity" | "distance" => {
             let (i, (var, key)) = prop_ref(i)?;
-            let (i, _) = symbol(",")(i)?;
+            let (i, _) = symbol(",").parse(i)?;
             let (i, query) = vec_arg(i)?;
-            let (i, metric) = opt(preceded(symbol(","), metric_ident))(i)?;
-            let (i, _) = symbol(")")(i)?;
+            let (i, metric) = opt(preceded(symbol(","), metric_ident)).parse(i)?;
+            let (i, _) = symbol(")").parse(i)?;
             let metric = metric.unwrap_or(Metric::Cosine);
             let out = if name == "similarity" {
                 PExpr::Similarity {
@@ -602,7 +608,7 @@ fn func_call<'a>(name: &str, i: &'a str) -> IResult<&'a str, PExpr> {
 fn prop_ref(i: &str) -> IResult<&str, (String, String)> {
     let (i, var) = ident(i)?;
     let (i, _) = multispace0(i)?;
-    let (i, _) = char('.')(i)?;
+    let (i, _) = char('.').parse(i)?;
     let (i, key) = ident(i)?;
     Ok((i, (var, key)))
 }
@@ -610,9 +616,9 @@ fn prop_ref(i: &str) -> IResult<&str, (String, String)> {
 /// A vector literal `[f, f, …]` (empty allowed). Ints and floats both coerce
 /// to f32; a leading `-` negates.
 fn vector_literal(i: &str) -> IResult<&str, Vec<f32>> {
-    let (i, _) = symbol("[")(i)?;
-    let (i, xs) = separated_list0(symbol(","), f32_num)(i)?;
-    let (i, _) = symbol("]")(i)?;
+    let (i, _) = symbol("[").parse(i)?;
+    let (i, xs) = separated_list0(symbol(","), f32_num).parse(i)?;
+    let (i, _) = symbol("]").parse(i)?;
     Ok((i, xs))
 }
 
@@ -622,7 +628,8 @@ fn vec_arg(i: &str) -> IResult<&str, VecArg> {
         map(quoted_str('\''), VecArg::Text),
         map(quoted_str('"'), VecArg::Text),
         map(vector_literal, VecArg::Vector),
-    ))(i)
+    ))
+    .parse(i)
 }
 
 /// A quoted string's contents, in either quote style, with the openCypher
@@ -632,7 +639,7 @@ fn vec_arg(i: &str) -> IResult<&str, VecArg> {
 fn quoted_str<'a>(q: char) -> impl Fn(&'a str) -> IResult<&'a str, String> {
     move |i: &'a str| {
         let (i, _) = multispace0(i)?;
-        let (mut i, _) = char(q)(i)?;
+        let (mut i, _) = char(q).parse(i)?;
         let mut out = String::new();
         loop {
             // The plain run up to the next quote or backslash, copied whole.
@@ -684,7 +691,7 @@ fn escape(i: &str) -> IResult<&str, char> {
 }
 
 fn f32_num(i: &str) -> IResult<&str, f32> {
-    let (i, neg) = opt(symbol("-"))(i)?;
+    let (i, neg) = opt(symbol("-")).parse(i)?;
     let (i, v) = number(i)?;
     let mut f = match v {
         PropValue::Float(x) => x as f32,
@@ -717,9 +724,9 @@ fn metric_ident(i: &str) -> IResult<&str, Metric> {
 // ---- pattern grammar ------------------------------------------------------
 
 fn node_pat(i: &str) -> IResult<&str, NodePat> {
-    let (i, _) = symbol("(")(i)?;
-    let (i, var) = opt(ident)(i)?;
-    let (i, label) = opt(preceded(preceded(multispace0, char(':')), ident))(i)?;
+    let (i, _) = symbol("(").parse(i)?;
+    let (i, var) = opt(ident).parse(i)?;
+    let (i, label) = opt(preceded(preceded(multispace0, char(':')), ident)).parse(i)?;
     // `(n:L {name: "x"})` is a predicate in openCypher; here predicates live
     // in WHERE, so point there instead of failing on the brace.
     let (at, _) = multispace0(i)?;
@@ -733,16 +740,16 @@ fn node_pat(i: &str) -> IResult<&str, NodePat> {
             ),
         );
     }
-    let (i, _) = symbol(")")(i)?;
+    let (i, _) = symbol(")").parse(i)?;
     Ok((i, NodePat { var, label }))
 }
 
 fn var_range(i: &str) -> IResult<&str, VarLen> {
-    let (i, _) = preceded(multispace0, char('*'))(i)?;
-    let (i, lo) = opt(map_res(preceded(multispace0, digit1), str::parse::<u32>))(i)?;
-    let (i, dots) = opt(preceded(multispace0, tag("..")))(i)?;
+    let (i, _) = preceded(multispace0, char('*')).parse(i)?;
+    let (i, lo) = opt(map_res(preceded(multispace0, digit1), str::parse::<u32>)).parse(i)?;
+    let (i, dots) = opt(preceded(multispace0, tag(".."))).parse(i)?;
     if dots.is_some() {
-        let (i, hi) = opt(map_res(preceded(multispace0, digit1), str::parse::<u32>))(i)?;
+        let (i, hi) = opt(map_res(preceded(multispace0, digit1), str::parse::<u32>)).parse(i)?;
         Ok((
             i,
             VarLen {
@@ -779,18 +786,18 @@ fn rel_body(i: &str) -> IResult<&str, (Option<String>, Option<VarLen>)> {
             ),
         );
     }
-    let (i, ty) = opt(preceded(preceded(multispace0, char(':')), ident))(i)?;
-    let (i, var_len) = opt(var_range)(i)?;
+    let (i, ty) = opt(preceded(preceded(multispace0, char(':')), ident)).parse(i)?;
+    let (i, var_len) = opt(var_range).parse(i)?;
     Ok((i, (ty, var_len)))
 }
 
 fn rel_pat(i: &str) -> IResult<&str, RelPat> {
     let (i, _) = multispace0(i)?;
-    let (i, left) = opt(char('<'))(i)?;
-    let (i, _) = char('-')(i)?;
-    let (i, body) = opt(delimited(char('['), rel_body, char(']')))(i)?;
-    let (i, _) = char('-')(i)?;
-    let (i, right) = opt(char('>'))(i)?;
+    let (i, left) = opt(char('<')).parse(i)?;
+    let (i, _) = char('-').parse(i)?;
+    let (i, body) = opt(delimited(char('['), rel_body, char(']'))).parse(i)?;
+    let (i, _) = char('-').parse(i)?;
+    let (i, right) = opt(char('>')).parse(i)?;
 
     let dir = match (left.is_some(), right.is_some()) {
         (false, true) => Dir::Out,
@@ -810,7 +817,7 @@ fn rel_pat(i: &str) -> IResult<&str, RelPat> {
 
 fn pattern(i: &str) -> IResult<&str, Pattern> {
     let (i, first) = node_pat(i)?;
-    let (i, rest) = many0(pair(rel_pat, node_pat))(i)?;
+    let (i, rest) = many0(pair(rel_pat, node_pat)).parse(i)?;
     Ok((i, Pattern { first, rest }))
 }
 
@@ -835,9 +842,9 @@ fn agg_call(i: &str) -> IResult<&str, (AggFunc, Option<PExpr>, bool)> {
     let (i, name) = ident(i)?;
     let fail = || nom::Err::Error(nom::error::Error::new(i, nom::error::ErrorKind::Tag));
     let func = agg_func(&name).ok_or_else(fail)?;
-    let (i, _) = symbol("(")(i)?;
-    let (i, distinct) = opt(kw("distinct"))(i)?;
-    let (i, star) = opt(symbol("*"))(i)?;
+    let (i, _) = symbol("(").parse(i)?;
+    let (i, distinct) = opt(kw("distinct")).parse(i)?;
+    let (i, star) = opt(symbol("*")).parse(i)?;
     let (i, arg) = match star {
         Some(_) if func == AggFunc::Count => (i, None),
         Some(_) => return Err(fail()),
@@ -846,7 +853,7 @@ fn agg_call(i: &str) -> IResult<&str, (AggFunc, Option<PExpr>, bool)> {
             (i, Some(e))
         }
     };
-    let (i, _) = symbol(")")(i)?;
+    let (i, _) = symbol(")").parse(i)?;
     Ok((i, (func, arg, distinct.is_some())))
 }
 
@@ -856,7 +863,8 @@ fn alias(i: &str) -> IResult<&str, Option<String>> {
     opt(preceded(
         kw("as"),
         verify(ident, |name: &String| !name.eq_ignore_ascii_case("of")),
-    ))(i)
+    ))
+    .parse(i)
 }
 
 /// A column's header when the query gave it no alias: the item as written.
@@ -865,12 +873,12 @@ fn as_written(text: &str) -> String {
 }
 
 fn return_item(i: &str) -> IResult<&str, ReturnItem> {
-    if let Ok((rest, _)) = symbol("*")(i) {
+    if let Ok((rest, _)) = symbol("*").parse(i) {
         return Ok((rest, ReturnItem::Star));
     }
     // Before a plain expression: `count(…)` is not one of the expression
     // language's functions.
-    match consumed(agg_call)(i) {
+    match consumed(agg_call).parse(i) {
         Ok((rest, (text, (func, arg, distinct)))) => {
             let (rest, alias) = alias(rest)?;
             return Ok((
@@ -890,7 +898,7 @@ fn return_item(i: &str) -> IResult<&str, ReturnItem> {
         Err(e @ nom::Err::Failure(_)) => return Err(e),
         Err(_) => {}
     }
-    match consumed(expr)(i) {
+    match consumed(expr).parse(i) {
         Ok((rest, (text, expr))) => {
             let (rest, alias) = alias(rest)?;
             return Ok((
@@ -907,7 +915,7 @@ fn return_item(i: &str) -> IResult<&str, ReturnItem> {
         Err(_) => {}
     }
     // A bare variable: the rows themselves.
-    map(ident, ReturnItem::Var)(i)
+    map(ident, ReturnItem::Var).parse(i)
 }
 
 /// Words that end an `ORDER BY` key, so a bare name never swallows one.
@@ -931,8 +939,9 @@ fn order_key(i: &str) -> IResult<&str, OrderKey> {
             verify(ident, |name: &String| !is_clause_word(name)),
             SortTarget::Name,
         ),
-    )))(i)?;
-    let (i, dir) = opt(alt((map(kw("desc"), |_| true), map(kw("asc"), |_| false))))(i)?;
+    )))
+    .parse(i)?;
+    let (i, dir) = opt(alt((map(kw("desc"), |_| true), map(kw("asc"), |_| false)))).parse(i)?;
     Ok((
         i,
         OrderKey {
@@ -955,22 +964,23 @@ type Tail = (
 );
 
 fn query_tail(i: &str) -> IResult<&str, Tail> {
-    let (i, where_clause) = opt(preceded(kw("where"), expr))(i)?;
+    let (i, where_clause) = opt(preceded(kw("where"), expr)).parse(i)?;
     // Every read ends in RETURN, so a miss here is the query's actual fault —
     // committing reports it at this position rather than unwinding to the top
     // and blaming the first token. The clauses openCypher would allow here
     // first get their own, more useful refusal.
     let (i, _) = clause_boundary(i)?;
-    let (i, _) = cut(kw("return"))(i)?;
-    let (i, distinct) = opt(kw("distinct"))(i)?;
-    let (i, items) = separated_list1(symbol(","), return_item)(i)?;
+    let (i, _) = cut(kw("return")).parse(i)?;
+    let (i, distinct) = opt(kw("distinct")).parse(i)?;
+    let (i, items) = separated_list1(symbol(","), return_item).parse(i)?;
     let (i, order_by) = opt(preceded(
         pair(kw("order"), kw("by")),
         separated_list1(symbol(","), order_key),
-    ))(i)?;
-    let (i, skip) = opt(preceded(kw("skip"), uint))(i)?;
-    let (i, limit) = opt(preceded(kw("limit"), uint))(i)?;
-    let (i, as_of) = opt(as_of_clause)(i)?;
+    ))
+    .parse(i)?;
+    let (i, skip) = opt(preceded(kw("skip"), uint)).parse(i)?;
+    let (i, limit) = opt(preceded(kw("limit"), uint)).parse(i)?;
+    let (i, as_of) = opt(as_of_clause).parse(i)?;
     Ok((
         i,
         (
@@ -991,8 +1001,8 @@ fn query_tail(i: &str) -> IResult<&str, Tail> {
 /// RFC-3339 instant) or `AS OF TIME <ms>` (unix-epoch milliseconds). Last
 /// clause in a query, so it reads as a modifier over the whole thing.
 fn as_of_clause(i: &str) -> IResult<&str, AsOfSpec> {
-    let (i, _) = kw("as")(i)?;
-    let (i, _) = kw("of")(i)?;
+    let (i, _) = kw("as").parse(i)?;
+    let (i, _) = kw("of").parse(i)?;
     alt((
         // `TIME <ms>` — a raw epoch, the same address the RPC `as_of_ms` takes.
         map(preceded(kw("time"), int), AsOfSpec::Time),
@@ -1000,13 +1010,14 @@ fn as_of_clause(i: &str) -> IResult<&str, AsOfSpec> {
             rfc3339_to_epoch_ms(&s).map(AsOfSpec::Time).ok_or(())
         }),
         map(uint, AsOfSpec::Seq),
-    ))(i)
+    ))
+    .parse(i)
 }
 
 /// A signed integer (epoch milliseconds may predate 1970).
 fn int(i: &str) -> IResult<&str, i64> {
-    let (i, neg) = opt(symbol("-"))(i)?;
-    let (i, n) = map_res(preceded(multispace0, digit1), str::parse::<i64>)(i)?;
+    let (i, neg) = opt(symbol("-")).parse(i)?;
+    let (i, n) = map_res(preceded(multispace0, digit1), str::parse::<i64>).parse(i)?;
     Ok((i, if neg.is_some() { -n } else { n }))
 }
 
@@ -1044,13 +1055,13 @@ fn committed<T>(
 /// A source's relationship tail — the typed hops that may follow *any* seed,
 /// not just a `MATCH` node.
 fn source_tail(i: &str) -> IResult<&str, Vec<(RelPat, NodePat)>> {
-    many0(pair(rel_pat, node_pat))(i)
+    many0(pair(rel_pat, node_pat)).parse(i)
 }
 
 fn match_query(i: &str) -> IResult<&str, Query> {
-    let (i, _) = kw("match")(i)?;
+    let (i, _) = kw("match").parse(i)?;
     let (i, pattern) = pattern(i)?;
-    let (i, beams) = many0(beam_clause)(i)?;
+    let (i, beams) = many0(beam_clause).parse(i)?;
     let (i, tail) = query_tail(i)?;
     let source = QuerySource {
         kind: SourceKind::Match,
@@ -1065,17 +1076,17 @@ fn match_query(i: &str) -> IResult<&str, Query> {
 /// [TOPK k]` (the BM25 seed, `Source::KeywordTopK`). One verb, two operators:
 /// `NEAR` compares meaning, `MATCHING` compares words.
 fn search_query(i: &str) -> IResult<&str, Query> {
-    let (i, _) = kw("search")(i)?;
+    let (i, _) = kw("search").parse(i)?;
     let (i, first) = node_pat(i)?;
     // Optional for `NEAR` (the compiler fills in the conventional embedding
     // property); the compiler insists on it for `MATCHING`.
-    let (i, property) = opt(preceded(kw("on"), ident))(i)?;
+    let (i, property) = opt(preceded(kw("on"), ident)).parse(i)?;
     let (i, kind) = alt((
         |i| {
-            let (i, _) = kw("near")(i)?;
+            let (i, _) = kw("near").parse(i)?;
             let (i, query) = vec_arg(i)?;
-            let (i, metric) = opt(preceded(kw("metric"), metric_ident))(i)?;
-            let (i, k) = opt(preceded(kw("topk"), uint))(i)?;
+            let (i, metric) = opt(preceded(kw("metric"), metric_ident)).parse(i)?;
+            let (i, k) = opt(preceded(kw("topk"), uint)).parse(i)?;
             Ok((
                 i,
                 SourceKind::Search {
@@ -1087,9 +1098,9 @@ fn search_query(i: &str) -> IResult<&str, Query> {
             ))
         },
         |i| {
-            let (i, _) = kw("matching")(i)?;
-            let (i, query) = alt((quoted_str('\''), quoted_str('"')))(i)?;
-            let (i, k) = opt(preceded(kw("topk"), uint))(i)?;
+            let (i, _) = kw("matching").parse(i)?;
+            let (i, query) = alt((quoted_str('\''), quoted_str('"'))).parse(i)?;
+            let (i, k) = opt(preceded(kw("topk"), uint)).parse(i)?;
             Ok((
                 i,
                 SourceKind::Keyword {
@@ -1099,9 +1110,10 @@ fn search_query(i: &str) -> IResult<&str, Query> {
                 },
             ))
         },
-    ))(i)?;
+    ))
+    .parse(i)?;
     let (i, rest) = source_tail(i)?;
-    let (i, beams) = many0(beam_clause)(i)?;
+    let (i, beams) = many0(beam_clause).parse(i)?;
     let (i, tail) = query_tail(i)?;
     Ok((i, assemble(QuerySource { kind, first, rest }, beams, tail)))
 }
@@ -1109,7 +1121,7 @@ fn search_query(i: &str) -> IResult<&str, Query> {
 /// `HYBRID (v:Label) [VECTOR …] [KEYWORD …] [GRAPH …] [CANDIDATES n] [TOPK k]`
 /// — fused retrieval (`Source::Hybrid`). Channels may appear in any order.
 fn hybrid_query(i: &str) -> IResult<&str, Query> {
-    let (i, _) = kw("hybrid")(i)?;
+    let (i, _) = kw("hybrid").parse(i)?;
     let (i, first) = node_pat(i)?;
     let (mut i, mut clause) = (
         i,
@@ -1142,10 +1154,10 @@ fn hybrid_query(i: &str) -> IResult<&str, Query> {
             i = rest;
             continue;
         }
-        if let Ok((rest, n)) = preceded(kw("candidates"), uint)(i) {
+        if let Ok((rest, n)) = preceded(kw("candidates"), uint).parse(i) {
             clause.candidates = Some(n);
             i = rest;
-        } else if let Ok((rest, n)) = preceded(kw("topk"), uint)(i) {
+        } else if let Ok((rest, n)) = preceded(kw("topk"), uint).parse(i) {
             clause.k = Some(n);
             i = rest;
         } else {
@@ -1153,7 +1165,7 @@ fn hybrid_query(i: &str) -> IResult<&str, Query> {
         }
     }
     let (i, rest) = source_tail(i)?;
-    let (i, beams) = many0(beam_clause)(i)?;
+    let (i, beams) = many0(beam_clause).parse(i)?;
     let (i, tail) = query_tail(i)?;
     let source = QuerySource {
         kind: SourceKind::Hybrid(clause),
@@ -1165,14 +1177,14 @@ fn hybrid_query(i: &str) -> IResult<&str, Query> {
 
 /// `VECTOR [ON prop] NEAR "text"|[..] [METRIC m] [WEIGHT w]`
 fn hybrid_vector(i: &str) -> IResult<&str, HybridVector> {
-    let (i, _) = kw("vector")(i)?;
+    let (i, _) = kw("vector").parse(i)?;
     // Past the keyword this channel is committed: `NEAR <query>` is what makes
     // it a vector channel, so a miss here is an error to report, not a retry.
-    let (i, property) = opt(preceded(kw("on"), ident))(i)?;
-    let (i, _) = cut(kw("near"))(i)?;
-    let (i, query) = cut(vec_arg)(i)?;
-    let (i, metric) = opt(preceded(kw("metric"), metric_ident))(i)?;
-    let (i, weight) = opt(preceded(kw("weight"), f32_num))(i)?;
+    let (i, property) = opt(preceded(kw("on"), ident)).parse(i)?;
+    let (i, _) = cut(kw("near")).parse(i)?;
+    let (i, query) = cut(vec_arg).parse(i)?;
+    let (i, metric) = opt(preceded(kw("metric"), metric_ident)).parse(i)?;
+    let (i, weight) = opt(preceded(kw("weight"), f32_num)).parse(i)?;
     Ok((
         i,
         HybridVector {
@@ -1186,11 +1198,11 @@ fn hybrid_vector(i: &str) -> IResult<&str, HybridVector> {
 
 /// `KEYWORD ON prop MATCHING "text" [WEIGHT w]`
 fn hybrid_keyword(i: &str) -> IResult<&str, HybridKeyword> {
-    let (i, _) = kw("keyword")(i)?;
-    let (i, property) = opt(preceded(kw("on"), ident))(i)?;
-    let (i, _) = cut(kw("matching"))(i)?;
-    let (i, query) = cut(alt((quoted_str('\''), quoted_str('"'))))(i)?;
-    let (i, weight) = opt(preceded(kw("weight"), f32_num))(i)?;
+    let (i, _) = kw("keyword").parse(i)?;
+    let (i, property) = opt(preceded(kw("on"), ident)).parse(i)?;
+    let (i, _) = cut(kw("matching")).parse(i)?;
+    let (i, query) = cut(alt((quoted_str('\''), quoted_str('"')))).parse(i)?;
+    let (i, weight) = opt(preceded(kw("weight"), f32_num)).parse(i)?;
     Ok((
         i,
         HybridKeyword {
@@ -1203,13 +1215,13 @@ fn hybrid_keyword(i: &str) -> IResult<&str, HybridKeyword> {
 
 /// `GRAPH HOPS h [DECAY d] [SEEDS n] [WEIGHT w]`
 fn hybrid_graph(i: &str) -> IResult<&str, HybridGraph> {
-    let (i, _) = kw("graph")(i)?;
+    let (i, _) = kw("graph").parse(i)?;
     // `HOPS <n>` is what makes it a graph channel; everything after is tuning.
-    let (i, _) = cut(kw("hops"))(i)?;
-    let (i, hops) = cut(map_res(preceded(multispace0, digit1), str::parse::<u32>))(i)?;
-    let (i, decay) = opt(preceded(kw("decay"), f32_num))(i)?;
-    let (i, seeds) = opt(preceded(kw("seeds"), uint))(i)?;
-    let (i, weight) = opt(preceded(kw("weight"), f32_num))(i)?;
+    let (i, _) = cut(kw("hops")).parse(i)?;
+    let (i, hops) = cut(map_res(preceded(multispace0, digit1), str::parse::<u32>)).parse(i)?;
+    let (i, decay) = opt(preceded(kw("decay"), f32_num)).parse(i)?;
+    let (i, seeds) = opt(preceded(kw("seeds"), uint)).parse(i)?;
+    let (i, weight) = opt(preceded(kw("weight"), f32_num)).parse(i)?;
     Ok((
         i,
         HybridGraph {
@@ -1225,15 +1237,15 @@ fn hybrid_graph(i: &str) -> IResult<&str, HybridGraph> {
 /// (`Source::Algo`). The `ON` node pattern both scopes the algorithm to a
 /// label and binds the variable the rest of the query names.
 fn call_query(i: &str) -> IResult<&str, Query> {
-    let (i, _) = kw("call")(i)?;
+    let (i, _) = kw("call").parse(i)?;
     let (i, name) = ident(i)?;
-    let (i, _) = symbol("(")(i)?;
-    let (i, args) = separated_list0(symbol(","), call_arg)(i)?;
-    let (i, _) = symbol(")")(i)?;
-    let (i, _) = kw("on")(i)?;
+    let (i, _) = symbol("(").parse(i)?;
+    let (i, args) = separated_list0(symbol(","), call_arg).parse(i)?;
+    let (i, _) = symbol(")").parse(i)?;
+    let (i, _) = kw("on").parse(i)?;
     let (i, first) = node_pat(i)?;
     let (i, rest) = source_tail(i)?;
-    let (i, beams) = many0(beam_clause)(i)?;
+    let (i, beams) = many0(beam_clause).parse(i)?;
     let (i, tail) = query_tail(i)?;
     let source = QuerySource {
         kind: SourceKind::Call(CallClause { name, args }),
@@ -1246,7 +1258,7 @@ fn call_query(i: &str) -> IResult<&str, Query> {
 /// One `name: value` algorithm argument.
 fn call_arg(i: &str) -> IResult<&str, (String, Val)> {
     let (i, name) = ident(i)?;
-    let (i, _) = symbol(":")(i)?;
+    let (i, _) = symbol(":").parse(i)?;
     let (i, value) = prop_value(i)?;
     Ok((i, (name, value)))
 }
@@ -1257,24 +1269,25 @@ fn beam_dir(i: &str) -> IResult<&str, Dir> {
         value(Dir::Out, kw("out")),
         value(Dir::In, kw("in")),
         value(Dir::Both, kw("both")),
-    ))(i)
+    ))
+    .parse(i)
 }
 
 /// `BEAM (result[:Label]) <OUT|IN|BOTH> [:TYPE] ON prop NEAR <q> [METRIC m]
 /// WIDTH w DEPTH d`.
 fn beam_clause(i: &str) -> IResult<&str, BeamClause> {
-    let (i, _) = kw("beam")(i)?;
+    let (i, _) = kw("beam").parse(i)?;
     let (i, node) = node_pat(i)?;
     let (i, dir) = beam_dir(i)?;
-    let (i, edge_type) = opt(preceded(preceded(multispace0, char(':')), ident))(i)?;
-    let (i, property) = opt(preceded(kw("on"), ident))(i)?;
-    let (i, _) = kw("near")(i)?;
+    let (i, edge_type) = opt(preceded(preceded(multispace0, char(':')), ident)).parse(i)?;
+    let (i, property) = opt(preceded(kw("on"), ident)).parse(i)?;
+    let (i, _) = kw("near").parse(i)?;
     let (i, query) = vec_arg(i)?;
-    let (i, metric) = opt(preceded(kw("metric"), metric_ident))(i)?;
-    let (i, _) = kw("width")(i)?;
-    let (i, width) = map_res(preceded(multispace0, digit1), str::parse::<u32>)(i)?;
-    let (i, _) = kw("depth")(i)?;
-    let (i, depth) = map_res(preceded(multispace0, digit1), str::parse::<u32>)(i)?;
+    let (i, metric) = opt(preceded(kw("metric"), metric_ident)).parse(i)?;
+    let (i, _) = kw("width").parse(i)?;
+    let (i, width) = map_res(preceded(multispace0, digit1), str::parse::<u32>).parse(i)?;
+    let (i, _) = kw("depth").parse(i)?;
+    let (i, depth) = map_res(preceded(multispace0, digit1), str::parse::<u32>).parse(i)?;
     Ok((
         i,
         BeamClause {
@@ -1296,7 +1309,7 @@ const DEFAULT_TOPK: u64 = 10;
 /// Parse a whole read query. The public [`crate::parse`] wraps this and
 /// enforces that all input was consumed.
 pub fn query(i: &str) -> IResult<&str, Query> {
-    alt((match_query, search_query, hybrid_query, call_query))(i)
+    alt((match_query, search_query, hybrid_query, call_query)).parse(i)
 }
 
 // ---- write statements -----------------------------------------------------
@@ -1304,7 +1317,7 @@ pub fn query(i: &str) -> IResult<&str, Query> {
 /// A property value inside `{ … }`: a `$name` parameter, or a literal — number
 /// (with optional `-`), string, bool, null, or a vector literal.
 fn prop_value(i: &str) -> IResult<&str, Val> {
-    alt((map(param_name, Val::Param), map(prop_literal, Val::Lit)))(i)
+    alt((map(param_name, Val::Param), map(prop_literal, Val::Lit))).parse(i)
 }
 
 fn prop_literal(i: &str) -> IResult<&str, PropValue> {
@@ -1317,12 +1330,13 @@ fn prop_literal(i: &str) -> IResult<&str, PropValue> {
         value(PropValue::Bool(false), kw("false")),
         value(PropValue::Null, kw("null")),
         map(vector_literal, PropValue::Vector),
-    ))(i)
+    ))
+    .parse(i)
 }
 
 /// A `$name` parameter placeholder — returns the bare name.
 fn param_name(i: &str) -> IResult<&str, String> {
-    preceded(symbol("$"), ident)(i)
+    preceded(symbol("$"), ident).parse(i)
 }
 
 fn negate_number(v: PropValue) -> PropValue {
@@ -1335,29 +1349,29 @@ fn negate_number(v: PropValue) -> PropValue {
 
 /// An inline property map `{ key: value, … }` (empty allowed).
 fn prop_map(i: &str) -> IResult<&str, Vec<(String, Val)>> {
-    let (i, _) = symbol("{")(i)?;
+    let (i, _) = symbol("{").parse(i)?;
     // Committed past the brace: a map has no other reading, so a bad entry
     // is reported where it is, not as trailing input after the whole clause.
-    let (i, entries) = separated_list0(symbol(","), prop_entry)(i)?;
-    let (i, _) = cut(symbol("}"))(i)?;
+    let (i, entries) = separated_list0(symbol(","), prop_entry).parse(i)?;
+    let (i, _) = cut(symbol("}")).parse(i)?;
     Ok((i, entries))
 }
 
 fn prop_entry(i: &str) -> IResult<&str, (String, Val)> {
     let (i, k) = ident(i)?;
-    let (i, _) = symbol(":")(i)?;
+    let (i, _) = symbol(":").parse(i)?;
     let (i, v) = prop_value(i)?;
     Ok((i, (k, v)))
 }
 
 fn create_node(i: &str) -> IResult<&str, CreateNode> {
-    let (i, _) = symbol("(")(i)?;
-    let (i, var) = opt(ident)(i)?;
-    let (i, label) = opt(preceded(preceded(multispace0, char(':')), ident))(i)?;
-    let (i, raw) = opt(prop_map)(i)?;
+    let (i, _) = symbol("(").parse(i)?;
+    let (i, var) = opt(ident).parse(i)?;
+    let (i, label) = opt(preceded(preceded(multispace0, char(':')), ident)).parse(i)?;
+    let (i, raw) = opt(prop_map).parse(i)?;
     // Inside a CREATE/MERGE the parenthesis has one reading; commit so the
     // error lands on the node, not on the statement's first token.
-    let (i, _) = cut(symbol(")"))(i)?;
+    let (i, _) = cut(symbol(")")).parse(i)?;
 
     // A string `key` — literal or `$param` — sets the external key; everything
     // else is a property. (The param's type is checked once it resolves.)
@@ -1382,16 +1396,16 @@ fn create_node(i: &str) -> IResult<&str, CreateNode> {
 
 fn create_rel(i: &str) -> IResult<&str, CreateRel> {
     let (i, _) = multispace0(i)?;
-    let (i, left) = opt(char('<'))(i)?;
-    let (i, _) = char('-')(i)?;
-    let (i, _) = char('[')(i)?;
+    let (i, left) = opt(char('<')).parse(i)?;
+    let (i, _) = char('-').parse(i)?;
+    let (i, _) = char('[').parse(i)?;
     // Past `-[` this is an edge; commit (a CREATE edge needs a type).
-    let (i, _) = cut(preceded(multispace0, char(':')))(i)?;
-    let (i, ty) = cut(ident)(i)?;
-    let (i, props) = opt(prop_map)(i)?;
-    let (i, _) = cut(symbol("]"))(i)?;
-    let (i, _) = cut(char('-'))(i)?;
-    let (i, right) = opt(char('>'))(i)?;
+    let (i, _) = cut(preceded(multispace0, char(':'))).parse(i)?;
+    let (i, ty) = cut(ident).parse(i)?;
+    let (i, props) = opt(prop_map).parse(i)?;
+    let (i, _) = cut(symbol("]")).parse(i)?;
+    let (i, _) = cut(char('-')).parse(i)?;
+    let (i, right) = opt(char('>')).parse(i)?;
     let dir = match (left.is_some(), right.is_some()) {
         (false, true) => Dir::Out,
         (true, false) => Dir::In,
@@ -1415,19 +1429,19 @@ fn create_rel(i: &str) -> IResult<&str, CreateRel> {
 
 fn create_path(i: &str) -> IResult<&str, CreatePath> {
     let (i, first) = create_node(i)?;
-    let (i, rest) = many0(pair(create_rel, create_node))(i)?;
+    let (i, rest) = many0(pair(create_rel, create_node)).parse(i)?;
     Ok((i, CreatePath { first, rest }))
 }
 
 /// `CREATE (n:L {..}), (a)-[:T {..}]->(b), …` — usable standalone or as a
 /// clause after `MATCH` (anchoring new nodes/edges to the matched node).
 fn create_clause(i: &str) -> IResult<&str, WriteOp> {
-    let (i, _) = kw("create")(i)?;
+    let (i, _) = kw("create").parse(i)?;
     // The keyword commits: what follows can only be paths, so a typo in the
     // third one is reported there — `separated_list1` would back out to the
     // comma and leave the rest to be called trailing input.
-    let (i, first) = cut(create_path)(i)?;
-    let (i, more) = many0(preceded(symbol(","), cut(create_path)))(i)?;
+    let (i, first) = cut(create_path).parse(i)?;
+    let (i, more) = many0(preceded(symbol(","), cut(create_path))).parse(i)?;
     let mut paths = vec![first];
     paths.extend(more);
     Ok((i, WriteOp::Create(paths)))
@@ -1447,9 +1461,9 @@ fn create_stmt(i: &str) -> IResult<&str, WriteAst> {
 /// `MERGE (n:L {key:"k", ..}) [ON CREATE SET …] [ON MATCH SET …]` — upsert one
 /// node, or a path `MERGE (a {key})-[:T]->(b {key})`.
 fn merge_clause(i: &str) -> IResult<&str, WriteOp> {
-    let (i, _) = kw("merge")(i)?;
-    let (i, path) = cut(create_path)(i)?;
-    let (i, clauses) = many0(merge_on)(i)?;
+    let (i, _) = kw("merge").parse(i)?;
+    let (i, path) = cut(create_path).parse(i)?;
+    let (i, clauses) = many0(merge_on).parse(i)?;
     let mut on_create = Vec::new();
     let mut on_match = Vec::new();
     for (is_create, items) in clauses {
@@ -1482,19 +1496,20 @@ fn merge_stmt(i: &str) -> IResult<&str, WriteAst> {
 
 /// `ON CREATE SET …` (true) or `ON MATCH SET …` (false).
 fn merge_on(i: &str) -> IResult<&str, (bool, Vec<SetItem>)> {
-    let (i, _) = kw("on")(i)?;
-    let (i, is_create) = cut(alt((value(true, kw("create")), value(false, kw("match")))))(i)?;
-    let (i, _) = cut(kw("set"))(i)?;
-    let (i, items) = cut(separated_list1(symbol(","), set_item))(i)?;
+    let (i, _) = kw("on").parse(i)?;
+    let (i, is_create) =
+        cut(alt((value(true, kw("create")), value(false, kw("match"))))).parse(i)?;
+    let (i, _) = cut(kw("set")).parse(i)?;
+    let (i, items) = cut(separated_list1(symbol(","), set_item)).parse(i)?;
     Ok((i, (is_create, items)))
 }
 
 /// `MATCH pattern [WHERE …] (SET|REMOVE|DELETE)…` — find nodes, then mutate them.
 fn match_write_stmt(i: &str) -> IResult<&str, WriteAst> {
-    let (i, _) = kw("match")(i)?;
+    let (i, _) = kw("match").parse(i)?;
     let (i, pattern) = pattern(i)?;
-    let (i, where_clause) = opt(preceded(kw("where"), expr))(i)?;
-    let (i, ops) = many1(mutate_op)(i)?;
+    let (i, where_clause) = opt(preceded(kw("where"), expr)).parse(i)?;
+    let (i, ops) = many1(mutate_op).parse(i)?;
     Ok((
         i,
         WriteAst {
@@ -1508,30 +1523,30 @@ fn match_write_stmt(i: &str) -> IResult<&str, WriteAst> {
 }
 
 fn mutate_op(i: &str) -> IResult<&str, WriteOp> {
-    alt((set_op, remove_op, delete_op, create_clause, merge_clause))(i)
+    alt((set_op, remove_op, delete_op, create_clause, merge_clause)).parse(i)
 }
 
 fn set_op(i: &str) -> IResult<&str, WriteOp> {
-    let (i, _) = kw("set")(i)?;
+    let (i, _) = kw("set").parse(i)?;
     // Each mutating clause commits on its keyword, for the same reason as
     // CREATE: the error should name the item, not the clause.
-    let (i, items) = cut(separated_list1(symbol(","), set_item))(i)?;
+    let (i, items) = cut(separated_list1(symbol(","), set_item)).parse(i)?;
     Ok((i, WriteOp::Set(items)))
 }
 
 fn set_item(i: &str) -> IResult<&str, SetItem> {
     let (i, var) = ident(i)?;
     // `n += { .. }`
-    if let Ok((rest, _)) = symbol("+=")(i) {
+    if let Ok((rest, _)) = symbol("+=").parse(i) {
         let (rest, props) = prop_map(rest)?;
         return Ok((rest, SetItem::Merge { var, props }));
     }
     let (i, _) = multispace0(i)?;
-    let (i, sep) = one_of(".:")(i)?;
+    let (i, sep) = one_of(".:").parse(i)?;
     if sep == '.' {
         // `n.key = value`
         let (i, key) = ident(i)?;
-        let (i, _) = symbol("=")(i)?;
+        let (i, _) = symbol("=").parse(i)?;
         let (i, value) = prop_value(i)?;
         Ok((i, SetItem::Prop { var, key, value }))
     } else {
@@ -1542,15 +1557,15 @@ fn set_item(i: &str) -> IResult<&str, SetItem> {
 }
 
 fn remove_op(i: &str) -> IResult<&str, WriteOp> {
-    let (i, _) = kw("remove")(i)?;
-    let (i, items) = cut(separated_list1(symbol(","), remove_item))(i)?;
+    let (i, _) = kw("remove").parse(i)?;
+    let (i, items) = cut(separated_list1(symbol(","), remove_item)).parse(i)?;
     Ok((i, WriteOp::Remove(items)))
 }
 
 fn remove_item(i: &str) -> IResult<&str, RemoveItem> {
     let (i, var) = ident(i)?;
     let (i, _) = multispace0(i)?;
-    let (i, sep) = one_of(".:")(i)?;
+    let (i, sep) = one_of(".:").parse(i)?;
     let (i, name) = ident(i)?;
     Ok((
         i,
@@ -1563,9 +1578,9 @@ fn remove_item(i: &str) -> IResult<&str, RemoveItem> {
 }
 
 fn delete_op(i: &str) -> IResult<&str, WriteOp> {
-    let (i, detach) = opt(kw("detach"))(i)?;
-    let (i, _) = kw("delete")(i)?;
-    let (i, vars) = cut(separated_list1(symbol(","), ident))(i)?;
+    let (i, detach) = opt(kw("detach")).parse(i)?;
+    let (i, _) = kw("delete").parse(i)?;
+    let (i, vars) = cut(separated_list1(symbol(","), ident)).parse(i)?;
     Ok((
         i,
         WriteOp::Delete {
@@ -1585,20 +1600,20 @@ fn delete_op(i: &str) -> IResult<&str, WriteOp> {
 /// one that understood the query.
 pub fn statement(i: &str) -> IResult<&str, StmtAst> {
     take_unsupported();
-    if kw("optional")(i).is_ok() {
+    if kw("optional").parse(i).is_ok() {
         clause_boundary(i)?;
     }
-    let parsed = if kw("create")(i).is_ok() {
-        map(create_stmt, StmtAst::Write)(i)
-    } else if kw("merge")(i).is_ok() {
-        map(merge_stmt, StmtAst::Write)(i)
+    let parsed = if kw("create").parse(i).is_ok() {
+        map(create_stmt, StmtAst::Write).parse(i)
+    } else if kw("merge").parse(i).is_ok() {
+        map(merge_stmt, StmtAst::Write).parse(i)
     } else {
-        match map(match_write_stmt, StmtAst::Write)(i) {
+        match map(match_write_stmt, StmtAst::Write).parse(i) {
             Ok(ok) => Ok(ok),
             Err(e @ nom::Err::Failure(_)) => Err(e),
-            Err(write) => {
-                map(query, |q| StmtAst::Read(Box::new(q)))(i).map_err(|read| furthest(write, read))
-            }
+            Err(write) => map(query, |q| StmtAst::Read(Box::new(q)))
+                .parse(i)
+                .map_err(|read| furthest(write, read)),
         }
     };
     let (rest, stmt) = parsed?;
