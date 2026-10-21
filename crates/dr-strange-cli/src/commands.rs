@@ -5084,7 +5084,7 @@ mod tests {
     /// real per-user store.
     #[cfg(feature = "digest")]
     fn scratch_store(name: &str) -> (std::path::PathBuf, dr_strange_llm::PluginConfig) {
-        let dir = std::env::temp_dir().join(format!("drsg-cli-plug-{name}-{}", std::process::id()));
+        let dir = unique_path(&format!("plug-{name}"));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let cfg = dr_strange_llm::PluginConfig {
@@ -5263,7 +5263,7 @@ mod tests {
     #[cfg(feature = "digest")]
     #[test]
     fn sync_point_records_and_reads_back() {
-        let dir = std::env::temp_dir().join(format!("drsg-syncpoint-{}", std::process::id()));
+        let dir = unique_path("syncpoint");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let run = |args: &[&str]| {
@@ -5335,8 +5335,7 @@ mod tests {
         );
 
         // Outside a repository: recording is a quiet no-op.
-        let plain =
-            std::env::temp_dir().join(format!("drsg-syncpoint-plain-{}", std::process::id()));
+        let plain = unique_path("syncpoint-plain");
         let _ = std::fs::remove_dir_all(&plain);
         std::fs::create_dir_all(&plain).unwrap();
         db.create_plane("q", Properties::new()).unwrap();
@@ -5353,7 +5352,7 @@ mod tests {
     #[cfg(feature = "digest")]
     #[test]
     fn an_unborn_repository_is_told_apart_from_a_plain_directory() {
-        let base = std::env::temp_dir().join(format!("drsg-unborn-{}", std::process::id()));
+        let base = unique_path("unborn");
         let _ = std::fs::remove_dir_all(&base);
         let unborn = base.join("repo");
         let plain = base.join("plain");
@@ -5514,8 +5513,8 @@ mod tests {
     #[cfg(feature = "native-backend")]
     #[test]
     fn open_applies_the_configured_retention() {
-        let dir = std::env::temp_dir().join(format!("drsg-cli-open-retain-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = unique_path("open-retain");
+        remove_db(&dir);
         let db = open(&dir, Some(1)).unwrap();
         let plane = db.create_plane("p", Properties::new()).unwrap();
         let first = db.commit_seq().unwrap();
@@ -5536,14 +5535,41 @@ mod tests {
         let plane = db.plane("p").unwrap();
         assert!(plane.as_of(dr_strange_core::AsOf::Seq(first)).is_ok());
         drop(db);
-        let _ = std::fs::remove_dir_all(&dir);
+        remove_db(&dir);
+    }
+
+    /// A temp path no other run can be using.
+    ///
+    /// The pid alone is not enough: a later process is given a pid an earlier
+    /// one had, and whatever that run left behind is then in this run's way.
+    /// What it leaves behind is not hypothetical — a database's index sidecars
+    /// are written *beside* its directory, so `remove_dir_all` never removed
+    /// them (`/tmp` collected a pair per run), and a `LOCK` the next run finds
+    /// held is exactly how `open_applies_the_configured_retention` failed in
+    /// CI while passing everywhere else.
+    fn unique_path(name: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        std::env::temp_dir().join(format!("drsg-cli-{name}-{}-{nanos}", std::process::id()))
+    }
+
+    /// Delete a test database: its directory *and* the `.hnsw` / `.bm25`
+    /// sidecars beside it, which are siblings rather than children.
+    fn remove_db(dir: &std::path::Path) {
+        let _ = std::fs::remove_dir_all(dir);
+        for ext in ["hnsw", "bm25"] {
+            let mut path = dir.as_os_str().to_owned();
+            path.push(format!(".{ext}"));
+            let _ = std::fs::remove_file(std::path::PathBuf::from(path));
+        }
     }
 
     /// Only the `init`/plugin-store tests need one, and both need the plugin
     /// host.
     #[cfg(feature = "digest")]
     fn scratch_dir(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("drsg-cli-init-{name}-{}", std::process::id()));
+        let dir = unique_path(&format!("init-{name}"));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
