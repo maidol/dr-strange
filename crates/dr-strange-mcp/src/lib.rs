@@ -771,6 +771,7 @@ planed!(
     AttachReq,
     AttachmentsReq,
     Cypher,
+    DeployedReq,
     DetachReq,
     Digest,
     FathomReq,
@@ -1400,6 +1401,26 @@ struct HistoryReq {
     limit: Option<usize>,
 }
 
+/// `deployed`'s request: which repository, and what is being asked about.
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct DeployedReq {
+    /// The code plane, or the ops plane beside it — naming `myrepo` finds
+    /// `myrepo_ops` and `myrepo_git`, because the first is what a reader has
+    /// in mind.
+    #[serde(default = "default_plane")]
+    plane: String,
+    /// A workload, container, resource or image key, or a revision. Omitted,
+    /// the answer is every image the ops plane holds.
+    #[serde(default)]
+    target: Option<String>,
+    /// The ops plane, when it is not the one the convention names.
+    #[serde(default)]
+    ops: Option<String>,
+    /// The history plane, when it is not the one the convention names.
+    #[serde(default)]
+    history: Option<String>,
+}
+
 /// `snippet`'s request: one symbol's source.
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct SnippetReq {
@@ -1945,6 +1966,35 @@ fn compact_logic(
 ) -> AnyResult<Value> {
     let plane = db.plane(&req.plane)?;
     Ok(Value::String(render(&plane, &req.name)?))
+}
+
+/// `deployed`: the ops plane joined to the history plane beside it.
+fn deployed_logic(db: &Database, req: DeployedReq) -> AnyResult<Value> {
+    let (ops, history) = ops_planes(db, &req)?;
+    Ok(Value::String(dr_strange_core::ops::deployed(
+        &ops,
+        history.as_ref(),
+        req.target.as_deref(),
+    )?))
+}
+
+/// The planes this request names, resolved by core's own convention — the
+/// same one the CLI arm reads, so the two cannot pair planes differently.
+fn ops_planes<'db>(
+    db: &'db Database,
+    req: &DeployedReq,
+) -> AnyResult<(
+    dr_strange_core::PlaneHandle<'db>,
+    Option<dr_strange_core::PlaneHandle<'db>>,
+)> {
+    Ok(dr_strange_core::ops::planes(
+        db,
+        &dr_strange_core::ops::Asked {
+            plane: &req.plane,
+            ops: req.ops.as_deref(),
+            history: req.history.as_deref(),
+        },
+    )?)
 }
 
 fn get_node_logic(db: &Database, req: GetNode) -> AnyResult<Value> {
@@ -3387,6 +3437,26 @@ impl DrStrange {
             )?))
         })
         .await
+    }
+
+    #[tool(description = "What commit a running thing was built from, and what \
+        runs a commit — the join between a repository's ops plane \
+        (`<plane>_ops`: the workloads, containers, images and infrastructure \
+        the compose, k8s and terraform readers record) and its history \
+        (`<plane>_git`). Name a workload, container, resource or image key for \
+        the commit its image's tag carried; name a revision for everything \
+        declared to run it; name nothing for every image, with what joined and \
+        what did not. The thread is the image tag, so the join holds exactly \
+        where a pipeline wrote a revision into it: a floating tag, a \
+        digest-only reference and a revision this history does not hold are \
+        each said in those words rather than answered with nothing. Declared \
+        state from manifests, never a live cluster, and every answer names the \
+        two planes it read.")]
+    async fn deployed(
+        &self,
+        Parameters(req): Parameters<DeployedReq>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        self.run_in("deployed", req, deployed_logic).await
     }
 
     #[tool(description = "Source text — use this instead of `cat`, `sed -n` or \
@@ -5491,5 +5561,125 @@ mod snippet_tests {
         );
         assert_eq!(parse_range("src/lib.rs:0"), None, "lines start at 1");
         assert_eq!(parse_range("src/lib.rs:5-3"), None, "backwards");
+    }
+}
+
+#[cfg(test)]
+mod deployed_tests {
+    use dr_strange_core::Properties;
+    use serde_json::from_value;
+
+    use super::*;
+
+    const SHA: &str = "9f2c1b7d8e5a1122334455667788990011223344";
+
+    /// An ops plane holding one revision-tagged image.
+    fn ops_plane(db: &Database, name: &str, reference: &str) {
+        db.create_plane(name, Properties::new()).unwrap();
+        write_nodes_logic(
+            db,
+            from_value(jval!({"plane": name, "nodes": [
+                {"external_key": reference, "labels": ["Image"],
+                 "properties": {"reference": reference, "tag": "sha-9f2c1b7", "revision": "9f2c1b7"}}
+            ]}))
+            .unwrap(),
+            None,
+        )
+        .unwrap();
+    }
+
+    /// A history plane holding the commit that revision abbreviates.
+    fn history_plane(db: &Database, name: &str) {
+        db.create_plane(name, Properties::new()).unwrap();
+        write_nodes_logic(
+            db,
+            from_value(jval!({"plane": name, "nodes": [
+                {"external_key": format!("commit:{SHA}"), "labels": ["Commit"],
+                 "properties": {"sha": SHA, "summary": "widen the retry window",
+                                "author_name": "Ada", "committed_at": "2026-10-12T10:00:00+00:00",
+                                "committed_ts": 3000}}
+            ]}))
+            .unwrap(),
+            None,
+        )
+        .unwrap();
+    }
+
+    fn answer(db: &Database, req: Value) -> String {
+        match deployed_logic(db, from_value(req).unwrap()).unwrap() {
+            Value::String(out) => out,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn naming_the_code_plane_finds_the_ops_and_history_planes_beside_it() {
+        let db = Database::in_memory().unwrap();
+        db.create_plane("myrepo", Properties::new()).unwrap();
+        ops_plane(&db, "myrepo_ops", "ghcr.io/acme/api:sha-9f2c1b7");
+        history_plane(&db, "myrepo_git");
+
+        let out = answer(&db, jval!({"plane": "myrepo"}));
+        assert!(out.contains("→ 9f2c1b7d8e5a"), "{out}");
+        assert!(
+            out.contains("read the ops plane `myrepo_ops` against the history plane `myrepo_git`"),
+            "{out}"
+        );
+    }
+
+    /// A reader who names the ops plane itself means the same repository.
+    #[test]
+    fn naming_the_ops_plane_resolves_the_same_pair() {
+        let db = Database::in_memory().unwrap();
+        ops_plane(&db, "myrepo_ops", "ghcr.io/acme/api:sha-9f2c1b7");
+        history_plane(&db, "myrepo_git");
+
+        let out = answer(&db, jval!({"plane": "myrepo_ops"}));
+        assert!(
+            out.contains("read the ops plane `myrepo_ops` against the history plane `myrepo_git`"),
+            "{out}"
+        );
+    }
+
+    /// `drsg digest ./k8s` names its plane after the directory, so a tree's
+    /// images are in the plane asked for and nowhere else. Until a digest
+    /// routes them to a sibling, that plane *is* the ops plane.
+    #[test]
+    fn a_plane_with_no_ops_sibling_is_read_as_the_ops_plane_itself() {
+        let db = Database::in_memory().unwrap();
+        ops_plane(&db, "k8srepo", "ghcr.io/acme/api:sha-9f2c1b7");
+
+        let out = answer(&db, jval!({"plane": "k8srepo"}));
+        assert!(out.starts_with("1 image(s)"), "{out}");
+        assert!(out.contains("read the ops plane `k8srepo` alone"), "{out}");
+    }
+
+    #[test]
+    fn an_explicit_pairing_overrides_the_convention() {
+        let db = Database::in_memory().unwrap();
+        db.create_plane("myrepo", Properties::new()).unwrap();
+        ops_plane(&db, "myrepo_ops", "ghcr.io/acme/api:sha-9f2c1b7");
+        ops_plane(&db, "staging_ops", "ghcr.io/acme/api:sha-9f2c1b7");
+        history_plane(&db, "elsewhere_git");
+
+        let out = answer(
+            &db,
+            jval!({"plane": "myrepo", "ops": "staging_ops", "history": "elsewhere_git"}),
+        );
+        assert!(
+            out.contains(
+                "read the ops plane `staging_ops` against the history plane `elsewhere_git`"
+            ),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn a_plane_that_does_not_exist_is_an_error_rather_than_an_empty_answer() {
+        let db = Database::in_memory().unwrap();
+        let err = deployed_logic(&db, from_value(jval!({"plane": "nope"})).unwrap())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("nope"), "{err}");
     }
 }

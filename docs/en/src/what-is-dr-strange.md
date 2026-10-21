@@ -108,9 +108,9 @@ wasm parser plugins turn source files into a resolved call graph — symbols,
 callers with call sites, and every other structural edge — with no model in
 the loop, covering eight languages out of the box. `serve watch` keeps the
 resulting plane synced to the repository's own commit history, folding each
-commit's changes in as they land. Eleven agent verbs — `context`, `search`,
+commit's changes in as they land. Twelve agent verbs — `context`, `search`,
 `describe`, `grep`, `trace`, `impact`, `fathom`, `snippet`, `history`,
-`recall`, `wire` — turn that graph into
+`deployed`, `recall`, `wire` — turn that graph into
 single-round-trip answers for a coding agent, each one stating the bounds of
 what it found: candidates instead of a guessed match, an `UnresolvedRef`
 ledger entry instead of a silently wrong edge. `drsg init` bootstraps all of

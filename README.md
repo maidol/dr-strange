@@ -126,7 +126,7 @@ chapter](https://wangyingsm.github.io/dr-strange/en/book/web-ui.html).
 | **Change feed** | subscribe to a plane and receive mutations live |
 | **Code digestion** | sandboxed wasm parser plugins turn a repository into a resolved call graph — thirteen official plugins, an SDK for community parsers |
 | **Commit-synced watch** | `serve watch` folds every commit into the plane, convergent with a full re-digest |
-| **Agent tools** | `context` · `search` · `describe` · `grep` · `trace` · `impact` · `fathom` · `snippet` · `history` · `recall` · `wire` — one round trip each |
+| **Agent tools** | `context` · `search` · `describe` · `grep` · `trace` · `impact` · `fathom` · `snippet` · `history` · `deployed` · `recall` · `wire` — one round trip each |
 | **Attached planes** | `drsg attach` records that one plane may ask another — on this instance, or another drsg at a URL — so `impact --across` and `wire` answer across repositories |
 | **Mounted databases** | `drsg mount` serves another database's planes on a **running** server, each keeping its own name, writer and lifecycle; nothing is copied or re-digested |
 | **Backup / restore** | consistent, id-faithful whole-database snapshots |
@@ -234,9 +234,9 @@ byte-identical across restarts. The longer path — digest, serve and query as
 separate steps — is in the [Coding Agent
 chapter](https://wangyingsm.github.io/dr-strange/en/book/coding-agent.html).
 
-Eleven verbs answer an agent's questions, one round trip each, as compact
-one-fact-per-line text. All eleven are MCP tools on `drsg serve`, and all
-eleven are CLI subcommands.
+Twelve verbs answer an agent's questions, one round trip each, as compact
+one-fact-per-line text. All twelve are MCP tools on `drsg serve`, and all
+twelve are CLI subcommands.
 
 | Verb | The question it answers |
 |---|---|
@@ -249,6 +249,7 @@ eleven are CLI subcommands.
 | `fathom` | what kind of place a symbol sits in: the region within a few hops, by label and edge type, with its hubs |
 | `snippet` | a symbol's source text, or a range of a file (`path:start-end`) — the `sed -n` an agent no longer needs |
 | `history` | the repository behind the code: HEAD, branches, tags, rebases and the newest commits |
+| `deployed` | what commit a running thing was built from, and what runs a commit — the manifests' ops plane joined to the history beside it |
 | `recall` | the same code as it was: a file, a symbol's declaration then, a search of the old tree, or what changed since an older revision |
 | `wire` | what serves an HTTP path and what asks for it — matched across every language in the plane, and across the planes it attaches |
 

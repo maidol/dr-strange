@@ -1472,6 +1472,22 @@ pub fn history(db: &Database, plane_name: &str, limit: usize, out: &mut dyn Writ
     Ok(())
 }
 
+/// What built a running thing, or what runs a commit.
+pub fn deployed(
+    db: &Database,
+    asked: &dr_strange_core::ops::Asked<'_>,
+    target: Option<&str>,
+    out: &mut dyn Write,
+) -> Result<()> {
+    let (ops, history) = dr_strange_core::ops::planes(db, asked)?;
+    write!(
+        out,
+        "{}",
+        dr_strange_core::ops::deployed(&ops, history.as_ref(), target)?
+    )?;
+    Ok(())
+}
+
 // ---- planes --------------------------------------------------------------
 
 pub fn plane_list(db: &Database, out: &mut dyn Write) -> Result<()> {
@@ -4735,6 +4751,55 @@ mod tests {
         assert!(list.contains("startup") && list.contains("scratch"));
         assert!(cap(|o| plane_drop(&db, "scratch", o)).contains("dropped"));
         assert!(db.plane("scratch").is_err());
+    }
+
+    /// A manifest tree's facts and a repository's history, as two planes the
+    /// convention pairs — the whole CLI path for `deployed`, from the key a
+    /// reader types to the commit line it prints.
+    #[test]
+    fn deployed_joins_the_ops_plane_to_the_history_beside_it() {
+        const OPS: &str = concat!(
+            r#"{"external_key":"ghcr.io/acme/api:sha-9f2c1b7","labels":["Image"],"properties":{"tag":"sha-9f2c1b7","revision":"9f2c1b7"}}"#,
+            "\n",
+            r#"{"external_key":"prod/Deployment/api","labels":["Workload"],"properties":{"kind":"Deployment"}}"#,
+            "\n",
+            r#"{"external_key":"prod/Deployment/api/api","labels":["Container"],"properties":{"role":"container"}}"#,
+            "\n",
+            r#"{"src_key":"prod/Deployment/api","dst_key":"prod/Deployment/api/api","type":"RUNS"}"#,
+            "\n",
+            r#"{"src_key":"prod/Deployment/api/api","dst_key":"ghcr.io/acme/api:sha-9f2c1b7","type":"USES_IMAGE"}"#,
+            "\n",
+        );
+        const GIT: &str = concat!(
+            r#"{"external_key":"commit:9f2c1b7d8e5a1122334455667788990011223344","labels":["Commit"],"#,
+            r#""properties":{"sha":"9f2c1b7d8e5a1122334455667788990011223344","summary":"widen the retry window","#,
+            r#""author_name":"Jane Roe","committed_at":"2026-10-12T10:00:00+00:00","committed_ts":1760263200}}"#,
+            "\n",
+        );
+
+        let db = Database::in_memory().unwrap();
+        db.create_plane("demo_ops", Properties::new()).unwrap();
+        db.create_plane("demo_git", Properties::new()).unwrap();
+        cap(|o| import(&db, "demo_ops", OPS.as_bytes(), OnConflict::Error, o));
+        cap(|o| import(&db, "demo_git", GIT.as_bytes(), OnConflict::Error, o));
+
+        let asked = dr_strange_core::ops::Asked {
+            plane: "demo",
+            ops: None,
+            history: None,
+        };
+        let out = cap(|o| deployed(&db, &asked, Some("prod/Deployment/api"), o));
+        assert!(out.starts_with("Deployment prod/Deployment/api\n"), "{out}");
+        assert!(
+            out.contains(
+                r#"(api)  → 9f2c1b7d8e5a  2026-10-12  "widen the retry window"  (Jane Roe)"#
+            ),
+            "{out}"
+        );
+        assert!(
+            out.contains("read the ops plane `demo_ops` against the history plane `demo_git`"),
+            "{out}"
+        );
     }
 
     #[test]

@@ -411,6 +411,11 @@ enum Command {
         #[arg(long, default_value_t = 15)]
         limit: usize,
     },
+    /// What commit a running thing was built from, and what runs a commit.
+    /// Joins the `_ops` plane — the workloads, images and infrastructure a
+    /// digest of manifests records — to the `_git` plane beside it, through
+    /// the revision an image's tag carries.
+    Deployed(DeployedArgs),
     /// Code as it was at a git revision: a file, a range, a directory or a
     /// symbol read at `--at`; a search of that tree (`--pattern`); or what
     /// changed since an older revision (`--vs`).
@@ -940,6 +945,40 @@ fn main() -> Result<()> {
     run(cli, &cfg, &mut out)?;
     out.flush()?;
     Ok(())
+}
+
+/// `drsg deployed`'s arguments: what to ask about, and where to look.
+#[derive(clap::Args)]
+struct DeployedArgs {
+    /// A workload, container, resource or image key, or a revision.
+    /// **Omitted**: every image, with what joined and what did not.
+    target: Option<String>,
+    /// The code plane, or the ops plane beside it — naming `myrepo` finds
+    /// `myrepo_ops` and `myrepo_git`.
+    #[arg(long, default_value = "startup")]
+    plane: String,
+    /// The ops plane, when it is not the one the convention names.
+    #[arg(long)]
+    ops: Option<String>,
+    /// The history plane, when it is not the one the convention names.
+    #[arg(long)]
+    history: Option<String>,
+}
+
+/// `drsg deployed`: core's verb over flags, printed as its text.
+fn run_deployed(
+    args: DeployedArgs,
+    db_path: &Path,
+    cfg: &config::Config,
+    out: &mut dyn Write,
+) -> Result<()> {
+    let db = commands::open(db_path, config::retain_commits(cfg))?;
+    let asked = dr_strange_core::ops::Asked {
+        plane: &args.plane,
+        ops: args.ops.as_deref(),
+        history: args.history.as_deref(),
+    };
+    commands::deployed(&db, &asked, args.target.as_deref(), out)
 }
 
 /// `drsg recall`'s arguments: the MCP tool's request, as flags.
@@ -1682,6 +1721,7 @@ fn run_tree_verbs(
             let db = commands::open(db_path, config::retain_commits(cfg))?;
             commands::history(&db, &plane, limit, out)
         }
+        Command::Deployed(args) => run_deployed(args, db_path, cfg, out),
         Command::Recall(args) => run_recall(args, db_path, cfg, out),
         other => run_analytics(other, db_path, cfg, verbose, out),
     }

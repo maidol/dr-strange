@@ -257,6 +257,7 @@ it keeps its slot until it finishes, so the ceiling still counts it.
 | `fathom` | read | the makeup of the region around a symbol — labels, edge types, hubs |
 | `snippet` | read | a symbol's source text, or a range of a file (`path:start-end`); says which symbol a range opens in and how to read on |
 | `history` | read | a repository's history at a glance — where HEAD is, what the branches and tags point at, what was rebased, and the newest commits; reads the `_git` plane a digest of a git checkout writes |
+| `deployed` | read | what commit a running thing was built from, and what runs a commit — the `_ops` plane a digest of manifests writes, joined to the `_git` plane beside it through the revision an image's tag carries; a floating tag, a digest-only reference and a revision this history does not hold are each said in those words rather than answered with nothing |
 | `recall` | read | code as it was at a git revision — a file, a line range, a directory, or a symbol's declaration then, found by parsing its file as it was; `pattern` searches that tree and `vs` diffs a name from an older revision; the revision resolves over the `_git` plane |
 | `wire` | read | what serves an HTTP path and what asks for it — routes matched across every language in the plane, and across the planes it attaches; computed per call, never stored |
 | `attach` | write | record a plane this one may ask: one on this instance, or one another drsg serves (`url`); `both` records the way back |

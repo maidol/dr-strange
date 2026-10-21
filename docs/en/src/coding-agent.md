@@ -133,7 +133,7 @@ open files, read, infer who calls what, repeat. A digested plane has already
 done that work, once, with a parser — so structural questions become **one
 round trip** instead of a search-and-read loop.
 
-Eleven verbs carry the workload, identical over MCP
+Twelve verbs carry the workload, identical over MCP
 ([Chapter 8](./mcp.md)) and the CLI ([Chapter 7](./embedded-cli.md); `grep`,
 `snippet` and `recall` read the tree the plane was parsed from, which `--root`
 names when the plane records none of its own):
@@ -150,6 +150,7 @@ names when the plane records none of its own):
 | `snippet` | a symbol's source text, or a range of a file (`path:start-end`) — the `sed -n` an agent no longer needs |
 | `recall` | the code as it was at a commit — a file, a symbol's declaration then, a search of that tree, or a diff between two revisions — the `git show` and `git log -p` an agent no longer needs |
 | `history` | the repository behind the code: where HEAD is, what the branches and tags point at, what was rebased, and the newest commits |
+| `deployed` | what commit a running thing was built from, and what runs a commit — the manifests' ops plane joined to the history beside it |
 | `wire` | what serves an HTTP path and what asks for it, matched across every language in the plane — and across the planes it attaches |
 
 `grep` and `snippet` open files only inside the tree they belong to — the
@@ -177,6 +178,18 @@ like before the refactor" is one call rather than a checkout. A symbol is
 located by parsing its file as it was at that commit, not by today's line
 numbers, and a symbol the commit did not declare is reported as absent, with
 what its file did declare.
+
+Operations are the third plane. A digest of Compose files, Kubernetes
+manifests or Terraform configuration writes `<name>_ops` — the workloads, the
+containers, the images they run, the infrastructure underneath — and
+`deployed` joins it to the history through the one string both ends name: the
+image's tag. Where a pipeline wrote a revision into that tag, *"which commit
+is this service running"* is one call. Where it did not, the answer says which
+of the reasons applies — a floating tag, a digest that pins bytes rather than
+provenance, a revision no commit here holds — because a verb that answered
+all three with nothing would leave a reader unable to tell a gap from a fact.
+Planes are hard namespaces, so this is a read of two of them rather than an
+edge between them.
 
 ## Routes: where the graph stops being one repository
 
