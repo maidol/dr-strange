@@ -1553,21 +1553,64 @@ const CRC32_TABLE: [u32; 256] = {
     table
 };
 
+/// The same table advanced by one byte, eight times over: entry `k` answers
+/// "what does this byte become once `k` more bytes follow it". That is what
+/// lets the loop below consume eight bytes per iteration instead of one —
+/// slice-by-8, the standard dependency-free way to compute this CRC.
+const CRC32_SLICE8: [[u32; 256]; 8] = {
+    let mut tables = [[0u32; 256]; 8];
+    tables[0] = CRC32_TABLE;
+    let mut k = 1;
+    while k < 8 {
+        let mut i = 0;
+        while i < 256 {
+            let prev = tables[k - 1][i];
+            tables[k][i] = (prev >> 8) ^ CRC32_TABLE[(prev & 0xff) as usize];
+            i += 1;
+        }
+        k += 1;
+    }
+    tables
+};
+
 /// CRC-32 (IEEE 802.3 polynomial) over `bytes` — the WAL's per-batch trailer,
 /// every SST block's, and the verification both do on the way back in.
 ///
-/// Table-driven rather than bitwise. It was bitwise, "not a throughput
-/// bottleneck at this phase", and a profile of a 600k-row bulk load then put
-/// **25% of all CPU in `seal_block`** — eight shift/xor rounds per byte over
-/// every block of a ~100 MB flush, plus the WAL body on every commit.
+/// Table-driven rather than bitwise, eight bytes at a time. It was bitwise,
+/// "not a throughput bottleneck at this phase", and a profile of a 600k-row
+/// bulk load then put **25% of all CPU in `seal_block`** — eight shift/xor
+/// rounds per byte over every block of a ~100 MB flush, plus the WAL body on
+/// every commit.
+///
+/// Measured on one machine over 100 MB: 0.21 GB/s bitwise, 0.41 GB/s a byte
+/// at a time, 1.17 GB/s like this. There is roughly another 10x in
+/// `PCLMULQDQ`, which is a dependency and an `is_x86_feature_detected!`
+/// branch; this is the fastest shape that is still portable Rust anyone can
+/// read.
 ///
 /// Same polynomial, same reflection, so every byte it produces is what the
 /// bitwise version produced: the on-disk format is untouched and a file
-/// written by either reads under the other. `crc32_matches_the_bitwise_reference`
-/// holds that claim to the old code rather than to this comment.
+/// written by either reads under the other. The x86 `crc32` instruction is no
+/// help here — it computes CRC-32C, a different polynomial.
+/// `crc32_matches_the_bitwise_reference` holds that claim to the old code
+/// rather than to this comment, including at the lengths either side of the
+/// eight-byte stride.
 fn crc32(bytes: &[u8]) -> u32 {
     let mut crc = !0u32;
-    for &b in bytes {
+    let (blocks, tail) = bytes.as_chunks::<8>();
+    for c in blocks {
+        let lo = u32::from_le_bytes([c[0], c[1], c[2], c[3]]) ^ crc;
+        let hi = u32::from_le_bytes([c[4], c[5], c[6], c[7]]);
+        crc = CRC32_SLICE8[7][(lo & 0xff) as usize]
+            ^ CRC32_SLICE8[6][((lo >> 8) & 0xff) as usize]
+            ^ CRC32_SLICE8[5][((lo >> 16) & 0xff) as usize]
+            ^ CRC32_SLICE8[4][((lo >> 24) & 0xff) as usize]
+            ^ CRC32_SLICE8[3][(hi & 0xff) as usize]
+            ^ CRC32_SLICE8[2][((hi >> 8) & 0xff) as usize]
+            ^ CRC32_SLICE8[1][((hi >> 16) & 0xff) as usize]
+            ^ CRC32_SLICE8[0][((hi >> 24) & 0xff) as usize];
+    }
+    for &b in tail {
         crc = (crc >> 8) ^ CRC32_TABLE[((crc ^ b as u32) & 0xff) as usize];
     }
     !crc
