@@ -186,6 +186,31 @@ jobs:
         run: uv run --locked pytest -q
         working-directory: sdk/python
 
+  python-bindings:
+    name: Python bindings — wheel + pytest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master 2026-10-16
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      # Pinned exactly: setup-uv stopped publishing a floating major tag after
+      # v7, so `@v9` does not resolve even though v9.0.0 is the latest release.
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      # Against the built wheel rather than the source tree: an extension
+      # module that imports from `target/` is not the thing anyone installs,
+      # and the abi3 tag is part of what is being checked.
+      - name: Build the wheel
+        run: uvx maturin build --release --out ../../target/wheels
+        working-directory: crates/dr-strange-py
+      - name: Test
+        run: |
+          set -euo pipefail
+          wheel=$(ls ../../target/wheels/drsg_embedded-*.whl)
+          uv run --no-project --with pytest --with anyio --with "$wheel" pytest tests -q
+        working-directory: crates/dr-strange-py
+
   sdk-go:
     name: SDK — Go
     needs: rust
