@@ -9,7 +9,12 @@ it needs is in this directory.
 ```console
 $ uv run --no-project --with tomli python benchmarks/accuracy/crosscheck_go.py
 $ uv run --no-project --with tomli python benchmarks/accuracy/score.py
+$ uv run --no-project --with tomli python benchmarks/accuracy/score.py --tool text-search
 ```
+
+The text-search baseline needs nothing installed, so the comparison's floor
+can always be reproduced; the other tools need their own binaries on `PATH`
+(`--tool gitnexus` and the rest).
 
 ## Four questions, not one number
 
@@ -281,30 +286,35 @@ interface it implements is a reference to a type declared elsewhere,
 whatever edge kind it lands on. Without that, Java's `MemStore -> Store`
 read as a miss for drsg when it was recorded all along.
 
-## Against the other two tools
+## Against the other tools, and against no tool at all
 
 The point of a tool-neutral key. Same fixture, same key, same questions,
-scored by the same code — `--tool codegraph` or `--tool codebase-memory-mcp`.
+scored by the same code — `--tool codegraph`, `--tool codebase-memory-mcp`,
+`--tool gitnexus` or `--tool text-search`.
 
 drsg 2.22.0 with the 2026-10-17 plugins, codegraph 1.6.2,
-codebase-memory-mcp 0.12.1, every fixture. The middle column is drsg as this
-benchmark first scored it, before the six releases it caused — kept because a
-comparison that quietly improves one side is not one:
+codebase-memory-mcp 0.12.1, GitNexus 1.6.12, every fixture. The second column
+is drsg as this benchmark first scored it, before the six releases it caused —
+kept because a comparison that quietly improves one side is not one:
 
-| | drsg, first run | drsg now | codegraph | codebase-memory-mcp |
-|---|---|---|---|---|
-| C | 6/7 | 6/7 | 6/7 | **7/7** |
-| C# | 8/9 | **9/9** | 8/9 | **9/9**, 2 false |
-| Go | **14/14** | **14/14** | 11/14 | 10/14, 2 false |
-| Java | **7/7** | **7/7** | 5/7 | 5/7 |
-| Kotlin | 8/9 | **9/9** | **9/9** | **9/9**, 2 false |
-| Python | **8/8** | **8/8** | 7/8 | 7/8 |
-| Rust | 5/6 | 5/6 | 5/6 | 4/6, 2 false |
-| TypeScript | **7/7** | **7/7** | 6/7 | 6/7 |
-| **total recall** | 63/67 | **65/67** | 57/67 | 57/67 |
-| **false edges** | **0** | **0** | **0** | **8** |
+| | drsg, first run | drsg now | codegraph | codebase-memory-mcp | GitNexus | text search |
+|---|---|---|---|---|---|---|
+| C | 6/7 | 6/7 | 6/7 | **7/7** | 6/7 | 6/7 |
+| C# | 8/9 | **9/9** | 8/9 | **9/9**, 2 false | 8/9 | **9/9**, 17 false |
+| Go | **14/14** | **14/14** | 11/14 | 10/14, 2 false | 10/14 | **14/14**, 31 false |
+| Java | **7/7** | **7/7** | 5/7 | 5/7 | 5/7 | **7/7**, 17 false |
+| Kotlin | 8/9 | **9/9** | **9/9** | **9/9**, 2 false | 4/9 | **9/9**, 17 false |
+| Python | **8/8** | **8/8** | 7/8 | 7/8 | 7/8 | **8/8**, 11 false |
+| Rust | 5/6 | 5/6 | 5/6 | 4/6, 2 false | 3/6, 1 false | 5/6, 19 false |
+| TypeScript | **7/7** | **7/7** | 6/7 | 6/7 | 6/7 | **7/7**, 21 false |
+| **total recall** | 63/67 | **65/67** | 57/67 | 57/67 | 49/67 | **65/67** |
+| **false edges** | **0** | **0** | **0** | 8 | 1 | 133 |
 
-Recall separates the three only a little. What separates them is the last row.
+**Read the last two columns together, because they are the finding.** A plain
+text search matches drsg's recall exactly — 65 of 67 — and asserts 133 calls
+that do not exist. So the recall column, taken alone, does not separate a
+resolved call graph from `rg`. Everything that distinguishes them is in the
+row beneath it, and in the honesty arm.
 
 **codebase-memory-mcp asserts eight calls that do not exist**, and every one is
 the same mistake: it picks a method by name without regard to the declared
@@ -331,6 +341,45 @@ returns zero where the source calls `strings.TrimSpace`. That is a scope
 decision rather than a resolution failure, and it accounts for three of its ten
 misses. It asserts no false edge anywhere, and it is the only tool that
 resolves both local function bindings in the Go fixture.
+
+**GitNexus is the most conservative tool here**, and it is a coherent position
+rather than a weakness: it avoids all forty traps, invents one edge in eight
+fixtures, and pays for that with the lowest recall — 49 of 67. It draws a
+`CALLS` edge only where its Tree-sitter pass is confident, and it puts that
+confidence *on the edge* (`confidence: 0.8, reason: "callable-value-flow"`),
+which no other tool here does. This harness does not filter on it: picking a
+threshold would be the benchmark deciding what the tool meant. Its weak
+fixtures are Kotlin (4/9) and Rust (3/6) — both languages where the calls it
+misses are on `self` inside the same `impl` or class.
+
+Its one unaccounted edge is `Store::put -> AuditStore::note`, a trait method to
+a private helper of one implementation — the same shape of mistake that costs
+codebase-memory-mcp eight edges, made once.
+
+**And a plain text search is the baseline that gives the rest their meaning.**
+It has no index, no parser and no concept of a type: for every symbol it
+searches the corpus for the bare name on a word boundary and attributes each
+hit to the declaration it falls inside. It is given the strongest honest form
+of that — a declaration is not a use of itself, and a comment-only line is
+discarded, since attributing a doc comment to the declaration above it would
+be an artefact of the attribution rather than anything a reader would
+conclude. What it cannot be given is language awareness, and that is the
+measurement:
+
+- It finds **65 of 67** real calls, tying the best tool here. Text search is
+  very good at recall, because a call usually does mention the name it calls.
+- It asserts **23 of the 40 traps** and **110 further edges** between known
+  symbols. In Go it has `Cache.Get` calling `Store.Get`, `MemStore.Get` and
+  `AuditStore.Get`, because all four are spelled `Get`.
+- It **names no gap at all** — 0 per-site, 0 blanket, in every fixture. It
+  cannot: a text search has no notion of a call it failed to resolve.
+- Its blast radius is unusable for the same reason. In Go it reports every
+  reaching symbol correctly and 25 more that do not reach at all.
+
+The C fixture is the exception that proves the mechanism: C has no methods, so
+nothing shares a bare name, and there the baseline asserts **no** false edge.
+Every false edge in the other seven comes from a name collision that only a
+resolved type can settle.
 
 ### Identity is by file and line, never by name
 
@@ -409,6 +458,11 @@ drsg, in the same way.
   may do worse on a million lines, and nothing here measures that.
 - **Two edge kinds, not all of them.** Calls and cross-file type references
   are scored. `IMPORTS`, `EXTENDS` and route matching are not.
-- **Only drsg and codebase-memory-mcp are compared on references**, because
-  codegraph exposes nothing reference-shaped. One of three arms is therefore a
-  two-tool comparison, and a thin one outside Go, Java and C.
+- **codegraph is not compared on references**, because it exposes nothing
+  reference-shaped; that arm scores the other four. GitNexus is scored on it
+  through the edges that land on a declared type, which is its own vocabulary
+  rather than a `REFERENCES` kind, and it reaches only Go and Java — 0/1 in
+  four languages where the key records a single reference each.
+- **Python has no reference entries**, because its fixture imports a function
+  rather than naming a type across files. The arm reports 0/0 there, which is
+  no score at all rather than a bad one.
