@@ -5547,6 +5547,10 @@ mod tests {
     /// them (`/tmp` collected a pair per run), and a `LOCK` the next run finds
     /// held is exactly how `open_applies_the_configured_retention` failed in
     /// CI while passing everywhere else.
+    ///
+    /// Gated to the features whose tests call it: a build with neither reaches
+    /// no caller, and an unused helper is an error under `-D warnings`.
+    #[cfg(any(feature = "digest", feature = "native-backend"))]
     fn unique_path(name: &str) -> std::path::PathBuf {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -5556,6 +5560,10 @@ mod tests {
 
     /// Delete a test database: its directory *and* the `.hnsw` / `.bm25`
     /// sidecars beside it, which are siblings rather than children.
+    ///
+    /// Only the retention test opens a store on disk, so only that feature's
+    /// build has a caller.
+    #[cfg(feature = "native-backend")]
     fn remove_db(dir: &std::path::Path) {
         let _ = std::fs::remove_dir_all(dir);
         for ext in ["hnsw", "bm25"] {
