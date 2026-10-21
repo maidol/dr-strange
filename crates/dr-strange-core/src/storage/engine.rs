@@ -129,14 +129,27 @@ pub trait WriteTransaction: ReadTransaction {
     fn put(&mut self, table: TableId, key: &[u8], value: &[u8]) -> Result<()>;
     fn delete(&mut self, table: TableId, key: &[u8]) -> Result<()>;
 
-    /// Inserts many `(key, value)` pairs into one table. The bulk-load fast
-    /// path (arch/01 §2) calls this so a backend can amortize per-op overhead
-    /// across the whole batch — redb opens the table once instead of per key.
-    /// Callers that want the sorted-insert win (redb B-tree) pre-sort `items`.
-    /// The default just loops [`put`](Self::put); override where it pays.
-    fn put_batch(&mut self, table: TableId, items: &[(Vec<u8>, Vec<u8>)]) -> Result<()> {
+    /// Inserts one pair, **taking ownership** of its bytes.
+    ///
+    /// The default copies through [`put`](Self::put), which is right for a
+    /// backend that serialises into its own storage there and then. A backend
+    /// that *keeps* the bytes until commit — the native engine buffers them —
+    /// overrides this and moves them instead: the bulk path has already built
+    /// every key and value, and copying them a second time cost a 600k-row
+    /// load four million allocations it had no use for.
+    fn put_owned(&mut self, table: TableId, key: Vec<u8>, value: Vec<u8>) -> Result<()> {
+        self.put(table, &key, &value)
+    }
+
+    /// Inserts many `(key, value)` pairs into one table, by value. The
+    /// bulk-load fast path (arch/01 §2) calls this so a backend can amortize
+    /// per-op overhead across the whole batch — redb opens the table once
+    /// instead of per key. Callers that want the sorted-insert win (redb
+    /// B-tree) pre-sort `items`. The default loops
+    /// [`put_owned`](Self::put_owned); override where the batch itself pays.
+    fn put_batch(&mut self, table: TableId, items: Vec<(Vec<u8>, Vec<u8>)>) -> Result<()> {
         for (k, v) in items {
-            self.put(table, k, v)?;
+            self.put_owned(table, k, v)?;
         }
         Ok(())
     }

@@ -150,7 +150,7 @@ impl WriteTransaction for RedbWriteTxn {
         Ok(())
     }
 
-    fn put_batch(&mut self, table: TableId, items: &[(Vec<u8>, Vec<u8>)]) -> Result<()> {
+    fn put_batch(&mut self, table: TableId, items: Vec<(Vec<u8>, Vec<u8>)>) -> Result<()> {
         // Open the table once for the whole batch (vs once per key in the
         // default) — the measured ~1.5x of the bulk-load win. When `items` is
         // pre-sorted by key, redb's B-tree inserts stay near-sequential too.

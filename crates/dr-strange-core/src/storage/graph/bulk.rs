@@ -179,10 +179,10 @@ impl StagedNodes<'_> {
     fn write(mut self, txn: &mut dyn WriteTransaction) -> Result<()> {
         sort_batch(&mut self.label_idx);
         sort_batch(&mut self.ext_keys);
-        txn.put_batch(TableId::Nodes, &self.nodes)?;
-        txn.put_batch(TableId::NodePlane, &self.node_plane)?;
-        txn.put_batch(TableId::LabelIdx, &self.label_idx)?;
-        txn.put_batch(TableId::ExtKeys, &self.ext_keys)
+        txn.put_batch(TableId::Nodes, self.nodes)?;
+        txn.put_batch(TableId::NodePlane, self.node_plane)?;
+        txn.put_batch(TableId::LabelIdx, self.label_idx)?;
+        txn.put_batch(TableId::ExtKeys, self.ext_keys)
     }
 }
 
@@ -233,9 +233,9 @@ impl EdgeBatches {
     fn write(mut self, txn: &mut dyn WriteTransaction) -> Result<()> {
         sort_batch(&mut self.adj_fwd);
         sort_batch(&mut self.adj_rev);
-        txn.put_batch(TableId::Edges, &self.edges)?;
-        txn.put_batch(TableId::AdjFwd, &self.adj_fwd)?;
-        txn.put_batch(TableId::AdjRev, &self.adj_rev)
+        txn.put_batch(TableId::Edges, self.edges)?;
+        txn.put_batch(TableId::AdjFwd, self.adj_fwd)?;
+        txn.put_batch(TableId::AdjRev, self.adj_rev)
     }
 }
 

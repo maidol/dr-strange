@@ -1179,6 +1179,13 @@ impl WriteTransaction for NativeWriteTxn<'_> {
         Ok(())
     }
 
+    /// The buffer holds these bytes until commit and then moves them into the
+    /// memtable, so there is no reason to copy what the caller already built.
+    fn put_owned(&mut self, table: TableId, key: Vec<u8>, value: Vec<u8>) -> Result<()> {
+        self.buf.insert((table as u8, key), Op::Put(value));
+        Ok(())
+    }
+
     fn delete(&mut self, table: TableId, key: &[u8]) -> Result<()> {
         self.buf.insert((table as u8, key.to_vec()), Op::Del);
         Ok(())
