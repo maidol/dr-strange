@@ -37,7 +37,7 @@ use dr_strange_core::{
 };
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{CallToolResult, ContentBlock, ServerCapabilities, ServerInfo};
+use rmcp::model::{CallToolResult, ContentBlock, ServerCapabilities, ServerConfig};
 use rmcp::{ServerHandler, tool, tool_handler, tool_router};
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -3755,15 +3755,16 @@ impl DrStrange {
 
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for DrStrange {
-    fn get_info(&self) -> ServerInfo {
-        // ServerInfo is #[non_exhaustive]; start from the default and set the
-        // fields we care about.
-        let mut info = ServerInfo::default();
-        info.server_info =
-            rmcp::model::Implementation::new("dr-strange", env!("CARGO_PKG_VERSION"));
-        info.capabilities = ServerCapabilities::builder().enable_tools().build();
-        info.instructions = Some(
-            "dr-strange graph database. Orient with list_planes and \
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
+            // Not `from_build_env()`: clients show this name, and the crate
+            // that compiles the server is not what the server is called.
+            .with_server_info(rmcp::model::Implementation::new(
+                "dr-strange",
+                env!("CARGO_PKG_VERSION"),
+            ))
+            .with_instructions(
+                "dr-strange graph database. Orient with list_planes and \
              describe_plane (the soft-schema catalog), then get_node / \
              search (vector) / traverse / query to read, and write_nodes / \
              write_edges to write. Planes are isolated graph canvases; \
@@ -3797,10 +3798,8 @@ impl ServerHandler for DrStrange {
              repeat itself: rebases are reconstructed from the reflog, which \
              is local to one clone and expires, so their absence is not \
              evidence; and commits marked `reachable: false` are what a \
-             rewrite left behind."
-                .to_string(),
-        );
-        info
+             rewrite left behind.",
+            )
     }
 }
 

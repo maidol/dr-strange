@@ -11,7 +11,7 @@ use std::net::{SocketAddr, TcpListener};
 use std::time::Duration;
 
 use dr_strange_core::{Database, Properties};
-use rmcp::model::{CallToolRequestParams, ClientInfo};
+use rmcp::model::{CallToolRequestParams, ClientConfig};
 use rmcp::service::RunningService;
 use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
@@ -86,7 +86,7 @@ async fn wait_ready(addr: SocketAddr) {
     panic!("server never started listening");
 }
 
-type Client = RunningService<RoleClient, ClientInfo>;
+type Client = RunningService<RoleClient, ClientConfig>;
 
 /// A fresh MCP client session against `/mcp` — a new transport and a new
 /// `initialize` handshake, simulating a separate agent host process rather
@@ -95,7 +95,7 @@ async fn connect(addr: SocketAddr, token: &str) -> anyhow::Result<Client> {
     let config = StreamableHttpClientTransportConfig::with_uri(format!("http://{addr}/mcp"))
         .auth_header(token);
     let transport = StreamableHttpClientTransport::from_config(config);
-    Ok(ClientInfo::default().serve(transport).await?)
+    Ok(ClientConfig::default().serve(transport).await?)
 }
 
 async fn call(client: &Client, tool: &str, args: Value) -> Value {
@@ -161,7 +161,7 @@ async fn the_stdio_relay_serves_the_running_servers_database() {
     });
 
     let (rx, tx) = tokio::io::split(host_side);
-    let client: Client = ClientInfo::default()
+    let client: Client = ClientConfig::default()
         .serve(rmcp::transport::async_rw::AsyncRwTransport::new_client(
             rx, tx,
         ))
