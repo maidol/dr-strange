@@ -233,6 +233,77 @@ jobs:
               && npm publish --access public --provenance --tag "$tag")
           done
 
+  wheels:
+    name: Python wheel — ${{ matrix.target }}
+    # After the GitHub release, for the reason the npm job gives: a published
+    # version pointing at a release that never appeared cannot be withdrawn.
+    needs: release
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # The same five legs the binaries are built on, including the glibc
+        # floor the Linux pins exist for — a wheel that will not load on a
+        # 22.04 host is the same bug in a different package format.
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: macos-latest
+            target: x86_64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master 2026-10-16
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+      # Keyed by target for the reason the binaries job records: two legs on
+      # one runner would otherwise restore each other's cache.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: wheel-${{ matrix.target }}
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      # One wheel per platform rather than per interpreter: the module uses
+      # only Python's stable ABI, so 3.9 and 3.14 load the same file.
+      - name: Build
+        run: uvx maturin build --release --target ${{ matrix.target }} --out dist
+        working-directory: crates/dr-strange-py
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: wheels-${{ matrix.target }}
+          path: crates/dr-strange-py/dist/*.whl
+
+  pypi:
+    name: Publish to PyPI
+    needs: wheels
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: wheels-*
+          merge-multiple: true
+          path: dist
+      # A fork, or this repository before the secret exists, has no token.
+      # That skips the publish rather than failing the release — PyPI is one
+      # channel, and the binaries and the GitHub release are already out.
+      - name: Is a token configured?
+        id: token
+        env:
+          PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}
+        run: echo "present=${PYPI_TOKEN:+yes}" >> "$GITHUB_OUTPUT"
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        if: steps.token.outputs.present == 'yes'
+      - name: Publish
+        if: steps.token.outputs.present == 'yes'
+        env:
+          UV_PUBLISH_TOKEN: ${{ secrets.PYPI_TOKEN }}
+        run: uv publish dist/*.whl
+
   docker:
     name: Docker image → GHCR
     permissions:
