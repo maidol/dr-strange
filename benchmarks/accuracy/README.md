@@ -47,7 +47,8 @@ precision traps are made of).
   does the tool say so or pick one and sound certain? Reported in parts: a
   **per-site** gap names the call it could not resolve; a **blanket**
   disclaimer says only that something may be missing. Both beat guessing; only
-  the first tells you where.
+  the first tells you where. The three metrics this breaks into are defined
+  below, under [The three honesty metrics](#the-three-honesty-metrics).
 
 ## The corpus, and why it is a fixture
 
@@ -380,6 +381,71 @@ The C fixture is the exception that proves the mechanism: C has no methods, so
 nothing shares a bare name, and there the baseline asserts **no** false edge.
 Every false edge in the other seven comes from a name collision that only a
 resolved type can settle.
+
+### The three honesty metrics
+
+The annual plan names three, and they are not the same question. The first two
+are rates over this corpus, printed by `score.py` for every tool. The third is
+a property of a tool's own reach answer rather than of any fixture, so it is
+recorded here with the evidence.
+
+**1. Unresolved-reference disclosure rate** — of the ambiguous sites where a
+tool drew no edge, how many did it *name*? A per-site gap ("a name was called
+here and I could not say what") sends an agent to the right line. A blanket
+"this is a lower bound" tells it only that something, somewhere, is missing.
+
+**2. Ambiguity misjudgement rate** — of the sites where a guess was available,
+how many did the tool pick a candidate at and sound certain? Sites with a
+single binding in scope are excluded from the denominator: following
+`f = normalize; f(x)` is resolution, not a guess, and the scorer credits it
+separately as FOLLOWED.
+
+**3. Traversal-boundary disclosure** — when a tool answers "what does a change
+to this reach?", does the answer state the bounds of the walk it did? Three
+things are observable, and each is either in the answer or not: the **depth**
+it reached, whether the set is **exact or a lower bound**, and the **edge
+kinds** it followed.
+
+| Tool | Depth | Exact / lower bound | Edge kinds | Probed with |
+|---|---|---|---|---|
+| drsg | ✓ `depth 1 (1)`, `total affected within depth 3: 2` | ✓ *"recorded call edges only — calls the parser could not resolve … so this is a lower bound"* | ✓ `[CALLS]` on every hop | `drsg impact normalize` |
+| GitNexus | ✓ `byDepthCounts {"1":1,"2":1}` | ✓ `"epistemic": "exact"` | ✓ `relationType` per entry, with a `confidence` | `gitnexus impact normalize` |
+| codegraph | n/a | n/a | n/a | `callers` / `callees` answer one hop, so there is no traversal to bound |
+| codebase-memory-mcp | ✗ | ✗ | ✗ | the walk is whatever Cypher the caller writes, so the tool states nothing about it |
+| text search | n/a | n/a | n/a | no notion of reach at all |
+
+Both graph engines that *have* a reach verb disclose all three, and they do it
+differently in a way worth copying in each direction: GitNexus puts an
+`epistemic` field on the answer and a confidence on every edge, where drsg's
+note says *why* the set is a lower bound — the unresolved dispatch that caused
+it. Neither says what the other says.
+
+The row that matters is the fourth. A tool whose only reach interface is a
+query language hands the traversal to the caller, which means nothing in the
+answer says how deep it went or what it could not follow — and an agent
+writing `MATCH (a)-[:CALLS*]->(b)` has no way to learn that from the result.
+
+Over all eight fixtures, with the tools this machine could run:
+
+| Tool | Disclosure rate | Misjudgement rate |
+|---|---|---|
+| drsg | **24/47 — 51%** named rather than left to the blanket note | **0/47 — 0%** |
+| GitNexus | 2/23 — 9% | 16/39 — 41% |
+| text search | 0/11 — 0% | 28/39 — 72% |
+
+The two rates pull in opposite directions, which is why both are needed. A
+tool can score 0% misjudgement by resolving nothing and disclosing nothing;
+text search scores 0% disclosure for the opposite reason — it leaves almost
+no site unresolved, because it guesses at nearly all of them. GitNexus sits
+between: it declines to assert a trap anywhere, yet at an ambiguous site it
+picks a candidate 41% of the time without saying it did.
+
+Two tools are missing from this table rather than scoring zero in it.
+codegraph is not installed on the machine that ran this pass, and the
+codebase-memory-mcp build here is 0.9.0 — older than the 0.12.1 the recall
+table was measured with, and its CLI no longer takes the `--quiet` flag the
+adapter passes. Scoring 0.9.0's honesty beside 0.12.1's recall would put two
+different programs in one row.
 
 ### Identity is by file and line, never by name
 
