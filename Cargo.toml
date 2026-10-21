@@ -8,6 +8,7 @@ members = [
     "crates/dr-strange-llm",
     "crates/dr-strange-log",
     "crates/dr-strange-parser",
+    "crates/dr-strange-py",
     "benchmarks/drsg-bench",
 ]
 

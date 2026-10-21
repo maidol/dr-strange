@@ -1,0 +1,32 @@
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "drsg-embedded"
+description = "The dr-strange graph engine, in your own process"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT OR Apache-2.0" }
+authors = [{ email = "yingge_gzb@qq.com" }]
+keywords = ["graph", "database", "embedded", "code-intelligence", "agent"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Rust",
+    "Topic :: Database :: Database Engines/Servers",
+]
+dynamic = ["version"]
+
+[project.urls]
+Homepage = "https://github.com/wangyingsm/dr-strange"
+Repository = "https://github.com/wangyingsm/dr-strange"
+
+[tool.maturin]
+# The crate is a workspace member, so the manifest is named explicitly rather
+# than discovered — `maturin` run from this directory would otherwise walk up
+# and find the workspace root.
+manifest-path = "Cargo.toml"
+module-name = "drsg_embedded"
+features = ["extension-module"]
