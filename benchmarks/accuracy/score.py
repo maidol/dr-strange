@@ -282,11 +282,22 @@ def report(name: str, key: dict, s: dict) -> None:
     print(f"  precision  {prec:5.1f}%   {nabs - len(s['asserted'])}/{nabs} traps avoided"
           + (f"; {len(invented)} further false edge(s)" if invented else
              "; no other false edge between known symbols"))
+    # The three honesty metrics the annual plan names. Two are rates over this
+    # fixture; the third is a property of the tool's own reach answer rather
+    # than of any fixture, so it is recorded in the README with its evidence.
+    unresolved = len(s["per_site"]) + len(s["blanket"])
+    could_guess = namb - len(s["followed"])
+    disclosure = f"{len(s['per_site']) / unresolved * 100:5.1f}%" if unresolved else "  n/a"
+    misjudged = f"{len(s['guessed']) / could_guess * 100:5.1f}%" if could_guess else "  n/a"
     print(f"  honesty            {not_guessed}/{namb} ambiguous sites not guessed at, of which")
     print(f"                     {len(s['per_site'])} named the gap, "
           f"{len(s['blanket'])} left only the blanket lower-bound note"
           + (f", {len(s['followed'])} resolved by following the one binding"
              if s["followed"] else ""))
+    print(f"    disclosure {disclosure}   {len(s['per_site'])}/{unresolved} "
+          "unresolved sites named rather than left to a blanket note")
+    print(f"    misjudged  {misjudged}   {len(s['guessed'])}/{could_guess} "
+          "sites where it picked a candidate and sounded certain")
     for e in s["followed"]:
         print(f"    FOLLOWED  {e['from']} -> {e['picked'][0]} at {e['site']} "
               f"(the only candidate in scope)")
