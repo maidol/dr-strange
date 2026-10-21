@@ -929,6 +929,130 @@ fn graph_shape(
     (keys, edges)
 }
 
+/// A handler whose stamp is one of the ops readers. What it parses is beside
+/// the point: the split is made on `_generated_by`, so a handler named
+/// `compose` is exactly what exercises it.
+struct OpsLang;
+
+impl Preprocessor for OpsLang {
+    fn manifest(&self) -> Manifest {
+        Manifest {
+            name: "compose".into(),
+            version: "1".into(),
+            extensions: vec!["compose".into()],
+            logo: None,
+            build: None,
+            source: None,
+        }
+    }
+
+    fn preprocess(&self, input: &Input<'_>, _host: &dyn Host) -> Result<Preprocessed> {
+        let mut out = Preprocessed::default();
+        let names: Vec<String> = match input {
+            Input::Document { name, .. } => vec![(*name).to_string()],
+            Input::Files { paths } => paths.to_vec(),
+        };
+        for name in &names {
+            out.nodes.push(DigestNode {
+                key: format!("svc:{name}"),
+                label: "Workload".into(),
+                extra_labels: Vec::new(),
+                props: Default::default(),
+            });
+        }
+        Ok(out)
+    }
+}
+
+fn ops_fixture(name: &str, manifest: bool) -> (Tree, dr_strange_core::Database, Plugins) {
+    let tree = Tree::new(name);
+    tree.write("a.aa", "f->b.aa::h\ng\n");
+    tree.write("b.aa", "h->a.aa::f\n");
+    if manifest {
+        tree.write("stack.compose", "api\n");
+    }
+    let db = dr_strange_core::Database::in_memory().unwrap();
+    db.create_plane("code", Properties::new()).unwrap();
+    let plugins = Plugins::from_handlers(vec![Box::new(AaLang), Box::new(OpsLang)]);
+    (tree, db, plugins)
+}
+
+fn fold(db: &dr_strange_core::Database, tree: &Tree, plugins: &Plugins, run: &str) -> SyncStats {
+    sync_paths(
+        db,
+        "code",
+        &tree.host(),
+        &CommitDelta::default(),
+        plugins,
+        "test",
+        run,
+    )
+    .unwrap()
+}
+
+/// An ops reader's facts belong beside the code, not in it (arch/10-ops.md
+/// §2): a workload and a function answer different questions, and a chart
+/// changes on a different cadence from the code it deploys.
+#[test]
+fn an_ops_readers_facts_land_in_the_plane_beside_the_code() {
+    let (tree, db, plugins) = ops_fixture("ops-split", true);
+    let stats = fold(&db, &tree, &plugins, "c0");
+
+    let code = db.plane("code").unwrap();
+    let ops = db.plane("code_ops").unwrap();
+    assert!(
+        code.node_by_key("svc:stack.compose").unwrap().is_none(),
+        "the workload is in the code plane"
+    );
+    assert!(
+        ops.node_by_key("svc:stack.compose").unwrap().is_some(),
+        "the workload is not in the ops plane"
+    );
+    // The code is still where it was.
+    assert!(code.node_by_key("a.aa::f").unwrap().is_some());
+    assert!(ops.node_by_key("a.aa::f").unwrap().is_none());
+    assert!(
+        stats.notes.iter().any(|n| n.contains("plane `code_ops`")),
+        "the fold does not say where the ops facts went: {:?}",
+        stats.notes
+    );
+}
+
+/// Nothing asks for the plane, so a tree with no manifests must not leave an
+/// empty one behind.
+#[test]
+fn a_tree_with_no_manifests_leaves_no_ops_plane() {
+    let (tree, db, plugins) = ops_fixture("ops-none", false);
+    fold(&db, &tree, &plugins, "c0");
+    assert!(db.plane("code_ops").is_err());
+}
+
+/// The ops plane is reconciled, not appended to: the last manifest leaving the
+/// tree takes its workloads with it, exactly as a deleted source file does.
+#[test]
+fn a_manifest_leaving_the_tree_takes_its_workloads_with_it() {
+    let (tree, db, plugins) = ops_fixture("ops-gone", true);
+    fold(&db, &tree, &plugins, "c0");
+    assert!(
+        db.plane("code_ops")
+            .unwrap()
+            .node_by_key("svc:stack.compose")
+            .unwrap()
+            .is_some()
+    );
+
+    std::fs::remove_file(tree.0.join("stack.compose")).unwrap();
+    fold(&db, &tree, &plugins, "c1");
+    assert!(
+        db.plane("code_ops")
+            .unwrap()
+            .node_by_key("svc:stack.compose")
+            .unwrap()
+            .is_none(),
+        "the workload outlived the manifest that declared it"
+    );
+}
+
 /// The convergence requirement: folding a repository file-by-file must land
 /// on the same graph as digesting it whole. Today it does not — a per-file
 /// fold assembles alone, so cross-file resolution differs.

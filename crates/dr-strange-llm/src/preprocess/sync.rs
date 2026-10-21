@@ -113,7 +113,63 @@ pub fn sync_paths(
     run_id: &str,
 ) -> Result<SyncStats> {
     let routed = routed_facts(host, plugins, source, run_id)?;
-    apply_routed(db, plane_name, plugins, routed)
+    apply_with_ops(db, plane_name, plugins, routed)
+}
+
+/// Reconcile `routed` into `plane_name`, with the ops readers' facts going to
+/// the plane beside it (`<name>_ops`, `arch/10-ops.md` §2).
+///
+/// One function rather than one per caller: a fold and a `--force` rebuild
+/// must put a workload in the same plane, or the verb that reads it finds half
+/// a topology and cannot tell that is what it found.
+///
+/// The ops side gets the same reconciliation the code side gets, not an
+/// append: a compose file deleted from the tree has to take its services with
+/// it. That also migrates a plane digested before this existed — those ops
+/// nodes are now absent from the code plane's facts, so the same pass that
+/// writes them to `<name>_ops` removes them from `<name>`.
+fn apply_with_ops(
+    db: &Database,
+    plane_name: &str,
+    plugins: &Plugins,
+    mut routed: Routed,
+) -> Result<SyncStats> {
+    let ops = super::ops::take_ops_facts(&mut routed.facts);
+    let mut stats = apply_routed(db, plane_name, plugins, routed)?;
+
+    let ops_plane = super::ops::plane_name(plane_name);
+    let held = db.plane(&ops_plane).is_ok();
+    // A tree with no manifests leaves no empty plane behind; one that had them
+    // before is still reconciled, so the last manifest leaving empties it.
+    if !held && ops.nodes.is_empty() && ops.edges.is_empty() {
+        return Ok(stats);
+    }
+    if !held {
+        db.create_plane(&ops_plane, Properties::new())?;
+    }
+    let ops_stats = apply_routed(
+        db,
+        &ops_plane,
+        plugins,
+        Routed {
+            facts: ops,
+            prose_chars: 0,
+            notes: Vec::new(),
+        },
+    )?;
+    stats.notes.push(format!(
+        "ops: {} node(s), {} edge(s) written and {} removed in plane `{ops_plane}`",
+        ops_stats.nodes_loaded, ops_stats.edges_written, ops_stats.nodes_deleted
+    ));
+    // Counted into the fold's totals, because they are what this fold wrote;
+    // the note above says which plane they went to.
+    stats.nodes_loaded += ops_stats.nodes_loaded;
+    stats.nodes_patched += ops_stats.nodes_patched;
+    stats.nodes_deleted += ops_stats.nodes_deleted;
+    stats.edges_written += ops_stats.edges_written;
+    stats.edges_deleted += ops_stats.edges_deleted;
+    stats.edges_dropped += ops_stats.edges_dropped;
+    Ok(stats)
 }
 
 /// The whole tree's facts, before any plane is touched — so that a parser that
@@ -608,7 +664,7 @@ pub fn resync(
         ),
     );
     db.create_plane(plane_name, props)?;
-    let stats = apply_routed(db, plane_name, plugins, routed)?;
+    let stats = apply_with_ops(db, plane_name, plugins, routed)?;
     // Before the marker comes off: a plane that is finished must already say
     // what built it, or a reader between the two sees a complete graph with no
     // provenance and cannot tell whether it predates a plugin change (#39).
