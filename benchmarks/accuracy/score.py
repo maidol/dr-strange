@@ -372,6 +372,13 @@ def cbm_adapter(args, corpus: Path, key: dict) -> tuple[set, set]:
     return competitors.cbm_edges(exe, _workdir(corpus, args), key)
 
 
+def gitnexus_adapter(args, corpus: Path, key: dict) -> tuple[set, set, set]:
+    exe = args.gitnexus or competitors.find("gitnexus")
+    if not exe:
+        sys.exit("gitnexus is not on PATH — pass --gitnexus <path>")
+    return competitors.gitnexus_edges(exe, _workdir(corpus, args), key)
+
+
 def text_adapter(args, corpus: Path, key: dict) -> tuple[set, set, set]:
     """The no-index baseline: what a word-boundary text search yields.
 
@@ -388,6 +395,7 @@ TOOLS = {
     "drsg": drsg_adapter,
     "codegraph": codegraph_adapter,
     "codebase-memory-mcp": cbm_adapter,
+    "gitnexus": gitnexus_adapter,
     "text-search": text_adapter,
 }
 
@@ -403,6 +411,7 @@ def main() -> int:
                          "instead of the ones the catalog publishes")
     ap.add_argument("--codegraph", help="path to the codegraph binary")
     ap.add_argument("--cbm", help="path to the codebase-memory-mcp binary")
+    ap.add_argument("--gitnexus", help="path to the gitnexus binary")
     ap.add_argument("--workdir", default=str(Path(tempfile.gettempdir()) / "drsg-accuracy"),
                     help="where to copy a corpus for tools that index in place")
     args = ap.parse_args()

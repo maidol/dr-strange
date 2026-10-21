@@ -204,6 +204,93 @@ def cbm_edges(exe: str, workdir: Path, key: dict) -> tuple[set, set, set]:
 
 
 # --------------------------------------------------------------------------
+# GitNexus — `analyze` builds a LadybugDB graph in `.gitnexus/`, and `cypher`
+# queries it. One generic `CodeRelation` table carries the kind as a `type`
+# property, so every arm is one query.
+#
+# Two things about it that the others do not do, both recorded rather than
+# acted on: it numbers lines from **zero** where the key (and every other
+# tool) numbers from one, and it puts a `confidence` on every edge. The
+# offset is corrected here and asserted, because silently sliding every
+# location by one would score the tool at zero on a graph it built correctly.
+# The confidence is deliberately *not* filtered on: choosing its threshold
+# for it would be this harness deciding what the tool meant.
+# --------------------------------------------------------------------------
+GN_CALLS = (
+    "MATCH (a)-[r]->(b) WHERE r.type = 'CALLS' "
+    "RETURN a.filePath AS af, a.startLine AS al, b.filePath AS bf, b.startLine AS bl"
+)
+# Any edge that lands on a declared type is a reference to it — that covers
+# `IMPLEMENTS` (a struct to its interface) and the `CALLS` edge GitNexus draws
+# from a function to a type it constructs. Filtering by kind instead would be
+# guessing which of its kinds the key means.
+GN_REFS = (
+    "MATCH (a)-[r]->(b) "
+    "RETURN a.filePath AS af, a.startLine AS al, b.filePath AS bf, b.startLine AS bl"
+)
+
+
+def _gn_rows(out: str) -> list[list[str]]:
+    """The rows of a `gitnexus cypher` answer, which is JSON holding markdown."""
+    start = out.find("{")
+    if start < 0:
+        msg = f"gitnexus cypher printed no JSON:\n{out[-400:]}"
+        raise RuntimeError(msg)
+    answer = json.loads(out[start:])
+    if "error" in answer:
+        msg = f"gitnexus cypher failed: {answer['error']}"
+        raise RuntimeError(msg)
+    rows = []
+    for line in answer.get("markdown", "").split("\n")[2:]:
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if len(cells) == 4:
+            rows.append(cells)
+    return rows
+
+
+def _gn_pairs(rows: list[list[str]], at: dict) -> set:
+    """Rows of (file, line, file, line) as key names, line numbers +1."""
+    pairs = set()
+    for af, al, bf, bl in rows:
+        try:
+            a_line, b_line = int(al) + 1, int(bl) + 1
+        except ValueError:
+            continue
+        a = at.get((af, a_line)) or at.get((Path(af).name, a_line))
+        b = at.get((bf, b_line)) or at.get((Path(bf).name, b_line))
+        if a and b and a != b:
+            pairs.add((a, b))
+    return pairs
+
+
+def gitnexus_edges(exe: str, workdir: Path, key: dict) -> tuple[set, set, set]:
+    env = {"DO_NOT_TRACK": "1", "SCARF_ANALYTICS": "false"}
+    # `--skip-git`: a fixture is a directory, not a checkout, and without this
+    # the tool declines to index at all.
+    built = run([exe, "analyze", ".", "--skip-git"], cwd=workdir, env=env)
+    if "indexed successfully" not in built:
+        msg = f"gitnexus analyze failed in {workdir}:\n{built[-400:]}"
+        raise RuntimeError(msg)
+
+    calls = _gn_pairs(_gn_rows(run([exe, "cypher", GN_CALLS], cwd=workdir, env=env)),
+                      locate(key))
+    rows = _gn_rows(run([exe, "cypher", GN_REFS], cwd=workdir, env=env))
+    if rows and not calls:
+        # The graph has edges but none of them landed on a key symbol: the
+        # location convention has moved again, and scoring would report a
+        # working tool as useless.
+        msg = ("gitnexus returned edges but none resolved to a key symbol — "
+               "check the line-numbering offset in this adapter")
+        raise RuntimeError(msg)
+    types_at = locate(key, types=True)
+    type_names = set(key.get("types", {}))
+    refs = {(a, b) for a, b in _gn_pairs(rows, types_at) if b in type_names}
+    # It names no per-site gap: an unresolved call is simply an edge it did
+    # not draw, and the confidence on the ones it drew is not a gap report.
+    return calls, set(), refs
+
+
+# --------------------------------------------------------------------------
 # A plain text search — the baseline the comparison is meaningless without.
 # Every score above only means something against what an agent gets with no
 # index at all: `rg '\bGet\b'` and read the hits.
