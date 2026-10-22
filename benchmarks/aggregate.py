@@ -316,6 +316,13 @@ def main():
         "`COPY`), that's the point of measuring — it says where to invest next.\n"
         "- **Synthetic data.** A uniform-random graph with average degree ~5; "
         "real workloads have skew/hubs that stress traversal differently.\n"
+        "- **Machine state dominates these numbers.** Every figure needs an "
+        "otherwise idle machine. Re-measured with a browser and a screen "
+        "recorder running, the same binaries came out 30–50% worse on every "
+        "operation — read paths included, which no engine change could explain "
+        "— and the load spread widened from ±13% to ±42%. A pass taken while "
+        "the desktop is in use is not a measurement; check the machine is "
+        "quiet before believing a re-run.\n"
     )
 
     lines.append(STANDALONE_SECTIONS + "\n")
