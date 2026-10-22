@@ -1,0 +1,73 @@
+[
+  {
+    "engine": "kuzu",
+    "op": "load_nodes",
+    "n": 100000,
+    "total_ms": 193.89430398587137,
+    "throughput_per_s": 515744.9081499927,
+    "runs": 3,
+    "spread_pct": 18.468424908167975
+  },
+  {
+    "engine": "kuzu",
+    "op": "load_edges",
+    "n": 500000,
+    "total_ms": 229.66930898837745,
+    "throughput_per_s": 2177043.167858805,
+    "runs": 3,
+    "spread_pct": 3.3637877318303575
+  },
+  {
+    "engine": "kuzu",
+    "op": "lookup",
+    "n": 10000,
+    "total_ms": 1964.4281619694084,
+    "median_us": 189.3470180220902,
+    "p95_us": 235.84399605169892,
+    "throughput_per_s": 5090.539930956115,
+    "runs": 3,
+    "spread_pct": 4.436302109127173
+  },
+  {
+    "engine": "kuzu",
+    "op": "expand_1hop",
+    "n": 10000,
+    "total_ms": 12811.521084979177,
+    "median_us": 1259.3360152095556,
+    "p95_us": 1769.6620197966695,
+    "throughput_per_s": 780.5474411406516,
+    "runs": 3,
+    "spread_pct": 1.6764371514827576
+  },
+  {
+    "engine": "kuzu",
+    "op": "traverse_2hop",
+    "n": 2000,
+    "total_ms": 10272.850765031762,
+    "median_us": 5119.855981320143,
+    "p95_us": 7023.779035080224,
+    "throughput_per_s": 194.68792507021456,
+    "runs": 3,
+    "spread_pct": 0.7077352517420269
+  },
+  {
+    "engine": "kuzu",
+    "op": "vector_build",
+    "n": 100000,
+    "total_ms": 31195.640397956595,
+    "throughput_per_s": 3205.5761229556388,
+    "runs": 3,
+    "spread_pct": 2.7124405822738815
+  },
+  {
+    "engine": "kuzu",
+    "op": "vector_topk",
+    "n": 1000,
+    "total_ms": 5596.8371229828335,
+    "median_us": 5546.397995203733,
+    "p95_us": 6152.564019430429,
+    "throughput_per_s": 178.6723426153681,
+    "runs": 3,
+    "spread_pct": 1.0750580208766851
+  }
+]

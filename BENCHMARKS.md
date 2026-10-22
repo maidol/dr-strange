@@ -6,20 +6,21 @@ Cross-engine comparison of dr-strange against an embedded graph DB (Kùzu), the 
 
 | Operation | dr-strange | Kùzu | SQLite | Neo4j |
 |---|---|---|---|---|
-| Graph load — nodes + edges (↑ better) | 317 K/s | 1.1 M/s | 639 K/s | 37 K/s |
-| Point lookup by key — median (↓ better) | 3.3 µs | 256.0 µs | 3.4 µs | 286.6 µs |
-| 1-hop expansion — median (↓ better) | 6.2 µs | 1.64 ms | 8.2 µs | 328.0 µs |
-| 2-hop reachable set — median (↓ better) | 26.8 µs | 6.72 ms | 64.8 µs | 842.9 µs |
-| Vector index build (↑ better) | 17 K/s | 3 K/s | — | 4 K/s † |
-| Vector top-k query — median (↓ better) | 290.0 µs | 7.43 ms | — | 2.43 ms |
+| Graph load — nodes + edges (↑ better) | 456 K/s | 1.4 M/s | 898 K/s | 37 K/s |
+| Point lookup by key — median (↓ better) | 3.5 µs | 189.3 µs | 2.7 µs | 286.6 µs |
+| 1-hop expansion — median (↓ better) | 5.8 µs | 1.26 ms | 6.4 µs | 328.0 µs |
+| 2-hop reachable set — median (↓ better) | 26.0 µs | 5.12 ms | 48.1 µs | 842.9 µs |
+| Vector index build (↑ better) | 22 K/s | 3 K/s | — | 4 K/s |
+| Vector top-k query — median (↓ better) | 231.0 µs | 5.55 ms | — | 2.43 ms |
+| Vector top-k recall@k (vs exact) (↑ better) | 0.278 @10 | — | — | — |
 
 ## Reading this
 
-† The Neo4j build figure in this table was measured while `compare.py` still timed the vector load together with the index build; the accounting has since been fixed to index-build-only for every engine, and Neo4j's number will rise on the next run. It is kept rather than dropped so the table stays a record of what was actually measured.
 - **↑ better** rows are throughput (bigger is faster); **↓ better** rows are median latency per operation (smaller is faster).
 - SQLite has no native vectors, so it sits out the vector rows.
-- **Recall@k** is the share of the exact cosine top-k (brute force, written once by `drsg-bench gen` for the first 100 vector queries) that the engine's ANN index returned, averaged over those queries — a latency row without its recall row is not a result. It is scored untimed, after the timed top-k pass. This table predates the recall row: no recall was measured for the numbers above, so the vector top-k latencies here are unaccompanied; the next `just bench-compare` adds the row for every engine.
-- Every figure is the **median of repeated measurement passes** (3 by default; the min→max spread per op is recorded in `benchmarks/results/*.json`, committed alongside this file from the next re-baseline on — the JSON behind the table above was not preserved, so its spreads cannot be checked), with every engine pinned to the same P-cores — one machine, **indicative, not a leaderboard**. Re-run with `just bench-compare`.
+- **Recall@k** is the share of the exact cosine top-k (brute force, written once by `drsg-bench gen` for the first 100 vector queries) that the engine's ANN index returned, averaged over those queries — a latency row without its recall row is not a result. It is scored untimed, after the timed top-k pass.
+- Every figure is the **median of repeated measurement passes** (3 by default; the min→max spread per op is recorded in `benchmarks/results/*.json`, committed alongside this file), with every engine pinned to the same P-cores — one machine, **indicative, not a leaderboard**. Re-run with `just bench-compare`.
+- **The columns are not all from one sitting** — dr-strange 2026-10-22, Kùzu 2026-10-22, SQLite 2026-10-22, Neo4j 2026-10-21. A column measured on another day saw a different machine, and that moves every figure in it; read across days as indicative only.
 
 ## Methodology
 
@@ -37,6 +38,7 @@ Cross-engine comparison of dr-strange against an embedded graph DB (Kùzu), the 
 - **Deployment differs.** dr-strange, Kùzu and SQLite are embedded (in-process, no client/server hop). Neo4j is a server reached over Bolt with JVM warmup and per-query network + transaction overhead, so its per-op latencies carry a fixed tax the embedded engines don't — read it as a different class, not a head-to-head loss.
 - **Maturity differs.** dr-strange is a young from-scratch engine; the others are mature. Where we're slower (e.g. bulk load vs columnar `COPY`), that's the point of measuring — it says where to invest next.
 - **Synthetic data.** A uniform-random graph with average degree ~5; real workloads have skew/hubs that stress traversal differently.
+- **Machine state dominates these numbers.** Every figure needs an otherwise idle machine. Re-measured with a browser and a screen recorder running, the same binaries came out 30–50% worse on every operation — read paths included, which no engine change could explain — and the load spread widened from ±13% to ±42%. A pass taken while the desktop is in use is not a measurement; check the machine is quiet before believing a re-run.
 
 ## Digesting a repository
 
@@ -114,7 +116,7 @@ grepped with word boundaries, finding every real call site plus some noise.
 ## Takeaways for dr-strange
 
 - **Strong — low-latency point & graph queries.** The embedded KV design gives microsecond point lookups and single-digit-µs 1-hop expansion, on par with SQLite and orders of magnitude below the query-engine round-trips of Kùzu/Neo4j. That's the embedded, agent-in-the-loop sweet spot dr-strange is built for.
-- **Improved — bulk load.** A `bulk_load` fast path (contiguous id reservation, in-memory interning, and sorted batched writes) roughly doubled load throughput over the old per-record loop, moving drsg past Neo4j. It still trails Kùzu's columnar `COPY` and SQLite: drsg writes three sorted index entries per edge (record + two adjacency) where a columnar store appends — closing that further is an on-disk-layout change, not just faster inserts.
+- **Improved — bulk load.** A `bulk_load` fast path (contiguous id reservation, in-memory interning, and sorted batched writes) roughly doubled load throughput over the old per-record loop, moving drsg past Neo4j. It still trails Kùzu's columnar `COPY` and SQLite: drsg writes three sorted index entries per edge (record + two adjacency) where a columnar store appends — closing that further is an on-disk-layout change, not just faster inserts. Two later changes — handing owned buffers to the write batch instead of copying them, and a slice-by-8 CRC in place of one byte per round — added a further **24%** (343 → 426 K rows/s), measured as an interleaved old/new A/B in one window so the delta is the code rather than the hour of day.
 - **Strong — vector-index build.** The hand-rolled HNSW originally built ~10× slower than Kùzu/Neo4j. Cached per-vector norms (every metric reduces to one dot), a multi-accumulator AVX2+FMA dot kernel, reused search scratch, and a parallel multi-threaded build (arch/01 §5) moved it from ~10× behind to ahead of both — by less over Neo4j than the table shows, since the Neo4j build cell was measured with the load included (see Methodology).
 - **Strong — vector query.** drsg's top-k latency is well below both Kùzu and Neo4j — the same cached-norm + SIMD path that sped up build also sharpened search, and the `ef` clamp keeps deep-k recall honest (see `measure_ef_multiplier_sweep` in the hnsw tests).
 

@@ -1,0 +1,53 @@
+[
+  {
+    "engine": "sqlite",
+    "op": "load_nodes",
+    "n": 100000,
+    "total_ms": 139.2549390438944,
+    "throughput_per_s": 718107.3841013216,
+    "runs": 3,
+    "spread_pct": 3.2825274081126614
+  },
+  {
+    "engine": "sqlite",
+    "op": "load_edges",
+    "n": 500000,
+    "total_ms": 528.7557790288702,
+    "throughput_per_s": 945616.142330049,
+    "runs": 3,
+    "spread_pct": 1.8115838735839787
+  },
+  {
+    "engine": "sqlite",
+    "op": "lookup",
+    "n": 10000,
+    "total_ms": 27.96583401504904,
+    "median_us": 2.695014700293541,
+    "p95_us": 3.383960574865341,
+    "throughput_per_s": 357579.18017459364,
+    "runs": 3,
+    "spread_pct": 1.8552915766738662
+  },
+  {
+    "engine": "sqlite",
+    "op": "expand_1hop",
+    "n": 10000,
+    "total_ms": 67.01779802097008,
+    "median_us": 6.364018190652132,
+    "p95_us": 10.560033842921257,
+    "throughput_per_s": 149214.09379745615,
+    "runs": 3,
+    "spread_pct": 0.7847584901173479
+  },
+  {
+    "engine": "sqlite",
+    "op": "traverse_2hop",
+    "n": 2000,
+    "total_ms": 101.65751096792519,
+    "median_us": 48.0739981867373,
+    "p95_us": 90.7509820535779,
+    "throughput_per_s": 19673.90290158724,
+    "runs": 3,
+    "spread_pct": 1.3209751726893528
+  }
+]
